@@ -103,6 +103,19 @@ testable, and every sync decision goes through it.
   suffix **must** stay in the ignore list, or a scan racing a download uploads
   half-written files to Drive.
 
+## The daemon is a user service — never add elevation
+
+Nothing in Halyard requires root, and nothing should start doing so. The daemon
+runs as the user, stores its session in the user's keyring, writes only under
+`$HOME`, registers on the **session** bus, and installs to `~/.local` and
+`~/.config`. `ui/halyard/daemon_control.py` starts and enables it through
+`systemctl --user`, D-Bus activation, or a direct spawn — in that order, and
+none of them prompt for a password.
+
+If a change here appears to need `sudo`, the change is wrong. A sync tool that
+asks for root to move the user's own files is teaching them a bad habit, and
+Proton's own clients do not do it either.
+
 ## GNOME specifics
 
 - **There is no system tray.** GNOME dropped StatusNotifier. Do not add a tray

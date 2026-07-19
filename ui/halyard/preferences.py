@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gtk
 
+from . import daemon_control
+
 from .util import request_autostart
 
 APP_ID = "io.github.votton.Halyard"
@@ -38,13 +40,32 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._updating = False
         self._autostart_row.connect("notify::active", self._on_autostart)
         startup.add(self._autostart_row)
+
+        # The window and the service start independently: syncing should keep
+        # working whether or not the user wants the window opening at login.
+        self._service_row = Adw.SwitchRow(
+            title="Start Sync Service on Login",
+            subtitle="Sync in the background without opening Halyard",
+        )
+        self._updating = True
+        self._service_row.set_active(daemon_control.is_enabled_at_login())
+        self._updating = False
+        self._service_row.set_sensitive(
+            daemon_control.has_systemd() and daemon_control.unit_installed()
+        )
+        if not self._service_row.get_sensitive():
+            self._service_row.set_subtitle(
+                "Set the background service up first, from the main window"
+            )
+        self._service_row.connect("notify::active", self._on_service_autostart)
+        startup.add(self._service_row)
         page.add(startup)
 
         background = Adw.PreferencesGroup(
             title="Running in the Background",
             description=("Closing the Halyard window does not stop syncing. "
-                         "GNOME has no system tray, so Halyard reports "
-                         "progress through notifications instead."),
+                         "Halyard reports progress through the status icon "
+                         "and notifications."),
         )
         self._version_row = Adw.ActionRow(
             title="Sync Service",
@@ -107,6 +128,29 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._client.get_account(on_ok, on_err)
 
     # -- actions ---------------------------------------------------------
+
+    def _on_service_autostart(self, row, _param) -> None:
+        """Enables or disables the systemd user unit. No elevation involved."""
+        if self._updating:
+            return
+        wanted = row.get_active()
+        row.set_sensitive(False)
+
+        def done(ok: bool, message: str) -> None:
+            row.set_sensitive(True)
+            if ok:
+                self._window.toast(
+                    "Syncing will start automatically at login"
+                    if wanted else "Syncing will no longer start at login"
+                )
+                return
+            # Put the switch back rather than showing a state that is not real.
+            self._updating = True
+            row.set_active(not wanted)
+            self._updating = False
+            self._window.toast(message or "Could not change the startup setting")
+
+        daemon_control.set_enabled_at_login(wanted, done)
 
     def _on_autostart(self, row, _param) -> None:
         if self._updating:

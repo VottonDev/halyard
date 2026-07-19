@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 
-from gi.repository import Adw, Gio, Gtk
+from gi.repository import Adw, GLib, Gio, Gtk
 
+from . import daemon_control
 from .conflicts_view import ConflictsPage
 from .dbus_client import DaemonClient
 from .login_view import LoginView
@@ -161,25 +162,97 @@ class HalyardWindow(Adw.ApplicationWindow):
         return box
 
     def _build_disconnected(self) -> Gtk.Widget:
-        status = Adw.StatusPage(
+        self._disconnected_status = Adw.StatusPage(
             icon_name="network-offline-symbolic",
             title="Sync Service Not Running",
-            description=("Halyard’s background service handles the syncing. "
-                         "It will be picked up automatically as soon as it "
-                         "starts."),
         )
         box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
             spacing=12,
             halign=Gtk.Align.CENTER,
         )
+
+        self._start_button = Gtk.Button(halign=Gtk.Align.CENTER)
+        self._start_button.add_css_class("pill")
+        self._start_button.add_css_class("suggested-action")
+        self._start_button.connect("clicked", self._on_start_daemon)
+        box.append(self._start_button)
+
         retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER)
         retry.add_css_class("pill")
-        retry.add_css_class("suggested-action")
+        retry.add_css_class("flat")
         retry.connect("clicked", lambda *_: self._refresh_everything())
         box.append(retry)
-        status.set_child(box)
-        return status
+
+        # Users are right to be wary of anything that wants a password. Say
+        # up front that this one does not, rather than leaving them guessing.
+        note = Gtk.Label(
+            label="No administrator access is required — the service runs as you.",
+            wrap=True,
+            justify=Gtk.Justification.CENTER,
+        )
+        note.add_css_class("dim-label")
+        note.add_css_class("caption")
+        box.append(note)
+
+        self._disconnected_status.set_child(box)
+        self._update_disconnected_page()
+        return self._disconnected_status
+
+    def _update_disconnected_page(self) -> None:
+        """Offers whichever action actually applies to this machine."""
+        if daemon_control.service_files_installed() or daemon_control.unit_installed():
+            self._start_button.set_label("Start Sync Service")
+            self._disconnected_status.set_description(
+                "Halyard’s background service does the syncing. It is not "
+                "running at the moment."
+            )
+        elif daemon_control.find_bundle() is not None:
+            self._start_button.set_label("Set Up Background Service")
+            self._disconnected_status.set_description(
+                "The background service has not been set up yet. Halyard can "
+                "do that now — it only writes to your own configuration, and "
+                "it will then start automatically whenever you need it."
+            )
+        else:
+            self._start_button.set_label("Start Sync Service")
+            self._start_button.set_sensitive(False)
+            self._disconnected_status.set_description(
+                "The background service has not been built yet. Build it with:\n"
+                "cd daemon && bun install && node scripts/build.mjs"
+            )
+
+    def _on_start_daemon(self, button: Gtk.Button) -> None:
+        button.set_sensitive(False)
+        spinner = Adw.Spinner() if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True)
+        button.set_child(spinner)
+
+        needs_setup = not (
+            daemon_control.service_files_installed() or daemon_control.unit_installed()
+        )
+
+        def finished(ok: bool, message: str) -> None:
+            button.set_child(None)
+            button.set_sensitive(True)
+            self._update_disconnected_page()
+            if ok:
+                self.toast("Sync service started")
+                # The bus-name watcher will notice, but do not make the user
+                # wait for it.
+                GLib.timeout_add(700, lambda: (self._refresh_everything(), False)[1])
+            else:
+                self.toast(message or "Could not start the sync service")
+
+        def after_setup(ok: bool, message: str) -> None:
+            if not ok:
+                finished(False, message)
+                return
+            daemon_control.start(finished)
+
+        if needs_setup:
+            daemon_control.install_service_files(after_setup)
+        else:
+            daemon_control.start(finished)
 
     def _install_actions(self) -> None:
         for name, handler, accel in (
@@ -255,6 +328,7 @@ class HalyardWindow(Adw.ApplicationWindow):
 
         if not available:
             view = "disconnected"
+            self._update_disconnected_page()
         elif self._account_logged_in is None:
             # Account state not known yet — neither signed in nor signed out.
             view = "loading"

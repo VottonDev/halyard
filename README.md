@@ -144,6 +144,18 @@ Closing the window does **not** stop syncing. The daemon is the app; the window
 is a view onto it. Quit it properly with `systemctl --user stop
 halyard-daemon`, or **Quit** in the app menu.
 
+If the service is not running, the window says so and offers to start it — and
+to set it up first if it has never been installed. **None of this needs
+administrator access**, and Halyard will never ask for a password to sync your
+files. It is a user service throughout: it runs as you, keeps its session in
+your keyring, writes only under your home directory, and registers on the
+session bus. Anything in Halyard that appeared to need `sudo` would be a bug,
+not a missing prompt.
+
+Preferences has two independent startup switches, because they genuinely are
+independent: **Start on Login** opens the window at login, while **Start Sync
+Service on Login** keeps your folders syncing whether or not you ever open it.
+
 Conflicts appear in their own view. Both copies already exist on disk by the
 time you see one, so resolving is just tidying up: **Keep local** promotes your
 copy back to the original name, **Keep remote** discards the preserved copy, and
@@ -282,7 +294,7 @@ gdbus call --session --dest io.github.votton.Halyard.Daemon \
 | Symptom | Likely cause |
 |---|---|
 | "No usable secret service found" at startup | `gnome-keyring` is not running, or the login keyring is locked. Unlock it and restart the daemon. |
-| The app sits on "connecting" | The daemon failed to start. Check `journalctl --user -u halyard-daemon` — a missing or unbuilt `../proton-sdk` is the usual reason. |
+| The app sits on "connecting" | The daemon is not running. The window offers a **Start Sync Service** button; if the service has never been set up it offers to do that first. Failing that, check `journalctl --user -u halyard-daemon` — a missing or unbuilt `../proton-sdk` is the usual reason. |
 | A pair shows an error and stalls | The message is verbatim from the daemon. Failed items are retried on the next cycle; sync does not stop for one bad file. |
 | Notifications never appear | GNOME only shows them once the `.desktop` file is installed in `XDG_DATA_DIRS`, which `install.sh` does. |
 | Nothing syncs after sign-in | Check the pair is enabled and not globally paused (`GetStatus` shows both). |
