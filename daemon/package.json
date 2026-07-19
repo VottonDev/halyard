@@ -1,0 +1,32 @@
+{
+    "name": "halyard-daemon",
+    "version": "0.1.0",
+    "description": "Sync engine for Halyard, an unofficial two-way sync client for Proton Drive",
+    "license": "MIT",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "node scripts/build.mjs",
+        "dev": "node scripts/build.mjs --watch",
+        "start": "node dist/halyard-daemon.cjs",
+        "check-types": "tsc --noEmit",
+        "doctor": "node scripts/build.mjs --entry=src/probe.ts --out=dist/doctor.cjs && node dist/doctor.cjs",
+        "test": "node --test --experimental-strip-types 'test/**/*.test.ts'"
+    },
+    "dependencies": {
+        "@protontech/crypto": "2.0.0",
+        "@protontech/drive-sdk": "file:../../proton-sdk/client/js",
+        "chokidar": "^4.0.3",
+        "dbus-next": "^0.10.2",
+        "ky": "^1.14.3",
+        "proton-drive-sdk-account": "file:../../proton-sdk/incubating/account/js"
+    },
+    "devDependencies": {
+        "@types/node": "^26.1.1",
+        "esbuild": "^0.25.0",
+        "typescript": "5.9.3"
+    },
+    "patchedDependencies": {
+        "@protontech/crypto@2.0.0": "patches/@protontech%2Fcrypto@2.0.0.patch"
+    }
+}

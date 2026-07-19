@@ -1,0 +1,30 @@
+[Unit]
+Description=Halyard — two-way sync for Proton Drive (unofficial)
+Documentation=https://github.com/votton/halyard
+# The daemon needs the session bus and the keyring to reach the account.
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=io.github.votton.Halyard.Daemon
+ExecStart=@NODE@ @DAEMON@
+Restart=on-failure
+RestartSec=10
+# Sync is background work; never let it compete with the desktop for CPU or IO.
+Nice=10
+IOSchedulingClass=idle
+
+# The daemon only ever needs the user's own files, and hardening a sync tool
+# that legitimately writes all over $HOME is mostly about limiting blast radius
+# elsewhere on the system.
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+NoNewPrivileges=yes
+ReadWritePaths=%h
+
+[Install]
+WantedBy=default.target

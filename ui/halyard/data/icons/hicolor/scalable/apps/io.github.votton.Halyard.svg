@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Halyard application icon.
+
+  Deliberately neutral branding: a halyard is the rope that hoists a sail.
+  No Proton logo, wordmark, or brand colour is used anywhere.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"
+     viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3ba39c"/>
+      <stop offset="1" stop-color="#1c5f6b"/>
+    </linearGradient>
+    <linearGradient id="sail" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dfeef0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="12" y="12" width="104" height="104" rx="24"
+        fill="url(#bg)"/>
+
+  <!-- mast -->
+  <rect x="60.5" y="24" width="6" height="80" rx="3" fill="#0d3b45"
+        opacity="0.85"/>
+
+  <!-- sail, hoisted -->
+  <path d="M56 96 L56 34 C 36 52 28 74 26 96 Z"
+        fill="url(#sail)"/>
+
+  <!-- the halyard itself: the rope running up to the block and back down -->
+  <path d="M71 100 L71 46 C 71 38 78 34 85 38 C 92 42 92 52 85 56 L 78 60"
+        fill="none" stroke="#f4d58d" stroke-width="6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- block at the masthead -->
+  <circle cx="63.5" cy="28" r="8" fill="#f4d58d"/>
+  <circle cx="63.5" cy="28" r="3" fill="#0d3b45"/>
+
+  <!-- boom -->
+  <rect x="24" y="98" width="80" height="6" rx="3" fill="#0d3b45"
+        opacity="0.85"/>
+</svg>

@@ -1,0 +1,260 @@
+"""Typed views over the JSON payloads defined in docs/dbus-api.md.
+
+Every parser is tolerant: unknown fields are ignored and missing fields fall
+back to sane defaults, so a daemon that grows new keys never breaks the UI.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+# Pair.status values from the contract.
+STATUS_SETUP = "setup"
+STATUS_SCANNING = "scanning"
+STATUS_SYNCING = "syncing"
+STATUS_IDLE = "idle"
+STATUS_PAUSED = "paused"
+STATUS_ERROR = "error"
+
+# Conflict.kind values from the contract.
+KIND_BOTH_MODIFIED = "bothModified"
+KIND_LOCAL_DELETED = "localDeletedRemoteModified"
+KIND_REMOTE_DELETED = "remoteDeletedLocalModified"
+
+# ResolveConflict resolutions.
+RESOLVE_KEEP_LOCAL = "keepLocal"
+RESOLVE_KEEP_REMOTE = "keepRemote"
+RESOLVE_DISMISS = "dismiss"
+
+
+def _as_dict(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    return value if isinstance(value, (int, float)) and not isinstance(
+        value, bool
+    ) else default
+
+
+@dataclass(frozen=True)
+class Account:
+    logged_in: bool = False
+    email: str | None = None
+    display_name: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Account":
+        data = _as_dict(data)
+        return cls(
+            logged_in=bool(data.get("loggedIn", False)),
+            email=data.get("email") or None,
+            display_name=data.get("displayName") or None,
+        )
+
+
+@dataclass(frozen=True)
+class PairStats:
+    pending: int = 0
+    conflicts: int = 0
+    files_up: int = 0
+    files_down: int = 0
+    bytes_up: int = 0
+    bytes_down: int = 0
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PairStats":
+        data = _as_dict(data)
+        return cls(
+            pending=_as_int(data.get("pending")),
+            conflicts=_as_int(data.get("conflicts")),
+            files_up=_as_int(data.get("filesUp")),
+            files_down=_as_int(data.get("filesDown")),
+            bytes_up=_as_int(data.get("bytesUp")),
+            bytes_down=_as_int(data.get("bytesDown")),
+        )
+
+
+@dataclass(frozen=True)
+class Pair:
+    id: str = ""
+    local_path: str = ""
+    remote_path: str = ""
+    remote_uid: str = ""
+    enabled: bool = True
+    status: str = STATUS_IDLE
+    last_sync_at: int | None = None
+    error: str | None = None
+    stats: PairStats = field(default_factory=PairStats)
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Pair":
+        data = _as_dict(data)
+        last = data.get("lastSyncAt")
+        return cls(
+            id=str(data.get("id") or ""),
+            local_path=str(data.get("localPath") or ""),
+            remote_path=str(data.get("remotePath") or ""),
+            remote_uid=str(data.get("remoteUid") or ""),
+            enabled=bool(data.get("enabled", True)),
+            status=str(data.get("status") or STATUS_IDLE),
+            last_sync_at=int(last) if isinstance(last, (int, float)) else None,
+            error=data.get("error") or None,
+            stats=PairStats.from_json(data.get("stats")),
+        )
+
+    @property
+    def is_busy(self) -> bool:
+        return self.status in (STATUS_SYNCING, STATUS_SCANNING, STATUS_SETUP)
+
+
+@dataclass(frozen=True)
+class Activity:
+    pair_id: str = ""
+    kind: str = "upload"
+    path: str = ""
+    bytes_done: int = 0
+    bytes_total: int = 0
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Activity | None":
+        if not isinstance(data, dict):
+            return None
+        return cls(
+            pair_id=str(data.get("pairId") or ""),
+            kind=str(data.get("kind") or "upload"),
+            path=str(data.get("path") or ""),
+            bytes_done=_as_int(data.get("bytesDone")),
+            bytes_total=_as_int(data.get("bytesTotal")),
+        )
+
+    @property
+    def fraction(self) -> float:
+        if self.bytes_total <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.bytes_done / self.bytes_total))
+
+    @property
+    def is_upload(self) -> bool:
+        return self.kind == "upload"
+
+
+@dataclass(frozen=True)
+class Status:
+    version: str = ""
+    logged_in: bool = False
+    email: str | None = None
+    paused: bool = False
+    online: bool = True
+    activity: Activity | None = None
+    pairs: tuple[Pair, ...] = ()
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Status":
+        data = _as_dict(data)
+        raw_pairs = data.get("pairs")
+        pairs = tuple(
+            Pair.from_json(p) for p in raw_pairs
+        ) if isinstance(raw_pairs, list) else ()
+        return cls(
+            version=str(data.get("version") or ""),
+            logged_in=bool(data.get("loggedIn", False)),
+            email=data.get("email") or None,
+            paused=bool(data.get("paused", False)),
+            online=bool(data.get("online", True)),
+            activity=Activity.from_json(data.get("activity")),
+            pairs=pairs,
+        )
+
+    @property
+    def total_conflicts(self) -> int:
+        return sum(p.stats.conflicts for p in self.pairs)
+
+    @property
+    def total_pending(self) -> int:
+        return sum(p.stats.pending for p in self.pairs)
+
+    def activity_for(self, pair_id: str) -> Activity | None:
+        if self.activity is not None and self.activity.pair_id == pair_id:
+            return self.activity
+        return None
+
+
+@dataclass(frozen=True)
+class RemoteFolder:
+    uid: str = ""
+    name: str = ""
+    path: str = ""
+    has_children: bool = False
+
+    @classmethod
+    def from_json(cls, data: Any) -> "RemoteFolder":
+        data = _as_dict(data)
+        return cls(
+            uid=str(data.get("uid") or ""),
+            name=str(data.get("name") or ""),
+            path=str(data.get("path") or ""),
+            has_children=bool(data.get("hasChildren", False)),
+        )
+
+
+@dataclass(frozen=True)
+class Conflict:
+    id: str = ""
+    pair_id: str = ""
+    path: str = ""
+    kind: str = KIND_BOTH_MODIFIED
+    detected_at: int | None = None
+    kept_copy_path: str | None = None
+    local_modified_at: int | None = None
+    remote_modified_at: int | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Conflict":
+        data = _as_dict(data)
+
+        def ts(key: str) -> int | None:
+            value = data.get(key)
+            return int(value) if isinstance(value, (int, float)) else None
+
+        return cls(
+            id=str(data.get("id") or ""),
+            pair_id=str(data.get("pairId") or ""),
+            path=str(data.get("path") or ""),
+            kind=str(data.get("kind") or KIND_BOTH_MODIFIED),
+            detected_at=ts("detectedAt"),
+            kept_copy_path=data.get("keptCopyPath") or None,
+            local_modified_at=ts("localModifiedAt"),
+            remote_modified_at=ts("remoteModifiedAt"),
+        )
+
+
+@dataclass(frozen=True)
+class Notification:
+    kind: str = "info"
+    title: str = ""
+    body: str = ""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Notification":
+        data = _as_dict(data)
+        return cls(
+            kind=str(data.get("kind") or "info"),
+            title=str(data.get("title") or ""),
+            body=str(data.get("body") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class LoginState:
+    state: str = "pending"
+    error: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "LoginState":
+        data = _as_dict(data)
+        return cls(
+            state=str(data.get("state") or "pending"),
+            error=data.get("error") or None,
+        )

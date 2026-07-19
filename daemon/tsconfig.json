@@ -1,0 +1,22 @@
+{
+    "compilerOptions": {
+        "target": "es2022",
+        "lib": ["es2023", "dom", "dom.asynciterable"],
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "strict": true,
+        "noEmit": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "resolveJsonModule": true,
+        "allowImportingTsExtensions": true,
+        // The Proton SDK packages are linked in via `file:` deps, so they are
+        // symlinks. Without this, both tsc and esbuild resolve their imports
+        // from the SDK's real location in ../proton-sdk, where our dependency
+        // tree does not exist, and every one of their imports fails.
+        "preserveSymlinks": true,
+        "types": ["node", "bun"]
+    },
+    "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs"]
+}

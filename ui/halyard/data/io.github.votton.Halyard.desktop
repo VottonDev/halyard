@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Halyard
+GenericName=Proton Drive Sync
+Comment=Two-way folder sync for Proton Drive (unofficial)
+Exec=halyard
+Icon=io.github.votton.Halyard
+Terminal=false
+Categories=Network;FileTransfer;Utility;GTK;
+Keywords=sync;proton;drive;cloud;backup;files;
+StartupNotify=true
+StartupWMClass=io.github.votton.Halyard
+X-GNOME-UsesNotifications=true

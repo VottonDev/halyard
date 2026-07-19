@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Installs Halyard for the current user. No root required — everything lands
+# under ~/.local and ~/.config.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DAEMON_DIR="$REPO_ROOT/daemon"
+UI_DIR="$REPO_ROOT/ui"
+
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+DBUS_SERVICE_DIR="$DATA_HOME/dbus-1/services"
+SYSTEMD_USER_DIR="$CONFIG_HOME/systemd/user"
+# Installed code goes under lib, deliberately NOT $DATA_HOME/halyard — that is
+# where the sync database lives, and mixing program files with user data makes
+# "delete the app" and "delete my sync state" the same command.
+LIBEXEC_DIR="$HOME/.local/lib/halyard"
+
+say() { printf '\033[1m==>\033[0m %s\n' "$1"; }
+die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
+
+command -v node >/dev/null || die "node is required but not on PATH"
+NODE_BIN="$(command -v node)"
+
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
+if [ "$NODE_MAJOR" -lt 22 ]; then
+    die "Node 22 or newer is required (found $(node -v)); the daemon uses the built-in node:sqlite module"
+fi
+
+# ---------------------------------------------------------------- build
+say "Building the daemon"
+if command -v bun >/dev/null; then
+    (cd "$DAEMON_DIR" && bun install --frozen-lockfile 2>/dev/null || bun install)
+else
+    die "bun is required to install dependencies (the Proton crypto package needs a patch that only bun applies)"
+fi
+(cd "$DAEMON_DIR" && node scripts/build.mjs)
+
+[ -f "$DAEMON_DIR/dist/halyard-daemon.cjs" ] || die "build did not produce dist/halyard-daemon.cjs"
+
+# ------------------------------------------------------------- install
+say "Installing the daemon to $LIBEXEC_DIR"
+mkdir -p "$LIBEXEC_DIR"
+install -m 0644 "$DAEMON_DIR/dist/halyard-daemon.cjs" "$LIBEXEC_DIR/halyard-daemon.cjs"
+DAEMON_PATH="$LIBEXEC_DIR/halyard-daemon.cjs"
+
+say "Registering the D-Bus service"
+mkdir -p "$DBUS_SERVICE_DIR"
+sed -e "s|@NODE@|$NODE_BIN|g" -e "s|@DAEMON@|$DAEMON_PATH|g" \
+    "$REPO_ROOT/packaging/io.github.votton.Halyard.Daemon.service.in" \
+    > "$DBUS_SERVICE_DIR/io.github.votton.Halyard.Daemon.service"
+
+say "Installing the systemd user unit"
+mkdir -p "$SYSTEMD_USER_DIR"
+sed -e "s|@NODE@|$NODE_BIN|g" -e "s|@DAEMON@|$DAEMON_PATH|g" \
+    "$REPO_ROOT/packaging/halyard-daemon.service.in" \
+    > "$SYSTEMD_USER_DIR/halyard-daemon.service"
+
+systemctl --user daemon-reload
+
+# The session bus caches its list of activatable services, so a freshly
+# installed .service file is not picked up until it is told to re-read them.
+# Without this, the first launch fails with "The name is not activatable"
+# until the user logs out and back in.
+gdbus call --session --dest org.freedesktop.DBus \
+    --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 || true
+
+# ------------------------------------------------------------------ ui
+if [ -d "$UI_DIR" ]; then
+    say "Installing the user interface"
+    mkdir -p "$LIBEXEC_DIR/ui"
+    cp -r "$UI_DIR/halyard" "$LIBEXEC_DIR/ui/"
+
+    mkdir -p "$HOME/.local/bin"
+    cat > "$HOME/.local/bin/halyard" <<EOF
+#!/usr/bin/env bash
+exec python3 -m halyard "\$@"
+EOF
+    chmod +x "$HOME/.local/bin/halyard"
+    # Make the package importable without touching the system Python.
+    sed -i "2i export PYTHONPATH=\"$LIBEXEC_DIR/ui:\${PYTHONPATH:-}\"" "$HOME/.local/bin/halyard"
+
+    DESKTOP_SRC="$UI_DIR/halyard/data/io.github.votton.Halyard.desktop"
+    if [ -f "$DESKTOP_SRC" ]; then
+        mkdir -p "$DATA_HOME/applications"
+        sed -e "s|@BIN@|$HOME/.local/bin/halyard|g" "$DESKTOP_SRC" \
+            > "$DATA_HOME/applications/io.github.votton.Halyard.desktop"
+        update-desktop-database "$DATA_HOME/applications" 2>/dev/null || true
+    fi
+fi
+
+cat <<EOF
+
+$(say "Done")
+
+Start syncing in the background now:
+    systemctl --user enable --now halyard-daemon.service
+
+Open the app:
+    halyard
+
+The daemon is D-Bus activated, so the app will start it on demand even without
+the systemd unit enabled — but enabling it is what makes sync run at login,
+before you open the window.
+
+Logs:
+    journalctl --user -u halyard-daemon -f
+    ~/.local/state/halyard/halyard.log
+EOF

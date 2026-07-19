@@ -1,0 +1,515 @@
+import { NodeWithSameNameExistsValidationError, type ProtonDriveClient } from '@protontech/drive-sdk';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { Readable, Writable } from 'node:stream';
+
+import { PARTIAL_DOWNLOAD_SUFFIX } from '../config.js';
+import { getLogger } from '../log.js';
+import type { SyncDatabase } from './db.js';
+import { hashFile } from './localScan.js';
+import type { Action, BaseEntry, LocalItem, Pair, RemoteItem } from './types.js';
+
+const logger = getLogger('execute');
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.mp3': 'audio/mpeg',
+    '.mp4': 'video/mp4',
+    '.zip': 'application/zip',
+    '.json': 'application/json',
+    '.html': 'text/html',
+    '.csv': 'text/csv',
+    '.odt': 'application/vnd.oasis.opendocument.text',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+function mediaTypeFor(filePath: string): string {
+    return MIME_BY_EXTENSION[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
+}
+
+/**
+ * Renames a path, falling back to copy-then-delete across device boundaries.
+ *
+ * `rename(2)` fails with EXDEV between filesystems — and on btrfs, between
+ * *subvolumes* of the same filesystem, which is easy to hit without realising
+ * since subvolumes look like ordinary directories. A synced folder containing
+ * a subvolume (or a `@home`-style layout) would otherwise fail every move.
+ *
+ * The fallback copy requests COPYFILE_FICLONE, so on btrfs it becomes a
+ * copy-on-write reflink — near-instant and costing no extra space — rather
+ * than duplicating the data. The flag degrades to an ordinary copy on
+ * filesystems that cannot clone, so it is always safe to ask for.
+ */
+async function movePath(from: string, to: string): Promise<void> {
+    try {
+        await fsp.rename(from, to);
+        return;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EXDEV') {
+            throw error;
+        }
+    }
+
+    logger.debug(`Cross-device move, cloning instead: ${from} -> ${to}`);
+    await fsp.cp(from, to, {
+        recursive: true,
+        preserveTimestamps: true,
+        force: true,
+        mode: fs.constants.COPYFILE_FICLONE,
+    });
+    await fsp.rm(from, { recursive: true, force: true });
+}
+
+export type Progress = {
+    kind: 'upload' | 'download';
+    path: string;
+    bytesDone: number;
+    bytesTotal: number;
+};
+
+export type ExecuteContext = {
+    pair: Pair;
+    db: SyncDatabase;
+    client: ProtonDriveClient;
+    local: Map<string, LocalItem>;
+    remote: Map<string, RemoteItem>;
+    signal?: AbortSignal;
+    onProgress?: (progress: Progress | null) => void;
+};
+
+export type ExecuteResult = {
+    completed: number;
+    failed: Array<{ action: Action; error: string }>;
+    bytesUp: number;
+    bytesDown: number;
+    filesUp: number;
+    filesDown: number;
+};
+
+/**
+ * Performs a reconciliation plan.
+ *
+ * Failures are collected per action rather than aborting the batch: one
+ * unreadable file should not stop the other thousand from syncing. Anything
+ * that fails simply stays un-based, so the next cycle retries it.
+ */
+export class Executor {
+    /** Maps a relative path to its remote node uid, updated as we create nodes. */
+    private pathToUid = new Map<string, string>();
+
+    constructor(private readonly context: ExecuteContext) {
+        for (const [itemPath, item] of context.remote) {
+            this.pathToUid.set(itemPath, item.uid);
+        }
+    }
+
+    private absolute(relative: string): string {
+        return path.join(this.context.pair.localPath, relative);
+    }
+
+    private parentUidFor(relative: string): string {
+        const slash = relative.lastIndexOf('/');
+        if (slash === -1) {
+            return this.context.pair.remoteUid;
+        }
+        const parent = relative.slice(0, slash);
+        const uid = this.pathToUid.get(parent);
+        if (!uid) {
+            throw new Error(`Remote folder for "${parent}" does not exist yet`);
+        }
+        return uid;
+    }
+
+    async run(actions: Action[]): Promise<ExecuteResult> {
+        const result: ExecuteResult = {
+            completed: 0,
+            failed: [],
+            bytesUp: 0,
+            bytesDown: 0,
+            filesUp: 0,
+            filesDown: 0,
+        };
+
+        for (const action of actions) {
+            if (this.context.signal?.aborted) {
+                break;
+            }
+            try {
+                await this.perform(action, result);
+                result.completed += 1;
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn(`Action ${action.kind} failed: ${message}`);
+                result.failed.push({ action, error: message });
+            }
+        }
+
+        this.context.onProgress?.(null);
+        return result;
+    }
+
+    private async perform(action: Action, result: ExecuteResult): Promise<void> {
+        const { db, pair } = this.context;
+
+        switch (action.kind) {
+            case 'createLocalFolder': {
+                await fsp.mkdir(this.absolute(action.path), { recursive: true });
+                const remote = this.context.remote.get(action.path);
+                if (remote) {
+                    const stats = await fsp.stat(this.absolute(action.path));
+                    db.setBaseEntry(pair.id, {
+                        path: action.path,
+                        type: 'folder',
+                        localMtime: Math.floor(stats.mtimeMs),
+                        localSize: 0,
+                        localInode: Number(stats.ino),
+                        localDevice: Number(stats.dev),
+                        localHash: null,
+                        remoteUid: remote.uid,
+                        remoteRevisionUid: null,
+                        remoteHash: null,
+                        remoteSize: 0,
+                        remoteMtime: remote.mtime,
+                    });
+                }
+                return;
+            }
+
+            case 'createRemoteFolder': {
+                const parentUid = this.parentUidFor(action.path);
+                const name = path.basename(action.path);
+                const local = this.context.local.get(action.path);
+                const node = await this.context.client.createFolder(
+                    parentUid,
+                    name,
+                    local ? new Date(local.mtime) : undefined,
+                );
+                this.pathToUid.set(action.path, node.uid);
+                db.setBaseEntry(pair.id, {
+                    path: action.path,
+                    type: 'folder',
+                    localMtime: local?.mtime ?? 0,
+                    localSize: 0,
+                    localInode: local?.inode ?? null,
+                    localDevice: local?.device ?? null,
+                    localHash: null,
+                    remoteUid: node.uid,
+                    remoteRevisionUid: null,
+                    remoteHash: null,
+                    remoteSize: 0,
+                    remoteMtime: local?.mtime ?? 0,
+                });
+                return;
+            }
+
+            case 'download':
+                await this.download(action.path, action.remoteUid, result);
+                return;
+
+            case 'upload':
+                await this.upload(action.path, action.existingRemoteUid, result);
+                return;
+
+            case 'deleteLocal':
+                await this.deleteLocal(action.path, action.type);
+                db.deleteBaseEntry(pair.id, action.path);
+                return;
+
+            case 'trashRemote': {
+                for await (const outcome of this.context.client.trashNodes([action.remoteUid])) {
+                    if (!outcome.ok) {
+                        throw outcome.error;
+                    }
+                }
+                this.pathToUid.delete(action.path);
+                return;
+            }
+
+            case 'moveLocal': {
+                const from = this.absolute(action.from);
+                const to = this.absolute(action.to);
+                await fsp.mkdir(path.dirname(to), { recursive: true });
+                await movePath(from, to);
+
+                const entry = db.getBase(pair.id).get(action.from);
+                if (entry) {
+                    db.deleteBaseEntry(pair.id, action.from);
+                    try {
+                        const stats = await fsp.stat(to);
+                        db.setBaseEntry(pair.id, {
+                            ...entry,
+                            path: action.to,
+                            localMtime: Math.floor(stats.mtimeMs),
+                            localInode: Number(stats.ino),
+                        localDevice: Number(stats.dev),
+                        });
+                    } catch {
+                        // Destination vanished; the next cycle will sort it out.
+                    }
+                }
+                return;
+            }
+
+            case 'moveRemote': {
+                await this.moveRemote(action.from, action.to, action.remoteUid);
+                return;
+            }
+
+            case 'refreshBase':
+                await this.refreshBase(action.path);
+                return;
+
+            case 'dropBase':
+                db.deleteBaseEntry(pair.id, action.path);
+                return;
+        }
+    }
+
+    private async moveRemote(from: string, to: string, remoteUid: string): Promise<void> {
+        const { client, db, pair } = this.context;
+        const fromParent = from.includes('/') ? from.slice(0, from.lastIndexOf('/')) : '';
+        const toParent = to.includes('/') ? to.slice(0, to.lastIndexOf('/')) : '';
+        const fromName = path.basename(from);
+        const toName = path.basename(to);
+
+        if (fromParent !== toParent) {
+            const newParentUid = this.parentUidFor(to);
+            for await (const outcome of client.moveNodes([remoteUid], newParentUid)) {
+                if (!outcome.ok) {
+                    throw outcome.error;
+                }
+            }
+        }
+        if (fromName !== toName) {
+            await client.renameNode(remoteUid, toName);
+        }
+
+        this.pathToUid.delete(from);
+        this.pathToUid.set(to, remoteUid);
+
+        const entry = db.getBase(pair.id).get(from);
+        if (entry) {
+            db.deleteBaseEntry(pair.id, from);
+            db.setBaseEntry(pair.id, { ...entry, path: to });
+        }
+    }
+
+    /**
+     * Downloads to a temporary file and renames into place.
+     *
+     * A half-written file that carries the final name would be indistinguishable
+     * from a real one on the next scan, and would then be uploaded back over the
+     * good remote copy. The rename is atomic within a filesystem, so the file
+     * either exists complete or not at all.
+     */
+    private async download(relative: string, remoteUid: string, result: ExecuteResult): Promise<void> {
+        const { client, db, pair, remote } = this.context;
+        const target = this.absolute(relative);
+        const temporary = `${target}${PARTIAL_DOWNLOAD_SUFFIX}`;
+
+        await fsp.mkdir(path.dirname(target), { recursive: true });
+
+        const downloader = await client.getFileDownloader(remoteUid, this.context.signal);
+        const total = downloader.getClaimedSizeInBytes() ?? remote.get(relative)?.size ?? 0;
+
+        const fileStream = fs.createWriteStream(temporary);
+        const controller = downloader.downloadToStream(Writable.toWeb(fileStream) as WritableStream, (done) => {
+            this.context.onProgress?.({ kind: 'download', path: relative, bytesDone: done, bytesTotal: total });
+        });
+
+        try {
+            await controller.completion();
+        } catch (error) {
+            // The SDK can reject after writing every byte when a signature
+            // fails to verify. Treat that as a real failure: we cannot vouch
+            // for the contents, so the partial file is discarded.
+            await fsp.rm(temporary, { force: true });
+            throw error;
+        }
+
+        if (controller.isDownloadCompleteWithSignatureIssues()) {
+            logger.warn(`Downloaded ${relative} but its signature could not be verified`);
+        }
+
+        await fsp.rename(temporary, target);
+
+        const remoteItem = remote.get(relative);
+        if (remoteItem?.mtime) {
+            // Adopt the remote timestamp so the next scan does not read this
+            // freshly written file as a brand-new local edit.
+            const when = new Date(remoteItem.mtime);
+            await fsp.utimes(target, when, when).catch(() => undefined);
+        }
+
+        const stats = await fsp.stat(target);
+        const hash = remoteItem?.hash ?? (await hashFile(target));
+
+        db.setBaseEntry(pair.id, {
+            path: relative,
+            type: 'file',
+            localMtime: Math.floor(stats.mtimeMs),
+            localSize: stats.size,
+            localInode: Number(stats.ino),
+                        localDevice: Number(stats.dev),
+            localHash: hash,
+            remoteUid,
+            remoteRevisionUid: remoteItem?.revisionUid ?? null,
+            remoteHash: remoteItem?.hash ?? hash,
+            remoteSize: remoteItem?.size ?? stats.size,
+            remoteMtime: remoteItem?.mtime ?? Math.floor(stats.mtimeMs),
+        });
+
+        result.filesDown += 1;
+        result.bytesDown += stats.size;
+    }
+
+    private async upload(relative: string, existingRemoteUid: string | null, result: ExecuteResult): Promise<void> {
+        const { client, db, pair } = this.context;
+        const source = this.absolute(relative);
+
+        let stats: fs.Stats;
+        try {
+            stats = await fsp.stat(source);
+        } catch {
+            // Deleted while we were working; nothing to upload.
+            return;
+        }
+
+        const hash = await hashFile(source);
+        const metadata = {
+            mediaType: mediaTypeFor(relative),
+            expectedSize: stats.size,
+            ...(hash ? { expectedSha1: hash } : {}),
+            modificationTime: new Date(Math.floor(stats.mtimeMs)),
+        };
+
+        const openStream = (): ReadableStream =>
+            Readable.toWeb(fs.createReadStream(source)) as unknown as ReadableStream;
+
+        const onProgress = (done: number) => {
+            this.context.onProgress?.({ kind: 'upload', path: relative, bytesDone: done, bytesTotal: stats.size });
+        };
+
+        let uploaded: { nodeUid: string; nodeRevisionUid: string };
+
+        if (existingRemoteUid) {
+            const uploader = await client.getFileRevisionUploader(existingRemoteUid, metadata, this.context.signal);
+            const controller = await uploader.uploadFromStream(openStream(), [], onProgress);
+            uploaded = await controller.completion();
+        } else {
+            const parentUid = this.parentUidFor(relative);
+            const name = path.basename(relative);
+            try {
+                const uploader = await client.getFileUploader(parentUid, name, metadata, this.context.signal);
+                const controller = await uploader.uploadFromStream(openStream(), [], onProgress);
+                uploaded = await controller.completion();
+            } catch (error) {
+                // Our snapshot said this name was free but the server disagrees
+                // — someone else created it. Upload as a new revision of theirs
+                // instead of failing or silently duplicating.
+                if (error instanceof NodeWithSameNameExistsValidationError && error.existingNodeUid) {
+                    logger.info(`${relative} already exists remotely; uploading as a new revision`);
+                    const uploader = await client.getFileRevisionUploader(
+                        error.existingNodeUid,
+                        metadata,
+                        this.context.signal,
+                    );
+                    const controller = await uploader.uploadFromStream(openStream(), [], onProgress);
+                    uploaded = await controller.completion();
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        this.pathToUid.set(relative, uploaded.nodeUid);
+
+        db.setBaseEntry(pair.id, {
+            path: relative,
+            type: 'file',
+            localMtime: Math.floor(stats.mtimeMs),
+            localSize: stats.size,
+            localInode: Number(stats.ino),
+                        localDevice: Number(stats.dev),
+            localHash: hash,
+            remoteUid: uploaded.nodeUid,
+            remoteRevisionUid: uploaded.nodeRevisionUid,
+            remoteHash: hash,
+            remoteSize: stats.size,
+            remoteMtime: Math.floor(stats.mtimeMs),
+        });
+
+        result.filesUp += 1;
+        result.bytesUp += stats.size;
+    }
+
+    /**
+     * Deletes a path that has been removed on the Drive side.
+     *
+     * This is genuinely destructive locally, and that is deliberate: Proton
+     * Drive keeps deleted items in its own Trash, so the file remains
+     * recoverable there. Keeping a second local quarantine copy would just
+     * accumulate duplicates of things the user already has a way to restore.
+     *
+     * The safety argument holds only because we get here exclusively when the
+     * local copy is *unchanged* from the base — its bytes are therefore
+     * exactly what Drive is holding. A file with unsynced local edits takes
+     * the "edit beats deletion" path in the reconciler and is re-uploaded
+     * instead, so local-only work is never destroyed.
+     */
+    private async deleteLocal(relative: string, type: 'file' | 'folder'): Promise<void> {
+        const target = this.absolute(relative);
+        try {
+            if (type === 'folder') {
+                // Recursive, but the reconciler orders children before parents
+                // and refuses to delete a folder holding unsynced local work,
+                // so by now this should be empty of anything we care about.
+                await fsp.rm(target, { recursive: true, force: true });
+            } else {
+                await fsp.rm(target, { force: true });
+            }
+            logger.info(`Deleted ${relative} (removed on Drive; recoverable from Proton's Trash)`);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                return;
+            }
+            throw error;
+        }
+    }
+
+    /** Records that the two sides already agree, without transferring anything. */
+    private async refreshBase(relative: string): Promise<void> {
+        const { db, pair, remote } = this.context;
+        const local = this.context.local.get(relative);
+        const remoteItem = remote.get(relative);
+        if (!local || !remoteItem) {
+            return;
+        }
+
+        const existing = db.getBase(pair.id).get(relative);
+        const entry: BaseEntry = {
+            path: relative,
+            type: local.type,
+            localMtime: local.mtime,
+            localSize: local.size,
+            localInode: local.inode,
+            localDevice: local.device,
+            localHash: local.hash ?? existing?.localHash ?? null,
+            remoteUid: remoteItem.uid,
+            remoteRevisionUid: remoteItem.revisionUid,
+            remoteHash: remoteItem.hash,
+            remoteSize: remoteItem.size,
+            remoteMtime: remoteItem.mtime,
+        };
+        db.setBaseEntry(pair.id, entry);
+    }
+}

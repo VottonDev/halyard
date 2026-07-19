@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="io.github.votton.Halyard" path="/io/github/votton/Halyard/">
+    <key name="window-width" type="i">
+      <default>900</default>
+      <summary>Window width</summary>
+      <description>The width of the main window in pixels.</description>
+    </key>
+    <key name="window-height" type="i">
+      <default>640</default>
+      <summary>Window height</summary>
+      <description>The height of the main window in pixels.</description>
+    </key>
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Window maximized</summary>
+      <description>Whether the main window is maximized.</description>
+    </key>
+    <key name="close-notice-shown" type="b">
+      <default>false</default>
+      <summary>Background notice shown</summary>
+      <description>
+        Whether the user has been told that closing the window leaves the
+        sync service running. Shown only once.
+      </description>
+    </key>
+    <key name="autostart" type="b">
+      <default>false</default>
+      <summary>Start on login</summary>
+      <description>
+        Whether Halyard has been granted autostart through the XDG Background
+        portal. This mirrors the portal's answer; the portal remains the
+        source of truth.
+      </description>
+    </key>
+  </schema>
+</schemalist>

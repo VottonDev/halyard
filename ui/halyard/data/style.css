@@ -1,0 +1,38 @@
+/* Halyard styling.
+ *
+ * Everything here is expressed with libadwaita's named colours, so light and
+ * dark themes, and the user's accent colour, are all honoured automatically.
+ * No hardcoded hex values.
+ */
+
+/* The mandatory third-party disclosure on the sign-in screen. Given a real
+ * border and padding so it reads as a notice rather than fine print. */
+.halyard-disclosure {
+  padding: 14px 16px;
+  border: 1px solid alpha(@warning_color, 0.45);
+  background-color: alpha(@warning_color, 0.10);
+}
+
+.halyard-disclosure-icon {
+  color: @warning_color;
+  margin-top: 2px;
+}
+
+/* Keep long transfer progress bars from looking heavy in a list row. */
+row progressbar > trough,
+row progressbar > trough > progress {
+  min-height: 6px;
+}
+
+/* The status icon in a folder pair row. */
+row image.success {
+  color: @success_color;
+}
+
+row image.error {
+  color: @error_color;
+}
+
+row image.warning {
+  color: @warning_color;
+}
