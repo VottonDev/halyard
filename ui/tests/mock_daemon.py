@@ -483,6 +483,42 @@ class MockState:
     def find_pair(self, pair_id: str) -> dict | None:
         return next((p for p in self.pairs if p["id"] == pair_id), None)
 
+    # -- remote folder creation -----------------------------------------
+
+    def create_folder(self, parent_uid: str, name: str) -> dict:
+        """Add a folder under ``parent_uid`` and return it.
+
+        Shared by CreateRemoteFolder and AddPair's create-remote path so both
+        behave identically. An empty ``parent_uid`` creates it at the root.
+        """
+        name = name.strip()
+        if not name:
+            raise ValueError("Folder name cannot be empty.")
+        if "/" in name:
+            raise ValueError("Folder names cannot contain “/”.")
+        siblings = self.remote_tree.setdefault(parent_uid, [])
+        if any(f["name"].lower() == name.lower() for f in siblings):
+            raise ValueError(f"A folder called “{name}” already exists here.")
+        parent_path = ""
+        for children in self.remote_tree.values():
+            for folder in children:
+                if folder["uid"] == parent_uid:
+                    parent_path = folder["path"]
+                    break
+        folder = {
+            "uid": f"vol_1~node_{random.randint(0x100000, 0xffffff):06x}",
+            "name": name,
+            "path": f"{parent_path}/{name}",
+            "hasChildren": False,
+        }
+        siblings.append(folder)
+        self.remote_tree[folder["uid"]] = []
+        for children in self.remote_tree.values():
+            for existing in children:
+                if existing["uid"] == parent_uid:
+                    existing["hasChildren"] = True
+        return folder
+
     # -- the animated transfer ------------------------------------------
 
     def _start_next_transfer(self) -> None:
@@ -747,11 +783,27 @@ class MockDaemon:
         if any(p["localPath"] == local for p in self.state.pairs):
             raise ValueError(f"{local} is already synced.")
         excludes = validate_excludes(data.get("excludes") or [])
+
+        remote_uid = data.get("remoteUid") or ""
+        remote_path = data.get("remotePath") or "/"
+        if data.get("createRemote") and not remote_uid:
+            # Make a folder at the top of My Files and pair with it, the way
+            # the real daemon does when there is no remote counterpart yet.
+            name = (data.get("remoteName")
+                    or os.path.basename(local.rstrip("/")))
+            folder = self.state.create_folder("", name)
+            remote_uid = folder["uid"]
+            remote_path = folder["path"]
+        elif not remote_uid:
+            raise ValueError(
+                "remoteUid is required unless createRemote is set."
+            )
+
         pair = {
             "id": f"p_{random.randint(0x1000, 0xffff):04x}",
             "localPath": local,
-            "remotePath": data.get("remotePath") or "/",
-            "remoteUid": data.get("remoteUid") or "",
+            "remotePath": remote_path,
+            "remoteUid": remote_uid,
             "enabled": True,
             "excludes": excludes,
             "status": "setup",
@@ -876,32 +928,7 @@ class MockDaemon:
 
     def _do_CreateRemoteFolder(self, invocation, parent_uid: str,
                                name: str) -> None:
-        name = name.strip()
-        if not name:
-            raise ValueError("Folder name cannot be empty.")
-        if "/" in name:
-            raise ValueError("Folder names cannot contain “/”.")
-        siblings = self.state.remote_tree.setdefault(parent_uid, [])
-        if any(f["name"].lower() == name.lower() for f in siblings):
-            raise ValueError(f"A folder called “{name}” already exists here.")
-        parent_path = ""
-        for children in self.state.remote_tree.values():
-            for folder in children:
-                if folder["uid"] == parent_uid:
-                    parent_path = folder["path"]
-                    break
-        folder = {
-            "uid": f"vol_1~node_{random.randint(0x100000, 0xffffff):06x}",
-            "name": name,
-            "path": f"{parent_path}/{name}",
-            "hasChildren": False,
-        }
-        siblings.append(folder)
-        self.state.remote_tree[folder["uid"]] = []
-        for children in self.state.remote_tree.values():
-            for existing in children:
-                if existing["uid"] == parent_uid:
-                    existing["hasChildren"] = True
+        folder = self.state.create_folder(parent_uid, name)
         self._reply_json(invocation, folder, delay_ms=550)
 
     # -- status and conflicts --------------------------------------------

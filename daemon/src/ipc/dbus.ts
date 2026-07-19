@@ -109,8 +109,14 @@ export class HalyardInterface extends Interface {
             const input = JSON.parse(newPair) as Record<string, unknown>;
             const localPath = typeof input.localPath === 'string' ? input.localPath : '';
             const remoteUid = typeof input.remoteUid === 'string' ? input.remoteUid : '';
-            if (!localPath || !remoteUid) {
-                throw new Error('localPath and remoteUid are required');
+            const createRemote = input.createRemote === true;
+            if (!localPath) {
+                throw new Error('localPath is required');
+            }
+            // Either point at an existing folder, or ask for a new one at the
+            // My Files root — never neither.
+            if (!remoteUid && !createRemote) {
+                throw new Error('remoteUid is required unless createRemote is set');
             }
 
             const pair = await this.manager.addPair({
@@ -118,6 +124,8 @@ export class HalyardInterface extends Interface {
                 remoteUid,
                 remotePath: typeof input.remotePath === 'string' ? input.remotePath : '',
                 excludes: toStringArray(input.excludes),
+                createRemote,
+                remoteName: typeof input.remoteName === 'string' ? input.remoteName : '',
             });
             const status = this.manager.getStatus().pairs.find((entry) => entry.id === pair.id);
             return JSON.stringify(status ?? pair);

@@ -66,7 +66,14 @@ sees the password, and 2FA/SSO are handled by Proton.
 | `SyncNow` | `(s id) → ()` | empty `id` means every pair |
 | `SetPaused` | `(b paused) → ()` | global pause |
 
-`AddPair` takes `{ localPath, remoteUid, remotePath, excludes? }`.
+`AddPair` takes `{ localPath, remoteUid, remotePath, excludes? }`. When the
+local folder has no counterpart on Drive yet, pass `createRemote: true` (with an
+optional `remoteName`) in place of a `remoteUid`: the daemon creates a folder at
+the top level of My Files — named `remoteName`, or the local folder's own name
+when that is omitted — and pairs against it, filling in `remoteUid` and
+`remotePath` from the folder it made. Exactly one of `remoteUid` or
+`createRemote` must be supplied; `remotePath` is ignored when `createRemote` is
+set.
 
 `UpdatePair` accepts any subset of `{ enabled, localPath, remoteUid, remotePath, excludes }`;
 every other key is ignored, and a patch containing no supported key is an error
