@@ -8,7 +8,16 @@ import { PARTIAL_DOWNLOAD_SUFFIX } from '../config.js';
 import { getLogger } from '../log.js';
 import type { SyncDatabase } from './db.js';
 import { hashFile } from './localScan.js';
-import type { Action, BaseEntry, LocalItem, Pair, RemoteItem } from './types.js';
+import type {
+    Action,
+    BaseEntry,
+    LocalItem,
+    NodeKind,
+    Pair,
+    RemoteItem,
+    SyncEvent,
+    SyncEventAction,
+} from './types.js';
 
 const logger = getLogger('execute');
 
@@ -138,26 +147,115 @@ export class Executor {
             filesUp: 0,
             filesDown: 0,
         };
+        const events: Array<Omit<SyncEvent, 'id' | 'pairId'>> = [];
 
         for (const action of actions) {
             if (this.context.signal?.aborted) {
                 break;
             }
+            // Described before the action runs: afterwards the local and
+            // remote snapshots no longer say what the file looked like when
+            // we decided, and "was it already here?" is the whole difference
+            // between "downloaded" and "overwritten".
+            const described = this.describe(action);
             try {
-                await this.perform(action, result);
+                const performed = await this.perform(action, result);
                 result.completed += 1;
+                if (described && performed) {
+                    events.push({ ...described, at: Date.now(), outcome: 'ok', error: null });
+                }
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 logger.warn(`Action ${action.kind} failed: ${message}`);
                 result.failed.push({ action, error: message });
+                if (described) {
+                    events.push({ ...described, at: Date.now(), outcome: 'failed', error: message });
+                }
             }
         }
+
+        // One batch per cycle: a large sync can produce thousands of these and
+        // a commit apiece would cost more than the sync.
+        this.context.db.recordEvents(this.context.pair.id, events);
 
         this.context.onProgress?.(null);
         return result;
     }
 
-    private async perform(action: Action, result: ExecuteResult): Promise<void> {
+    /**
+     * Restates an action in the vocabulary the activity log uses, or returns
+     * null for the base-keeping actions that have no user-visible effect.
+     *
+     * The log is how someone finds out why a file vanished, so this leans on
+     * the distinctions that answer that question — whether a download replaced
+     * something, which side a deletion came from — rather than mirroring the
+     * executor's own action names.
+     */
+    private describe(
+        action: Action,
+    ): Pick<SyncEvent, 'action' | 'path' | 'toPath' | 'type' | 'size'> | null {
+        const describeAs = (
+            kind: SyncEventAction,
+            path: string,
+            extra: { toPath?: string | null; type?: NodeKind; size?: number | null } = {},
+        ) => ({
+            action: kind,
+            path,
+            toPath: extra.toPath ?? null,
+            type: extra.type ?? 'file',
+            size: extra.size ?? null,
+        });
+
+        switch (action.kind) {
+            case 'createLocalFolder':
+                return describeAs('createdLocalFolder', action.path, { type: 'folder' });
+
+            case 'createRemoteFolder':
+                return describeAs('createdRemoteFolder', action.path, { type: 'folder' });
+
+            case 'download':
+                return describeAs(
+                    // Already present locally means this overwrote something.
+                    this.context.local.has(action.path) ? 'updatedLocal' : 'downloaded',
+                    action.path,
+                    { size: this.context.remote.get(action.path)?.size ?? null },
+                );
+
+            case 'upload':
+                return describeAs(
+                    action.existingRemoteUid ? 'updatedRemote' : 'uploaded',
+                    action.path,
+                    { size: this.context.local.get(action.path)?.size ?? null },
+                );
+
+            case 'deleteLocal':
+                return describeAs('deletedLocal', action.path, { type: action.type });
+
+            case 'trashRemote':
+                return describeAs('trashedRemote', action.path, {
+                    type: this.context.remote.get(action.path)?.type ?? 'file',
+                });
+
+            case 'moveLocal':
+                return describeAs('movedLocal', action.from, {
+                    toPath: action.to,
+                    type: this.context.local.get(action.from)?.type ?? 'file',
+                });
+
+            case 'moveRemote':
+                return describeAs('movedRemote', action.from, {
+                    toPath: action.to,
+                    type: this.context.remote.get(action.from)?.type ?? 'file',
+                });
+
+            case 'refreshBase':
+            case 'dropBase':
+                return null;
+        }
+    }
+
+    /** Returns false when the action turned out to be a no-op worth not logging. */
+    private async perform(action: Action, result: ExecuteResult): Promise<boolean> {
         const { db, pair } = this.context;
 
         switch (action.kind) {
@@ -181,7 +279,7 @@ export class Executor {
                         remoteMtime: remote.mtime,
                     });
                 }
-                return;
+                return true;
             }
 
             case 'createRemoteFolder': {
@@ -208,21 +306,20 @@ export class Executor {
                     remoteSize: 0,
                     remoteMtime: local?.mtime ?? 0,
                 });
-                return;
+                return true;
             }
 
             case 'download':
                 await this.download(action.path, action.remoteUid, result);
-                return;
+                return true;
 
             case 'upload':
-                await this.upload(action.path, action.existingRemoteUid, result);
-                return;
+                return await this.upload(action.path, action.existingRemoteUid, result);
 
             case 'deleteLocal':
                 await this.deleteLocal(action.path, action.type);
                 db.deleteBaseEntry(pair.id, action.path);
-                return;
+                return true;
 
             case 'trashRemote': {
                 for await (const outcome of this.context.client.trashNodes([action.remoteUid])) {
@@ -231,7 +328,7 @@ export class Executor {
                     }
                 }
                 this.pathToUid.delete(action.path);
-                return;
+                return true;
             }
 
             case 'moveLocal': {
@@ -256,21 +353,21 @@ export class Executor {
                         // Destination vanished; the next cycle will sort it out.
                     }
                 }
-                return;
+                return true;
             }
 
             case 'moveRemote': {
                 await this.moveRemote(action.from, action.to, action.remoteUid);
-                return;
+                return true;
             }
 
             case 'refreshBase':
                 await this.refreshBase(action.path);
-                return;
+                return true;
 
             case 'dropBase':
                 db.deleteBaseEntry(pair.id, action.path);
-                return;
+                return true;
         }
     }
 
@@ -372,7 +469,7 @@ export class Executor {
         result.bytesDown += stats.size;
     }
 
-    private async upload(relative: string, existingRemoteUid: string | null, result: ExecuteResult): Promise<void> {
+    private async upload(relative: string, existingRemoteUid: string | null, result: ExecuteResult): Promise<boolean> {
         const { client, db, pair } = this.context;
         const source = this.absolute(relative);
 
@@ -380,8 +477,9 @@ export class Executor {
         try {
             stats = await fsp.stat(source);
         } catch {
-            // Deleted while we were working; nothing to upload.
-            return;
+            // Deleted while we were working; nothing to upload, and nothing to
+            // tell the user about either.
+            return false;
         }
 
         const hash = await hashFile(source);
@@ -450,6 +548,7 @@ export class Executor {
 
         result.filesUp += 1;
         result.bytesUp += stats.size;
+        return true;
     }
 
     /**

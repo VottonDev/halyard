@@ -50,6 +50,7 @@ class PairRow(Adw.ActionRow):
         "sync-requested": (GObject.SIGNAL_RUN_FIRST, None, (str,)),
         "edit-requested": (GObject.SIGNAL_RUN_FIRST, None, (str,)),
         "remove-requested": (GObject.SIGNAL_RUN_FIRST, None, (str,)),
+        "history-requested": (GObject.SIGNAL_RUN_FIRST, None, (str,)),
         "enabled-toggled": (GObject.SIGNAL_RUN_FIRST, None, (str, bool)),
     }
 
@@ -94,6 +95,7 @@ class PairRow(Adw.ActionRow):
 
         menu = Gio.Menu()
         menu.append("Sync Now", "row.sync")
+        menu.append("Recent Activity", "row.history")
         menu.append("Edit…", "row.edit")
         menu.append("Remove…", "row.remove")
 
@@ -110,6 +112,8 @@ class PairRow(Adw.ActionRow):
         actions = Gio.SimpleActionGroup()
         for name, handler in (
             ("sync", lambda *_: self.emit("sync-requested", self.pair_id)),
+            ("history", lambda *_: self.emit("history-requested",
+                                             self.pair_id)),
             ("edit", lambda *_: self.emit("edit-requested", self.pair_id)),
             ("remove", lambda *_: self.emit("remove-requested", self.pair_id)),
         ):
@@ -232,6 +236,7 @@ class PairsView(Gtk.Box):
         "conflicts-requested": (GObject.SIGNAL_RUN_FIRST, None, ()),
         "sync-requested": (GObject.SIGNAL_RUN_FIRST, None, (str,)),
         "remove-requested": (GObject.SIGNAL_RUN_FIRST, None, (str,)),
+        "history-requested": (GObject.SIGNAL_RUN_FIRST, None, (str,)),
         "enabled-toggled": (GObject.SIGNAL_RUN_FIRST, None, (str, bool)),
     }
 
@@ -338,7 +343,7 @@ class PairsView(Gtk.Box):
             if row is None:
                 row = PairRow(pair)
                 for signal in ("sync-requested", "edit-requested",
-                               "remove-requested"):
+                               "remove-requested", "history-requested"):
                     row.connect(
                         signal,
                         lambda _row, pid, s=signal: self.emit(s, pid),

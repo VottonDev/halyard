@@ -11,7 +11,7 @@ import { compileExcludes, validatePattern } from './exclude.js';
 import type { Progress } from './execute.js';
 import { isIgnoredName } from './localScan.js';
 import { PairSyncer } from './pair.js';
-import type { Conflict, Pair } from './types.js';
+import type { Conflict, HistoryFilter, Pair, SyncEvent } from './types.js';
 
 const logger = getLogger('manager');
 
@@ -528,6 +528,14 @@ export class SyncManager {
 
     listConflicts(pairId?: string): Conflict[] {
         return this.db.listConflicts(pairId);
+    }
+
+    listHistory(filter: HistoryFilter): SyncEvent[] {
+        return this.db.listEvents(filter);
+    }
+
+    clearHistory(pairId?: string): void {
+        this.db.clearEvents(pairId);
     }
 
     async resolveConflict(id: string, resolution: 'keepLocal' | 'keepRemote' | 'dismiss'): Promise<void> {

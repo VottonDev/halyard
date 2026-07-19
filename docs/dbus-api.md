@@ -198,6 +198,70 @@ just tidies up and clears it from the list.
 }
 ```
 
+### Activity log
+
+| Method | Signature | Returns |
+|---|---|---|
+| `ListHistory` | `(s filter) → s` | `HistoryEntry[]`, newest first |
+| `ClearHistory` | `(s pairId) → ()` | empty `pairId` clears every pair |
+
+The daemon records what it actually did to each file, so the UI can answer
+"why did this disappear?" without anyone reading a log file. It is **not**
+load-bearing state: entries are pruned after 90 days or 20 000 rows, whichever
+comes first, and `deletePair` discards a pair's entries along with its base.
+
+`filter` is a JSON object; every field narrows, and an omitted field means
+"any". An empty string is a valid filter meaning "everything".
+
+```jsonc
+{
+  "pairId": "p_7f3a",               // omit for every pair
+  "actions": ["deletedLocal"],      // any of the action values below
+  "outcome": "failed",              // ok|failed
+  "search": "budget",               // case-insensitive substring of the path
+  "beforeId": 412,                  // paging: only entries older than this id
+  "limit": 100                      // clamped to 1..1000, default 200
+}
+```
+
+Ids descend with time, so paging is "ask again with `beforeId` set to the id of
+the oldest entry you hold". A reply shorter than `limit` means there is nothing
+older to fetch.
+
+```jsonc
+// HistoryEntry
+{
+  "id": 412,                        // monotonic; also the paging cursor
+  "pairId": "p_7f3a",
+  "at": 1752940800000,
+  "action": "deletedLocal",
+  "path": "archive/old-notes.txt",
+  "toPath": null,                   // destination, for moves only
+  "type": "file",                   // file|folder
+  "size": 1048576,                  // null when it does not apply
+  "outcome": "ok",                  // ok|failed
+  "error": null                     // the failure message when outcome is failed
+}
+```
+
+`action` is finer-grained than the engine's internal actions, because the
+distinctions matter to the person reading them — whether a download replaced
+an existing file, and which side a deletion came from:
+
+| Action | Means |
+|---|---|
+| `downloaded` | New file arrived from Drive |
+| `updatedLocal` | Drive's copy changed, so the local file was overwritten |
+| `uploaded` | New local file copied to Drive |
+| `updatedRemote` | Local file changed, so Drive was updated |
+| `deletedLocal` | Removed locally because it was removed on Drive |
+| `trashedRemote` | Moved to Drive's Trash because it was deleted locally |
+| `movedLocal` / `movedRemote` | Moved or renamed to match the other side |
+| `createdLocalFolder` / `createdRemoteFolder` | Folder created to match |
+
+There is no activity signal. The log is only read while its screen is open, and
+pushing an event per file would flood the bus during a large sync.
+
 ## Signals
 
 | Signal | Signature | Meaning |

@@ -25,7 +25,9 @@ GTK, not a browser. Do not try to merge them.
 cd daemon
 bun install                    # bun, not npm — see below
 node scripts/build.mjs         # → dist/halyard-daemon.cjs (this is what runs)
-bun test                       # reconciler + ignore rules
+bun run test                   # both suites (see below)
+bun test                       # pure logic only: reconciler, ignore, exclude
+bun run test:node              # anything touching node:sqlite
 ./node_modules/.bin/tsc --noEmit
 HALYARD_LOG_LEVEL=debug HALYARD_LOG_STDERR=1 node dist/halyard-daemon.cjs
 
@@ -57,6 +59,13 @@ Each of these cost real debugging time. Do not "simplify" them away.
 - **`x11` is aliased to a stub.** `dbus-next` optionally requires it in an
   unreachable X11 fallback; the stub exports `null`, which is what dbus-next
   itself checks for.
+- **Tests are split across two runners, and that is not optional.** Bun does
+  not implement `node:sqlite`, so anything touching `SyncDatabase` cannot run
+  under `bun test` — those files are named `*.nodetest.ts` (so Bun's `*.test.ts`
+  glob skips them) and run under Node via `bun run test:node`. Node in turn
+  cannot resolve the `.js` specifiers the `src/` tree uses, so that script
+  loads `test/support/register.mjs`, which rewrites them to `.ts`. Pure logic
+  stays in `*.test.ts` under Bun.
 - The sibling `proton-sdk` checkout must exist at `../proton-sdk` and
   `client/js` must be built (`bun install && bun run build`) before this will
   compile.
@@ -102,6 +111,12 @@ testable, and every sync decision goes through it.
 - Downloads land on a `.halyard-part` temp file and are renamed into place. That
   suffix **must** stay in the ignore list, or a scan racing a download uploads
   half-written files to Drive.
+- **The activity log is the opposite of the base: disposable.** `sync_events`
+  records what the executor actually did, for the UI's Activity screen, and is
+  pruned at 90 days / 20 000 rows. Nothing may ever read it back to make a sync
+  decision — losing it costs the user an explanation, not their data. It is
+  written once per cycle in one transaction, because a commit per file cost
+  more than the sync itself.
 
 ## The daemon is a user service — never add elevation
 

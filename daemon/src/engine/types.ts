@@ -80,6 +80,63 @@ export type Conflict = {
 };
 
 /**
+ * What the user sees in the activity log, in their vocabulary rather than the
+ * executor's.
+ *
+ * These are deliberately finer-grained than `Action`: "downloaded" and
+ * "updatedLocal" are both a download, but one appeared out of nowhere and the
+ * other overwrote something the user already had, and those read very
+ * differently when you are trying to work out what happened to a file.
+ */
+export type SyncEventAction =
+    | 'downloaded'
+    | 'updatedLocal'
+    | 'uploaded'
+    | 'updatedRemote'
+    | 'deletedLocal'
+    | 'trashedRemote'
+    | 'movedLocal'
+    | 'movedRemote'
+    | 'createdLocalFolder'
+    | 'createdRemoteFolder';
+
+export type SyncEventOutcome = 'ok' | 'failed';
+
+/**
+ * One thing that happened to one file, recorded after the fact.
+ *
+ * This exists because sync is otherwise invisible: files appear and disappear
+ * with no explanation, and "it was deleted here because it was removed from
+ * Drive" is not something a user can deduce. Log files do not count — nobody
+ * reads them.
+ */
+export type SyncEvent = {
+    id: number;
+    pairId: string;
+    at: number;
+    action: SyncEventAction;
+    path: string;
+    /** Destination, for moves and renames only. */
+    toPath: string | null;
+    type: NodeKind;
+    size: number | null;
+    outcome: SyncEventOutcome;
+    error: string | null;
+};
+
+/** Query for the activity log. All fields narrow; omitting them means "any". */
+export type HistoryFilter = {
+    pairId?: string;
+    actions?: SyncEventAction[];
+    outcome?: SyncEventOutcome;
+    /** Case-insensitive substring match on the path. */
+    search?: string;
+    /** Paging cursor: only entries older than this id. Ids descend with time. */
+    beforeId?: number;
+    limit?: number;
+};
+
+/**
  * A single unit of work. The reconciler emits these; the executor performs
  * them. Keeping them as plain data is what makes the merge logic testable
  * without touching the filesystem or the network.

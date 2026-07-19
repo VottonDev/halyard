@@ -3,7 +3,15 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { dataDir } from '../config.js';
-import type { BaseEntry, Conflict, NodeKind, Pair } from './types.js';
+import type { BaseEntry, Conflict, HistoryFilter, NodeKind, Pair, SyncEvent } from './types.js';
+
+/**
+ * How much history to keep. Generous enough to answer "what happened to that
+ * file last month", bounded so the database cannot grow without limit on a
+ * busy folder.
+ */
+const HISTORY_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+const HISTORY_MAX_ROWS = 20_000;
 
 /**
  * Persistent sync state.
@@ -86,6 +94,24 @@ export class SyncDatabase {
                 remote_modified_at INTEGER
             );
             CREATE INDEX IF NOT EXISTS conflicts_pair ON conflicts (pair_id);
+
+            -- Append-only record of what sync actually did, for the activity
+            -- log. Not load-bearing: losing it costs the user an explanation,
+            -- not their data, so it is pruned on a retention policy while
+            -- base_entries never is.
+            CREATE TABLE IF NOT EXISTS sync_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id TEXT NOT NULL,
+                at INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                path TEXT NOT NULL,
+                to_path TEXT,
+                type TEXT NOT NULL,
+                size INTEGER,
+                outcome TEXT NOT NULL,
+                error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS sync_events_recent ON sync_events (pair_id, id DESC);
 
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         `);
@@ -217,6 +243,9 @@ export class SyncDatabase {
         this.db.prepare('DELETE FROM base_entries WHERE pair_id = ?').run(id);
         this.db.prepare('DELETE FROM remote_nodes WHERE pair_id = ?').run(id);
         this.db.prepare('DELETE FROM conflicts WHERE pair_id = ?').run(id);
+        // "Forget this folder's sync history" means the activity log too — it
+        // names files the user has asked us to stop remembering.
+        this.db.prepare('DELETE FROM sync_events WHERE pair_id = ?').run(id);
         this.db.prepare('DELETE FROM pairs WHERE id = ?').run(id);
     }
 
@@ -372,6 +401,100 @@ export class SyncDatabase {
         this.db.prepare('DELETE FROM conflicts WHERE id = ?').run(id);
     }
 
+    // ---- Activity log
+
+    /**
+     * Appends events and prunes anything past the retention policy.
+     *
+     * Written as one transaction per batch rather than one per event: a sync
+     * cycle can produce thousands, and a commit each would dominate the cost
+     * of the sync itself.
+     */
+    recordEvents(pairId: string, events: Array<Omit<SyncEvent, 'id' | 'pairId'>>): void {
+        if (events.length === 0) {
+            return;
+        }
+        const insert = this.db.prepare(
+            `INSERT INTO sync_events (pair_id, at, action, path, to_path, type, size, outcome, error)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        this.transaction(() => {
+            for (const event of events) {
+                insert.run(
+                    pairId,
+                    event.at,
+                    event.action,
+                    event.path,
+                    event.toPath,
+                    event.type,
+                    event.size,
+                    event.outcome,
+                    event.error,
+                );
+            }
+        });
+        this.pruneEvents();
+    }
+
+    private pruneEvents(): void {
+        this.db.prepare('DELETE FROM sync_events WHERE at < ?').run(Date.now() - HISTORY_MAX_AGE_MS);
+        // Trim by id rather than by count so this stays a single statement:
+        // anything below the id of the Nth-newest row is surplus.
+        this.db
+            .prepare(
+                `DELETE FROM sync_events WHERE id < (
+                     SELECT MIN(id) FROM (SELECT id FROM sync_events ORDER BY id DESC LIMIT ?)
+                 )`,
+            )
+            .run(HISTORY_MAX_ROWS);
+    }
+
+    listEvents(filter: HistoryFilter = {}): SyncEvent[] {
+        const clauses: string[] = [];
+        const values: Array<string | number> = [];
+
+        if (filter.pairId) {
+            clauses.push('pair_id = ?');
+            values.push(filter.pairId);
+        }
+        if (filter.actions?.length) {
+            clauses.push(`action IN (${filter.actions.map(() => '?').join(', ')})`);
+            values.push(...filter.actions);
+        }
+        if (filter.outcome) {
+            clauses.push('outcome = ?');
+            values.push(filter.outcome);
+        }
+        if (filter.search) {
+            // LIKE is case-insensitive for ASCII in SQLite by default; the
+            // escape clause keeps a literal % or _ in a filename from turning
+            // into a wildcard.
+            clauses.push("path LIKE ? ESCAPE '\\'");
+            values.push(`%${filter.search.replace(/[\\%_]/g, '\\$&')}%`);
+        }
+        if (filter.beforeId !== undefined) {
+            clauses.push('id < ?');
+            values.push(filter.beforeId);
+        }
+
+        const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+        const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
+        values.push(limit);
+
+        const rows = this.db
+            .prepare(`SELECT * FROM sync_events ${where} ORDER BY id DESC LIMIT ?`)
+            .all(...values) as Record<string, unknown>[];
+        return rows.map(rowToEvent);
+    }
+
+    clearEvents(pairId?: string): void {
+        if (pairId) {
+            this.db.prepare('DELETE FROM sync_events WHERE pair_id = ?').run(pairId);
+        } else {
+            this.db.exec('DELETE FROM sync_events');
+        }
+    }
+
     transaction<T>(fn: () => T): T {
         this.db.exec('BEGIN');
         try {
@@ -457,6 +580,21 @@ function rowToBase(row: Record<string, unknown>): BaseEntry {
         remoteHash: (row.remote_hash as string | null) ?? null,
         remoteSize: row.remote_size as number,
         remoteMtime: row.remote_mtime as number,
+    };
+}
+
+function rowToEvent(row: Record<string, unknown>): SyncEvent {
+    return {
+        id: row.id as number,
+        pairId: row.pair_id as string,
+        at: row.at as number,
+        action: row.action as SyncEvent['action'],
+        path: row.path as string,
+        toPath: (row.to_path as string | null) ?? null,
+        type: row.type as NodeKind,
+        size: (row.size as number | null) ?? null,
+        outcome: row.outcome as SyncEvent['outcome'],
+        error: (row.error as string | null) ?? null,
     };
 }
 

@@ -20,6 +20,7 @@ from gi.repository import Gio, GLib, GObject
 from .models import (
     Account,
     Conflict,
+    HistoryEntry,
     LoginState,
     Notification,
     Pair,
@@ -370,6 +371,46 @@ class DaemonClient(GObject.Object):
                          on_err: ErrCallback | None = None) -> None:
         self._call("ResolveConflict",
                    GLib.Variant("(ss)", [conflict_id, resolution]),
+                   on_ok=on_ok, on_err=on_err)
+
+    # -- activity log ----------------------------------------------------
+
+    def list_history(self, on_ok: OkCallback, on_err: ErrCallback, *,
+                     pair_id: str = "", actions: list[str] | None = None,
+                     outcome: str = "", search: str = "",
+                     before_id: int | None = None,
+                     limit: int = 100) -> None:
+        """Fetch activity, newest first.
+
+        Every filter narrows; omitting one means "any". ``before_id`` pages
+        backwards through time — pass the id of the oldest entry you already
+        hold to get the next batch.
+        """
+        query: dict = {"limit": limit}
+        if pair_id:
+            query["pairId"] = pair_id
+        if actions:
+            query["actions"] = list(actions)
+        if outcome:
+            query["outcome"] = outcome
+        if search:
+            query["search"] = search
+        if before_id is not None:
+            query["beforeId"] = before_id
+
+        def parse(data: Any) -> list[HistoryEntry]:
+            return [
+                HistoryEntry.from_json(e) for e in data
+            ] if isinstance(data, list) else []
+
+        self._call("ListHistory", GLib.Variant("(s)", [json.dumps(query)]),
+                   parse=parse, on_ok=on_ok, on_err=on_err)
+
+    def clear_history(self, pair_id: str = "",
+                      on_ok: OkCallback | None = None,
+                      on_err: ErrCallback | None = None) -> None:
+        """An empty pair_id clears every pair's activity."""
+        self._call("ClearHistory", GLib.Variant("(s)", [pair_id]),
                    on_ok=on_ok, on_err=on_err)
 
     def get_version(self, on_ok: OkCallback,

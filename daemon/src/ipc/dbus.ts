@@ -4,9 +4,24 @@ import * as dbus from 'dbus-next';
 import { VERSION } from '../config.js';
 import type { DriveSession } from '../drive/session.js';
 import type { SyncManager } from '../engine/manager.js';
+import type { HistoryFilter, SyncEventAction } from '../engine/types.js';
 import { getLogger } from '../log.js';
 
 const logger = getLogger('dbus');
+
+/** Accepted `ListHistory` action filters, mirroring SyncEventAction. */
+const HISTORY_ACTIONS = new Set<string>([
+    'downloaded',
+    'updatedLocal',
+    'uploaded',
+    'updatedRemote',
+    'deletedLocal',
+    'trashedRemote',
+    'movedLocal',
+    'movedRemote',
+    'createdLocalFolder',
+    'createdRemoteFolder',
+] satisfies SyncEventAction[]);
 
 export const BUS_NAME = 'io.github.votton.Halyard.Daemon';
 export const OBJECT_PATH = '/io/github/votton/Halyard/Daemon';
@@ -270,6 +285,51 @@ export class HalyardInterface extends Interface {
         }
     }
 
+    // ---- Activity log
+
+    ListHistory(filter: string): string {
+        try {
+            const parsed = (filter ? JSON.parse(filter) : {}) as Record<string, unknown>;
+
+            // Whitelisted like UpdatePair: this arrives as untyped JSON and
+            // feeds a SQL query, so nothing unrecognised gets through.
+            const query: HistoryFilter = {};
+            if (typeof parsed.pairId === 'string' && parsed.pairId) {
+                query.pairId = parsed.pairId;
+            }
+            const actions = toStringArray(parsed.actions).filter((action): action is SyncEventAction =>
+                HISTORY_ACTIONS.has(action),
+            );
+            if (actions.length > 0) {
+                query.actions = actions;
+            }
+            if (parsed.outcome === 'ok' || parsed.outcome === 'failed') {
+                query.outcome = parsed.outcome;
+            }
+            if (typeof parsed.search === 'string' && parsed.search.trim()) {
+                query.search = parsed.search.trim();
+            }
+            if (typeof parsed.beforeId === 'number' && Number.isFinite(parsed.beforeId)) {
+                query.beforeId = Math.floor(parsed.beforeId);
+            }
+            if (typeof parsed.limit === 'number' && Number.isFinite(parsed.limit)) {
+                query.limit = Math.floor(parsed.limit);
+            }
+
+            return JSON.stringify(this.manager.listHistory(query));
+        } catch (error) {
+            return fail(error);
+        }
+    }
+
+    ClearHistory(pairId: string): void {
+        try {
+            this.manager.clearHistory(pairId || undefined);
+        } catch (error) {
+            fail(error);
+        }
+    }
+
     GetVersion(): string {
         return VERSION;
     }
@@ -313,6 +373,8 @@ HalyardInterface.configureMembers({
         GetStatus: { inSignature: '', outSignature: 's' },
         ListConflicts: { inSignature: 's', outSignature: 's' },
         ResolveConflict: { inSignature: 'ss', outSignature: '' },
+        ListHistory: { inSignature: 's', outSignature: 's' },
+        ClearHistory: { inSignature: 's', outSignature: '' },
         GetVersion: { inSignature: '', outSignature: 's' },
         Quit: { inSignature: '', outSignature: '' },
     },

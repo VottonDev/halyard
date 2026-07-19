@@ -107,6 +107,13 @@ INTROSPECTION = f"""
       <arg type="s" name="conflictId" direction="in"/>
       <arg type="s" name="resolution" direction="in"/>
     </method>
+    <method name="ListHistory">
+      <arg type="s" name="filter" direction="in"/>
+      <arg type="s" name="entries" direction="out"/>
+    </method>
+    <method name="ClearHistory">
+      <arg type="s" name="pairId" direction="in"/>
+    </method>
     <method name="GetVersion">
       <arg type="s" name="version" direction="out"/>
     </method>
@@ -381,6 +388,11 @@ class MockState:
             "vol_1~node_shared": [],
         }
 
+        # Activity log. Deliberately spread across several days and both
+        # directions, with one failure and one deletion, so the grouping,
+        # filters and error styling all have something to render.
+        self.history: list[dict] = self._seed_history()
+
         self._transfer_queue = [
             ("upload", "proposals/q3-roadmap.md", 1_048_576),
             ("upload", "budget/2026-forecast.ods", 8_912_896),
@@ -390,11 +402,61 @@ class MockState:
         if getattr(args, "no_pairs", False):
             self.pairs = []
             self.conflicts = []
+            self.history = []
 
         self._transfer_index = 0
         self.activity: dict | None = None
         if not args.no_activity and self.pairs:
             self._start_next_transfer()
+
+    # -- fake activity ---------------------------------------------------
+
+    @staticmethod
+    def _seed_history() -> list[dict]:
+        """Newest first, with ids descending, exactly as the daemon returns."""
+        rows = [
+            # (minutes ago, pairId, action, path, toPath, type, size, error)
+            (3, "p_7f3a", "updatedRemote", "proposals/q3-roadmap.md",
+             None, "file", 1_048_576, None),
+            (8, "p_7f3a", "uploaded", "design/hero-shot@2x.png",
+             None, "file", 24_117_248, None),
+            (19, "p_2c81", "downloaded", "2026-07-19_143022.jpg",
+             None, "file", 4_194_304, None),
+            (44, "p_7f3a", "deletedLocal", "archive/old-notes.txt",
+             None, "file", None, None),
+            (52, "p_9d44", "uploaded", "recipes/sourdough.md",
+             None, "file", 8_192, "Permission denied"),
+            (95, "p_7f3a", "movedRemote", "budget/2026-forecast.ods",
+             "finance/2026-forecast.ods", "file", None, None),
+            (140, "p_2c81", "createdLocalFolder", "2026/July",
+             None, "folder", None, None),
+            (60 * 26, "p_7f3a", "trashedRemote", "scratch/tmp-export.csv",
+             None, "file", None, None),
+            (60 * 27, "p_9d44", "updatedLocal", "recipes/focaccia.md",
+             None, "file", 12_288, None),
+            (60 * 50, "p_2c81", "downloaded", "2026-07-17_090114.jpg",
+             None, "file", 3_355_443, None),
+            (60 * 74, "p_7f3a", "movedLocal", "drafts/intro.md",
+             "proposals/intro.md", "file", None, None),
+            (60 * 96, "p_7f3a", "deletedLocal", "archive/2024-invoices.zip",
+             None, "file", None, None),
+        ]
+        return [
+            {
+                "id": len(rows) - index,
+                "pairId": pair_id,
+                "at": minutes_ago(minutes),
+                "action": action,
+                "path": path,
+                "toPath": to_path,
+                "type": kind,
+                "size": size,
+                "outcome": "failed" if error else "ok",
+                "error": error,
+            }
+            for index, (minutes, pair_id, action, path, to_path, kind, size,
+                        error) in enumerate(rows)
+        ]
 
     # -- serialisation ---------------------------------------------------
 
@@ -872,6 +934,41 @@ class MockDaemon:
             )
         self._reply_void(invocation, delay_ms=350)
         GLib.timeout_add(400, lambda: (self.emit_status(), False)[1])
+
+    def _do_ListHistory(self, invocation, raw_filter: str) -> None:
+        try:
+            query = json.loads(raw_filter) if raw_filter else {}
+        except ValueError:
+            raise ValueError("The activity filter was not valid JSON.")
+        if not isinstance(query, dict):
+            query = {}
+
+        pair_id = query.get("pairId") or ""
+        actions = query.get("actions") or []
+        outcome = query.get("outcome") or ""
+        search = (query.get("search") or "").lower()
+        before_id = query.get("beforeId")
+        limit = max(1, min(int(query.get("limit") or 200), 1000))
+
+        entries = [
+            e for e in self.state.history
+            if (not pair_id or e["pairId"] == pair_id)
+            and (not actions or e["action"] in actions)
+            and (not outcome or e["outcome"] == outcome)
+            and (not search or search in e["path"].lower())
+            and (before_id is None or e["id"] < before_id)
+        ]
+        entries.sort(key=lambda e: e["id"], reverse=True)
+        self._reply_json(invocation, entries[:limit], delay_ms=180)
+
+    def _do_ClearHistory(self, invocation, pair_id: str) -> None:
+        if pair_id:
+            self.state.history = [
+                e for e in self.state.history if e["pairId"] != pair_id
+            ]
+        else:
+            self.state.history = []
+        self._reply_void(invocation, delay_ms=200)
 
     def _do_GetVersion(self, invocation) -> None:
         invocation.return_value(GLib.Variant("(s)", [VERSION]))

@@ -9,6 +9,7 @@ from gi.repository import Adw, GLib, Gio, Gtk
 from . import daemon_control
 from .conflicts_view import ConflictsPage
 from .dbus_client import DaemonClient
+from .history_view import HistoryPage
 from .login_view import LoginView
 from .models import STATUS_ERROR, Pair, Status
 from .pair_dialog import PairDialog
@@ -25,6 +26,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._status = Status()
         self._account_logged_in: bool | None = None
         self._conflicts_page: ConflictsPage | None = None
+        self._history_page: HistoryPage | None = None
         self._last_conflict_count = -1
         self._closing = False
         self._tray_available = False
@@ -84,6 +86,7 @@ class HalyardWindow(Adw.ApplicationWindow):
 
         sync_section = Gio.Menu()
         sync_section.append("Sync All Now", "win.sync-all")
+        sync_section.append("Activity", "win.activity")
         sync_section.append("Conflicts", "win.conflicts")
         menu.append_section(None, sync_section)
 
@@ -99,6 +102,17 @@ class HalyardWindow(Adw.ApplicationWindow):
             primary=True,
         )
         header.pack_end(self._menu_button)
+
+        # Always available, unlike the conflicts button: "what did it just do
+        # to my files?" is a routine question, not an exceptional one.
+        self._history_button = Gtk.Button(
+            icon_name="document-open-recent-symbolic",
+            tooltip_text="Recent activity",
+            visible=False,
+        )
+        self._history_button.connect("clicked",
+                                     lambda *_: self._show_history())
+        header.pack_end(self._history_button)
 
         self._conflicts_button = Gtk.Button(
             icon_name="dialog-warning-symbolic",
@@ -132,6 +146,10 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._pairs_view.connect("conflicts-requested",
                                  lambda *_: self._show_conflicts())
         self._pairs_view.connect("sync-requested", self._on_sync_pair)
+        self._pairs_view.connect(
+            "history-requested",
+            lambda _view, pair_id: self._show_history(pair_id),
+        )
         self._pairs_view.connect("remove-requested", self._on_remove_pair)
         self._pairs_view.connect("enabled-toggled", self._on_toggle_pair)
         self._stack.add_named(self._pairs_view, "pairs")
@@ -257,6 +275,7 @@ class HalyardWindow(Adw.ApplicationWindow):
     def _install_actions(self) -> None:
         for name, handler, accel in (
             ("sync-all", self._on_sync_all, None),
+            ("activity", lambda *_: self._show_history(), "<Primary>h"),
             ("conflicts", lambda *_: self._show_conflicts(), None),
             ("preferences", lambda *_: self._show_preferences(),
              "<Primary>comma"),
@@ -345,6 +364,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         show_controls = view == "pairs"
         self._pause_button.set_visible(show_controls)
         self._add_button.set_visible(show_controls)
+        self._history_button.set_visible(show_controls)
 
         status = self._status
         conflicts = status.total_conflicts
@@ -528,6 +548,20 @@ class HalyardWindow(Adw.ApplicationWindow):
         if self._nav.get_visible_page() is not self._conflicts_page:
             self._nav.push(self._conflicts_page)
         self._conflicts_page.reload()
+
+    def _show_history(self, pair_id: str = "") -> None:
+        """Open the activity log, optionally narrowed to one folder."""
+        if not self._client.available:
+            self.toast("The sync service is not running.")
+            return
+        if self._history_page is None:
+            self._history_page = HistoryPage(self._client, self)
+            self._nav.add(self._history_page)
+        self._history_page.set_pairs(list(self._status.pairs))
+        self._history_page.select_pair(pair_id)
+        if self._nav.get_visible_page() is not self._history_page:
+            self._nav.push(self._history_page)
+        self._history_page.reload()
 
     def _show_preferences(self) -> None:
         PreferencesDialog(self._client, self, self._settings).present(self)

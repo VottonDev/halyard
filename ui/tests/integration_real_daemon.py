@@ -7,8 +7,8 @@ method on the live daemon and feeding each response through the same model
 parsers the UI uses.
 
 Read-only by design. It never calls BeginLogin, Logout, AddPair, UpdatePair,
-RemovePair, SyncNow, SetPaused, CreateRemoteFolder or ResolveConflict, so it is
-safe to run against an account with real data.
+RemovePair, SyncNow, SetPaused, CreateRemoteFolder, ResolveConflict or
+ClearHistory, so it is safe to run against an account with real data.
 
     python3 tests/integration_real_daemon.py
 """
@@ -26,6 +26,7 @@ from gi.repository import Gio, GLib  # noqa: E402
 from halyard.models import (  # noqa: E402
     Account,
     Conflict,
+    HistoryEntry,
     Pair,
     RemoteFolder,
     Status,
@@ -107,6 +108,68 @@ def main() -> int:
             f"Conflict {conflict.id} parses",
             bool(conflict.path) and conflict.kind in known_kinds,
             f"{conflict.path} ({conflict.kind})",
+        )
+
+    # --- Activity log. Read-only, and safe on a live account.
+    history = [
+        HistoryEntry.from_json(item)
+        for item in json.loads(call(proxy, "ListHistory", json.dumps({"limit": 50})))
+    ]
+    check("ListHistory parses", isinstance(history, list), f"{len(history)} entry/entries")
+    if history:
+        known_actions = {
+            "downloaded", "updatedLocal", "uploaded", "updatedRemote",
+            "deletedLocal", "trashedRemote", "movedLocal", "movedRemote",
+            "createdLocalFolder", "createdRemoteFolder",
+        }
+        unknown = {e.action for e in history} - known_actions
+        check(
+            "every action is one the UI has wording for",
+            not unknown,
+            f"unknown: {sorted(unknown)}" if unknown else f"{len(known_actions)} known",
+        )
+        check(
+            "entries carry a path, an id and a time",
+            all(e.path and e.id and e.at for e in history),
+            history[0].path,
+        )
+        check(
+            "entries come back newest first",
+            all(a.id > b.id for a, b in zip(history, history[1:])),
+            f"ids {history[0].id}..{history[-1].id}",
+        )
+        check(
+            "moves carry a destination and nothing else does",
+            all(bool(e.to_path) == (e.action in ("movedLocal", "movedRemote"))
+                for e in history),
+        )
+        # Paging must not repeat or skip: the second page starts strictly
+        # older than the first, which is the whole contract of beforeId.
+        oldest = history[-1].id
+        page2 = [
+            HistoryEntry.from_json(item)
+            for item in json.loads(call(
+                proxy, "ListHistory",
+                json.dumps({"limit": 50, "beforeId": oldest}),
+            ))
+        ]
+        check(
+            "beforeId pages strictly backwards",
+            all(e.id < oldest for e in page2),
+            f"{len(page2)} older entry/entries",
+        )
+        # A filter the daemon understands must actually narrow the result.
+        deletions = [
+            HistoryEntry.from_json(item)
+            for item in json.loads(call(
+                proxy, "ListHistory",
+                json.dumps({"actions": ["deletedLocal", "trashedRemote"]}),
+            ))
+        ]
+        check(
+            "action filter narrows to deletions",
+            all(e.action in ("deletedLocal", "trashedRemote") for e in deletions),
+            f"{len(deletions)} deletion(s)",
         )
 
     # --- The remote folder picker's data source.

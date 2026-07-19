@@ -6,6 +6,7 @@ back to sane defaults, so a daemon that grows new keys never breaks the UI.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,32 @@ KIND_REMOTE_DELETED = "remoteDeletedLocalModified"
 RESOLVE_KEEP_LOCAL = "keepLocal"
 RESOLVE_KEEP_REMOTE = "keepRemote"
 RESOLVE_DISMISS = "dismiss"
+
+# HistoryEntry.action values from the contract.
+ACTION_DOWNLOADED = "downloaded"
+ACTION_UPDATED_LOCAL = "updatedLocal"
+ACTION_UPLOADED = "uploaded"
+ACTION_UPDATED_REMOTE = "updatedRemote"
+ACTION_DELETED_LOCAL = "deletedLocal"
+ACTION_TRASHED_REMOTE = "trashedRemote"
+ACTION_MOVED_LOCAL = "movedLocal"
+ACTION_MOVED_REMOTE = "movedRemote"
+ACTION_CREATED_LOCAL_FOLDER = "createdLocalFolder"
+ACTION_CREATED_REMOTE_FOLDER = "createdRemoteFolder"
+
+#: Groupings the activity filter offers, in the terms a user would ask in.
+ACTIONS_REMOVED = (ACTION_DELETED_LOCAL, ACTION_TRASHED_REMOTE)
+ACTIONS_ADDED = (
+    ACTION_DOWNLOADED,
+    ACTION_UPLOADED,
+    ACTION_CREATED_LOCAL_FOLDER,
+    ACTION_CREATED_REMOTE_FOLDER,
+)
+ACTIONS_UPDATED = (ACTION_UPDATED_LOCAL, ACTION_UPDATED_REMOTE)
+ACTIONS_MOVED = (ACTION_MOVED_LOCAL, ACTION_MOVED_REMOTE)
+
+OUTCOME_OK = "ok"
+OUTCOME_FAILED = "failed"
 
 
 def _as_dict(value: Any) -> dict:
@@ -235,6 +262,55 @@ class Conflict:
             local_modified_at=ts("localModifiedAt"),
             remote_modified_at=ts("remoteModifiedAt"),
         )
+
+
+@dataclass(frozen=True)
+class HistoryEntry:
+    """One thing sync did to one file, as shown in the activity log."""
+
+    id: int = 0
+    pair_id: str = ""
+    at: int | None = None
+    action: str = ACTION_DOWNLOADED
+    path: str = ""
+    #: Destination, for moves and renames only.
+    to_path: str | None = None
+    type: str = "file"
+    size: int | None = None
+    outcome: str = OUTCOME_OK
+    error: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "HistoryEntry":
+        data = _as_dict(data)
+        size = data.get("size")
+        at = data.get("at")
+        return cls(
+            id=_as_int(data.get("id")),
+            pair_id=str(data.get("pairId") or ""),
+            at=int(at) if isinstance(at, (int, float)) else None,
+            action=str(data.get("action") or ACTION_DOWNLOADED),
+            path=str(data.get("path") or ""),
+            to_path=data.get("toPath") or None,
+            type=str(data.get("type") or "file"),
+            size=int(size) if isinstance(size, (int, float)) else None,
+            outcome=str(data.get("outcome") or OUTCOME_OK),
+            error=data.get("error") or None,
+        )
+
+    @property
+    def failed(self) -> bool:
+        return self.outcome == OUTCOME_FAILED
+
+    @property
+    def is_folder(self) -> bool:
+        return self.type == "folder"
+
+    @property
+    def name(self) -> str:
+        """The bare filename — what someone scanning the list recognises."""
+        subject = self.to_path or self.path
+        return os.path.basename(subject) or subject
 
 
 @dataclass(frozen=True)
