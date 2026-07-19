@@ -11,6 +11,8 @@ export type Pair = {
     excludes: string[];
     treeEventScopeId: string | null;
     eventCursor: string | null;
+    /** False while the one-time remote enumeration is still in progress. */
+    seeded: boolean;
     createdAt: number;
     lastSyncAt: number | null;
 };

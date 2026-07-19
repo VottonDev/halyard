@@ -35,6 +35,14 @@ STATUS_ICONS = {
 }
 
 
+def exclusion_summary(pair: Pair) -> list[str]:
+    """"2 exclusions", so it is visible that a pair skips part of its folder."""
+    count = len(pair.excludes)
+    if not count:
+        return []
+    return [f"{count} exclusion" if count == 1 else f"{count} exclusions"]
+
+
 class PairRow(Adw.ActionRow):
     """One folder pair, with its status, progress and per-row actions."""
 
@@ -173,20 +181,27 @@ class PairRow(Adw.ActionRow):
         paths = f"{tilde_path(pair.local_path)}  ⇄  {pair.remote_path}"
 
         if not pair.enabled:
-            detail = "Syncing turned off"
+            bits = ["Syncing turned off"]
             if pair.last_sync_at:
-                detail += f" · Last synced {format_relative_time(pair.last_sync_at)}"
-            return f"{paths}\n{detail}"
+                bits.append(
+                    f"Last synced {format_relative_time(pair.last_sync_at)}"
+                )
+            bits.extend(exclusion_summary(pair))
+            return f"{paths}\n" + " · ".join(bits)
 
         if pair.status == STATUS_ERROR:
-            return f"{paths}\n{pair.error or 'Sync failed'}"
+            bits = [pair.error or "Sync failed"]
+            bits.extend(exclusion_summary(pair))
+            return f"{paths}\n" + " · ".join(bits)
 
         if activity is not None:
             verb = "Uploading" if activity.is_upload else "Downloading"
             name = os.path.basename(activity.path) or activity.path
             percent = int(activity.fraction * 100)
-            return (f"{paths}\n{verb} {name} · {percent}% of "
-                    f"{format_size(activity.bytes_total)}")
+            bits = [f"{verb} {name}",
+                    f"{percent}% of {format_size(activity.bytes_total)}"]
+            bits.extend(exclusion_summary(pair))
+            return f"{paths}\n" + " · ".join(bits)
 
         label = STATUS_LABELS.get(pair.status, pair.status.capitalize())
         bits = [label]

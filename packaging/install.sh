@@ -82,6 +82,18 @@ EOF
     # Make the package importable without touching the system Python.
     sed -i "2i export PYTHONPATH=\"$LIBEXEC_DIR/ui:\${PYTHONPATH:-}\"" "$HOME/.local/bin/halyard"
 
+    # The icon has to live in the icon theme, not next to the code. The
+    # .desktop file references it by name (Icon=io.github.votton.Halyard), so
+    # without this the app shows up in search with a generic placeholder.
+    ICON_SRC="$UI_DIR/halyard/data/icons/hicolor/scalable/apps/io.github.votton.Halyard.svg"
+    if [ -f "$ICON_SRC" ]; then
+        ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
+        mkdir -p "$ICON_DIR"
+        install -m 0644 "$ICON_SRC" "$ICON_DIR/io.github.votton.Halyard.svg"
+        # Harmless if absent or if the theme has no cache to refresh.
+        gtk-update-icon-cache -q -t -f "$DATA_HOME/icons/hicolor" 2>/dev/null || true
+    fi
+
     DESKTOP_SRC="$UI_DIR/halyard/data/io.github.votton.Halyard.desktop"
     if [ -f "$DESKTOP_SRC" ]; then
         mkdir -p "$DATA_HOME/applications"

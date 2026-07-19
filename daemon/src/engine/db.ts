@@ -100,6 +100,11 @@ export class SyncDatabase {
         // those rows until they are rewritten — correct, just not optimal.
         this.ensureColumn('base_entries', 'local_device', 'INTEGER');
         this.ensureColumn('pairs', 'excludes', "TEXT NOT NULL DEFAULT '[]'");
+        // Seeding a large remote tree takes thousands of API calls. Recording
+        // how far it got lets an interrupted seed resume instead of starting
+        // over, which on a big folder meant it could never finish at all.
+        this.ensureColumn('pairs', 'seeded', 'INTEGER NOT NULL DEFAULT 0');
+        this.ensureColumn('remote_nodes', 'children_listed', 'INTEGER NOT NULL DEFAULT 0');
     }
 
     private ensureColumn(table: string, column: string, definition: string): void {
@@ -176,6 +181,7 @@ export class SyncDatabase {
             remotePath: 'remote_path',
             enabled: 'enabled',
             excludes: 'excludes',
+            seeded: 'seeded',
             treeEventScopeId: 'tree_event_scope_id',
             eventCursor: 'event_cursor',
             createdAt: 'created_at',
@@ -295,6 +301,25 @@ export class SyncDatabase {
         this.db.prepare('DELETE FROM remote_nodes WHERE pair_id = ? AND uid = ?').run(pairId, uid);
     }
 
+    /** Folder uids whose children have not been listed yet — the seed frontier. */
+    getUnlistedFolders(pairId: string): string[] {
+        const rows = this.db
+            .prepare("SELECT uid FROM remote_nodes WHERE pair_id = ? AND type = 'folder' AND children_listed = 0")
+            .all(pairId) as { uid: string }[];
+        return rows.map((row) => row.uid);
+    }
+
+    markChildrenListed(pairId: string, uid: string): void {
+        this.db.prepare('UPDATE remote_nodes SET children_listed = 1 WHERE pair_id = ? AND uid = ?').run(pairId, uid);
+    }
+
+    countRemoteNodes(pairId: string): number {
+        const row = this.db.prepare('SELECT COUNT(*) AS n FROM remote_nodes WHERE pair_id = ?').get(pairId) as {
+            n: number;
+        };
+        return row.n;
+    }
+
     clearRemoteNodes(pairId: string): void {
         this.db.prepare('DELETE FROM remote_nodes WHERE pair_id = ?').run(pairId);
     }
@@ -410,6 +435,7 @@ function rowToPair(row: Record<string, unknown>): Pair {
         remotePath: row.remote_path as string,
         enabled: !!row.enabled,
         excludes: parseExcludes(row.excludes),
+        seeded: !!row.seeded,
         treeEventScopeId: (row.tree_event_scope_id as string | null) ?? null,
         eventCursor: (row.event_cursor as string | null) ?? null,
         createdAt: row.created_at as number,

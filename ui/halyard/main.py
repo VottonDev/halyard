@@ -12,7 +12,8 @@ import sys
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from .dbus_client import DaemonClient  # noqa: E402
-from .models import Notification  # noqa: E402
+from .models import Notification, Status  # noqa: E402
+from .tray import TrayIcon  # noqa: E402
 from .window import HalyardWindow  # noqa: E402
 
 APP_ID = "io.github.votton.Halyard"
@@ -71,6 +72,9 @@ class HalyardApplication(Adw.Application):
         self._settings = load_settings()
         self._window: HalyardWindow | None = None
         self._notification_serial = 0
+        self._tray: TrayIcon | None = None
+        self._status = Status()
+        self._logged_in = False
 
         self.add_main_option(
             "version", ord("v"), GLib.OptionFlags.NONE,
@@ -96,12 +100,17 @@ class HalyardApplication(Adw.Application):
         self.add_action(show_action)
 
         self._client.connect("notification", self._on_notification)
+        self._client.connect("status-changed", self._on_status_changed)
+        self._client.connect("availability-changed", self._on_daemon_available)
         self._client.start()
+        self._start_tray()
 
     def do_activate(self) -> None:
         if self._window is None:
             self._window = HalyardWindow(self, self._client, self._settings)
             self._window.connect("destroy", self._on_window_destroyed)
+            self._window.set_tray_available(self.tray_available)
+        self._window.set_visible(True)
         self._window.present()
 
     def do_handle_local_options(self, options: GLib.VariantDict) -> int:
@@ -111,6 +120,8 @@ class HalyardApplication(Adw.Application):
         return -1
 
     def do_shutdown(self) -> None:
+        if self._tray is not None:
+            self._tray.stop()
         self._client.stop()
         Adw.Application.do_shutdown(self)
 
@@ -122,6 +133,75 @@ class HalyardApplication(Adw.Application):
         if self._window is not None:
             self._window.close()
         else:
+            self.quit()
+
+    # -- tray ------------------------------------------------------------
+
+    def _start_tray(self) -> None:
+        connection = self.get_dbus_connection()
+        if connection is None:
+            return
+        tray = TrayIcon(connection)
+        tray.connect("activate-requested", lambda _t: self._present_window())
+        tray.connect("menu-action", self._on_tray_action)
+        tray.connect("availability-changed", self._on_tray_availability)
+        self._tray = tray
+        tray.start()
+        self._sync_tray()
+
+    @property
+    def tray_available(self) -> bool:
+        return self._tray is not None and self._tray.available
+
+    def _on_status_changed(self, _client, status: Status) -> None:
+        self._status = status
+        self._logged_in = status.logged_in
+        self._sync_tray()
+
+    def _on_daemon_available(self, _client, available: bool) -> None:
+        if not available:
+            self._status = Status()
+            self._logged_in = False
+            self._sync_tray()
+            return
+        # Seed from a real call rather than waiting for the next signal, which
+        # may not arrive for a while on an idle daemon.
+        self._client.get_status(
+            lambda status: self._on_status_changed(None, status),
+            lambda _message: self._sync_tray(),
+        )
+
+    def _sync_tray(self) -> None:
+        if self._tray is None:
+            return
+        self._tray.update(
+            self._status, self._logged_in, self._client.available
+        )
+
+    def _on_tray_availability(self, _tray, available: bool) -> None:
+        if self._window is not None:
+            self._window.set_tray_available(available)
+        if not available and self._window is not None \
+                and not self._window.get_visible():
+            # The tray was the only way back to a hidden window. Rather than
+            # strand the user with an invisible process, show it again.
+            self._present_window()
+
+    def _present_window(self) -> None:
+        self.activate()
+        if self._window is not None:
+            self._window.set_visible(True)
+            self._window.present()
+
+    def _on_tray_action(self, _tray, action: str) -> None:
+        if action == "sync":
+            self._client.sync_now("")
+        elif action == "pause":
+            self._client.set_paused(True)
+        elif action == "resume":
+            self._client.set_paused(False)
+        elif action == "quit":
+            # Quits this UI process only; the daemon keeps syncing.
             self.quit()
 
     # -- chrome ----------------------------------------------------------

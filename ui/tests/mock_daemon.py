@@ -181,6 +181,19 @@ def minutes_ago(n: float) -> int:
 HOME = os.path.expanduser("~")
 
 
+def real_dir(*candidates: str) -> str:
+    """First candidate that actually exists, else the first one.
+
+    The mock never touches files, but pointing it at directories that exist
+    means the UI's "folder no longer exists" validation and its subfolder
+    exclusion suggestions behave the way they would in real use.
+    """
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return candidates[0]
+
+
 class MockState:
     """All the fake data, and the rules that make it move."""
 
@@ -197,11 +210,11 @@ class MockState:
         self.pairs: list[dict] = [
             {
                 "id": "p_7f3a",
-                "localPath": f"{HOME}/Documents/Work",
+                "localPath": real_dir(f"{HOME}/Documents/Work", f"{HOME}/Documents"),
                 "remotePath": "/Work",
                 "remoteUid": "vol_1~node_work",
                 "enabled": True,
-                "excludes": ["node_modules", "*.iso"],
+                "excludes": ["GitHub", "*.iso"],
                 "status": "syncing",
                 "lastSyncAt": minutes_ago(0.5),
                 "error": None,
@@ -213,7 +226,7 @@ class MockState:
             },
             {
                 "id": "p_2c81",
-                "localPath": f"{HOME}/Pictures/Camera",
+                "localPath": real_dir(f"{HOME}/Pictures/Camera", f"{HOME}/Pictures"),
                 "remotePath": "/Photos/Camera Roll",
                 "remoteUid": "vol_1~node_camera",
                 "enabled": True,
@@ -229,7 +242,7 @@ class MockState:
             },
             {
                 "id": "p_9d44",
-                "localPath": f"{HOME}/Notes",
+                "localPath": real_dir(f"{HOME}/Notes", f"{HOME}/Music"),
                 "remotePath": "/Notes",
                 "remoteUid": "vol_1~node_notes",
                 "enabled": True,
@@ -246,7 +259,7 @@ class MockState:
             },
             {
                 "id": "p_4b06",
-                "localPath": f"{HOME}/Documents/Design Assets",
+                "localPath": real_dir(f"{HOME}/Documents/Design Assets", f"{HOME}/Videos"),
                 "remotePath": "/Design/Assets",
                 "remoteUid": "vol_1~node_assets",
                 "enabled": True,
@@ -262,7 +275,7 @@ class MockState:
             },
             {
                 "id": "p_5e17",
-                "localPath": f"{HOME}/Archive/2024",
+                "localPath": real_dir(f"{HOME}/Archive/2024", f"{HOME}/Downloads"),
                 "remotePath": "/Archive/2024",
                 "remoteUid": "vol_1~node_archive",
                 "enabled": False,

@@ -26,6 +26,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._conflicts_page: ConflictsPage | None = None
         self._last_conflict_count = -1
         self._closing = False
+        self._tray_available = False
 
         self.set_default_size(
             settings.get_int("window-width"),
@@ -486,24 +487,44 @@ class HalyardWindow(Adw.ApplicationWindow):
 
     # -- closing ---------------------------------------------------------
 
+    def set_tray_available(self, available: bool) -> None:
+        """A tray changes what closing the window means, so it is shown."""
+        self._tray_available = available
+
     def _on_close_request(self, _window) -> bool:
         self._save_window_state()
 
-        if self._closing or self._settings.get_boolean("close-notice-shown"):
-            return False
-        if not self._client.available or not self._account_logged_in:
+        if self._closing:
             return False
 
-        self._settings.set_boolean("close-notice-shown", True)
+        already_told = self._settings.get_boolean("close-notice-shown")
+        if not already_told and self._client.available \
+                and self._account_logged_in:
+            self._settings.set_boolean("close-notice-shown", True)
+            self._show_close_notice()
+            return True  # hold the window open until the user answers
 
-        dialog = Adw.AlertDialog(
-            heading="Halyard Keeps Syncing",
-            body=("Closing this window leaves the background service running, "
-                  "so your folders stay in sync.\n\nGNOME has no system tray, "
-                  "so Halyard will let you know about anything that needs you "
-                  "through notifications. Open Halyard again any time to see "
-                  "progress."),
-        )
+        if self._tray_available:
+            # Hiding rather than destroying keeps the process — and so the
+            # tray icon — alive. The icon is the way back.
+            self.set_visible(False)
+            return True
+        return False
+
+    def _show_close_notice(self) -> None:
+        if self._tray_available:
+            body = ("Closing this window leaves Halyard running in the "
+                    "background, so your folders stay in sync.\n\nIts icon "
+                    "stays in the top bar — click it to open this window "
+                    "again, or to quit.")
+        else:
+            body = ("Closing this window leaves the background service "
+                    "running, so your folders stay in sync.\n\nHalyard will "
+                    "let you know about anything that needs you through "
+                    "notifications. Open Halyard again any time to see "
+                    "progress.")
+
+        dialog = Adw.AlertDialog(heading="Halyard Keeps Syncing", body=body)
         dialog.add_response("stop", "Stop Syncing Too")
         dialog.add_response("close", "Close Window")
         dialog.set_response_appearance(
@@ -515,12 +536,14 @@ class HalyardWindow(Adw.ApplicationWindow):
         def on_response(_dialog, response: str) -> None:
             if response == "stop":
                 self._client.quit_daemon()
+            if self._tray_available and response != "stop":
+                self.set_visible(False)
+                return
             self._closing = True
             self.close()
 
         dialog.connect("response", on_response)
         dialog.present(self)
-        return True  # hold the window open until the user answers
 
     def _save_window_state(self) -> None:
         if self.is_maximized():

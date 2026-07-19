@@ -8,6 +8,7 @@ import {
 
 import { getLogger } from '../log.js';
 import type { RemoteNodeInput, SyncDatabase } from './db.js';
+import { compileExcludes } from './exclude.js';
 import type { NodeKind, Pair, RemoteItem } from './types.js';
 
 const logger = getLogger('remote');
@@ -73,14 +74,21 @@ function toRemoteNode(node: NodeEntity): RemoteNodeInput | null {
  * is driven by the event stream.
  */
 export class RemoteTree {
+    private isExcluded: (relativePath: string) => boolean;
+
     constructor(
         private readonly db: SyncDatabase,
         private readonly client: ProtonDriveClient,
         private pair: Pair,
-    ) {}
+        /** Reports enumeration progress, so a long seed is visible rather than silent. */
+        private readonly onProgress?: (folders: number, nodes: number) => void,
+    ) {
+        this.isExcluded = compileExcludes(pair.excludes ?? []);
+    }
 
     setPair(pair: Pair): void {
         this.pair = pair;
+        this.isExcluded = compileExcludes(pair.excludes ?? []);
     }
 
     private async *listChildren(parentUid: string, signal?: AbortSignal): AsyncGenerator<NodeEntity> {
@@ -99,46 +107,141 @@ export class RemoteTree {
         }
     }
 
+    /** Relative path of every known folder, so exclusions can be tested during the walk. */
+    private buildFolderPaths(): Map<string, string> {
+        const rows = this.db.getRemoteNodes(this.pair.id);
+        const byParent = new Map<string, typeof rows>();
+        for (const row of rows) {
+            const key = row.parent_uid ?? '';
+            const list = byParent.get(key) ?? [];
+            list.push(row);
+            byParent.set(key, list);
+        }
+
+        const paths = new Map<string, string>([[this.pair.remoteUid, '']]);
+        const walk = (parentUid: string, prefix: string): void => {
+            for (const row of byParent.get(parentUid) ?? []) {
+                const relative = prefix ? `${prefix}/${row.name}` : row.name;
+                if (row.type === 'folder') {
+                    paths.set(row.uid, relative);
+                    walk(row.uid, relative);
+                }
+            }
+        };
+        walk(this.pair.remoteUid, '');
+        return paths;
+    }
+
     /**
-     * One-time full enumeration, used on first sync and after a TreeRefresh.
-     * Also establishes the event scope and starting cursor.
+     * One-time enumeration of the remote folder, used on first sync and after
+     * a TreeRefresh. Also establishes the event scope and starting cursor.
+     *
+     * Three things make this survivable on a large folder:
+     *
+     *  - **It is resumable.** Each folder is marked once its children have been
+     *    listed, so an interrupted seed continues from the frontier. Without
+     *    this, a tree big enough to outlast one run could never finish: every
+     *    restart began again from nothing.
+     *  - **It honours exclusions.** Excluded subtrees are never walked. On a
+     *    folder containing a source checkout this is the difference between a
+     *    few hundred requests and many thousands.
+     *  - **The cursor is taken first.** Anything that changes while we are
+     *    enumerating then arrives as an event afterwards, rather than falling
+     *    into the gap between the walk and the cursor.
      */
     async seed(signal?: AbortSignal): Promise<void> {
-        logger.info(`Seeding remote tree for pair ${this.pair.id}`);
-        this.db.clearRemoteNodes(this.pair.id);
+        const pairId = this.pair.id;
+        const resuming =
+            !!this.pair.treeEventScopeId && !this.pair.seeded && this.db.countRemoteNodes(pairId) > 0;
 
-        const root = await this.client.getNode(this.pair.remoteUid);
-        const scopeId = root.treeEventScopeId;
+        if (!resuming) {
+            logger.info(`Seeding remote tree for pair ${pairId}`);
+            this.db.clearRemoteNodes(pairId);
 
-        const queue: string[] = [this.pair.remoteUid];
-        let count = 0;
+            const root = await this.client.getNode(this.pair.remoteUid);
+            const scopeId = root.treeEventScopeId;
 
-        while (queue.length > 0) {
-            const parentUid = queue.shift()!;
-            for await (const node of this.listChildren(parentUid, signal)) {
-                const row = toRemoteNode(node);
-                if (!row || row.trashed) {
+            let cursor: string | null = null;
+            for await (const event of this.client.iterateEvents(scopeId, undefined, signal)) {
+                cursor = event.eventId;
+            }
+
+            // The root is stored so the frontier logic can treat it like any
+            // other folder. snapshot() walks down from it, so it never appears
+            // as an entry in its own right.
+            this.db.upsertRemoteNode(pairId, {
+                uid: this.pair.remoteUid,
+                parentUid: null,
+                name: '',
+                type: 'folder',
+                revisionUid: null,
+                hash: null,
+                size: 0,
+                mtime: 0,
+                trashed: false,
+            });
+
+            this.db.updatePair(pairId, { treeEventScopeId: scopeId, eventCursor: cursor, seeded: false });
+            this.pair = { ...this.pair, treeEventScopeId: scopeId, eventCursor: cursor, seeded: false };
+        } else {
+            logger.info(`Resuming interrupted seed for pair ${pairId}`);
+        }
+
+        let listed = 0;
+        let skipped = 0;
+
+        while (!signal?.aborted) {
+            const frontier = this.db.getUnlistedFolders(pairId);
+            if (frontier.length === 0) {
+                break;
+            }
+            const paths = this.buildFolderPaths();
+
+            for (const folderUid of frontier) {
+                if (signal?.aborted) {
+                    break;
+                }
+                const folderPath = paths.get(folderUid);
+                if (folderPath === undefined) {
+                    // Orphaned by a move we have already recorded; nothing to list.
+                    this.db.markChildrenListed(pairId, folderUid);
                     continue;
                 }
-                this.db.upsertRemoteNode(this.pair.id, row);
-                count += 1;
-                if (row.type === 'folder') {
-                    queue.push(row.uid);
+
+                for await (const node of this.listChildren(folderUid, signal)) {
+                    const row = toRemoteNode(node);
+                    if (!row || row.trashed) {
+                        continue;
+                    }
+                    const childPath = folderPath ? `${folderPath}/${row.name}` : row.name;
+                    if (this.isExcluded(childPath)) {
+                        skipped += 1;
+                        continue;
+                    }
+                    this.db.upsertRemoteNode(pairId, row);
+                }
+
+                this.db.markChildrenListed(pairId, folderUid);
+                listed += 1;
+
+                if (listed % 100 === 0) {
+                    logger.info(`Pair ${pairId}: enumerated ${listed} folders (${this.db.countRemoteNodes(pairId)} nodes)`);
+                    this.onProgress?.(listed, this.db.countRemoteNodes(pairId));
                 }
             }
         }
 
-        // Establish the cursor. With no cursor the SDK yields a single
-        // FastForward carrying the current event id and no history — which is
-        // exactly the bootstrap we want, since we just enumerated everything.
-        let cursor: string | null = null;
-        for await (const event of this.client.iterateEvents(scopeId, undefined, signal)) {
-            cursor = event.eventId;
+        if (signal?.aborted) {
+            logger.info(`Seed for pair ${pairId} interrupted after ${listed} folders; will resume`);
+            return;
         }
 
-        this.db.updatePair(this.pair.id, { treeEventScopeId: scopeId, eventCursor: cursor });
-        this.pair = { ...this.pair, treeEventScopeId: scopeId, eventCursor: cursor };
-        logger.info(`Seeded ${count} remote node(s) for pair ${this.pair.id}`);
+        this.db.updatePair(pairId, { seeded: true });
+        this.pair = { ...this.pair, seeded: true };
+        logger.info(
+            `Seeded pair ${pairId}: ${this.db.countRemoteNodes(pairId)} nodes across ${listed} folders` +
+                (skipped > 0 ? `, ${skipped} excluded` : ''),
+        );
     }
 
     /**
@@ -246,6 +349,19 @@ export class RemoteTree {
                     return 'changed';
                 }
 
+                // An event can bring a node into a path we are excluding;
+                // ignoring it here keeps excluded subtrees genuinely absent.
+                const paths = this.buildFolderPaths();
+                const parentPath = row.parentUid ? paths.get(row.parentUid) : '';
+                if (parentPath !== undefined) {
+                    const nodePath = parentPath ? `${parentPath}/${row.name}` : row.name;
+                    if (this.isExcluded(nodePath)) {
+                        this.db.deleteRemoteNode(this.pair.id, row.uid);
+                        known.delete(row.uid);
+                        return 'ignored';
+                    }
+                }
+
                 this.db.upsertRemoteNode(this.pair.id, row);
                 known.add(row.uid);
 
@@ -264,20 +380,27 @@ export class RemoteTree {
     }
 
     private async enumerateInto(parentUid: string, known: Set<string>): Promise<void> {
-        const queue = [parentUid];
+        const paths = this.buildFolderPaths();
+        const queue: Array<{ uid: string; path: string }> = [{ uid: parentUid, path: paths.get(parentUid) ?? '' }];
+
         while (queue.length > 0) {
             const current = queue.shift()!;
-            for await (const node of this.listChildren(current)) {
+            for await (const node of this.listChildren(current.uid)) {
                 const row = toRemoteNode(node);
                 if (!row || row.trashed) {
+                    continue;
+                }
+                const childPath = current.path ? `${current.path}/${row.name}` : row.name;
+                if (this.isExcluded(childPath)) {
                     continue;
                 }
                 this.db.upsertRemoteNode(this.pair.id, row);
                 known.add(row.uid);
                 if (row.type === 'folder') {
-                    queue.push(row.uid);
+                    queue.push({ uid: row.uid, path: childPath });
                 }
             }
+            this.db.markChildrenListed(this.pair.id, current.uid);
         }
     }
 

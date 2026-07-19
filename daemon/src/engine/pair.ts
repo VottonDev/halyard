@@ -36,6 +36,8 @@ export class PairSyncer {
 
     status: PairStatus = 'idle';
     error: string | null = null;
+    /** Enumeration progress, so a long first sync is visible rather than silent. */
+    seedProgress: { folders: number; nodes: number } | null = null;
     stats: PairStats = { pending: 0, conflicts: 0, filesUp: 0, filesDown: 0, bytesUp: 0, bytesDown: 0 };
 
     constructor(
@@ -45,7 +47,10 @@ export class PairSyncer {
         private readonly onProgress: (progress: Progress | null) => void,
         private readonly onChanged: () => void,
     ) {
-        this.tree = new RemoteTree(db, client, pair);
+        this.tree = new RemoteTree(db, client, pair, (folders, nodes) => {
+            this.seedProgress = { folders, nodes };
+            this.onChanged();
+        });
         this.stats.conflicts = db.countConflicts(pair.id);
     }
 
@@ -86,7 +91,11 @@ export class PairSyncer {
                 // A cycle can legitimately cause the next one to find work
                 // (a conflict copy needs uploading, for example), but it must
                 // converge. Stop looping if it does not.
-                if (++guard >= 5) {
+                // A resumable enumeration can need several passes before any
+                // syncing happens, so the guard has to be generous. It exists
+                // only to stop a genuine oscillation running forever.
+                if (++guard >= 50) {
+                    logger.warn(`Pair ${this.pair.id}: stopping after ${guard} passes without settling`);
                     break;
                 }
             } while (this.dirty && !signal?.aborted);
@@ -106,19 +115,33 @@ export class PairSyncer {
         }
 
         try {
-            // --- Remote side: seed once, then follow the event stream.
-            if (!pair.treeEventScopeId || !pair.eventCursor) {
+            // --- Remote side: enumerate once, then follow the event stream.
+            if (!this.pair.seeded) {
                 this.setStatus('setup');
                 await this.tree.seed(signal);
             } else {
                 this.setStatus('scanning');
                 const { needsReseed } = await this.tree.pull(signal);
                 if (needsReseed) {
+                    this.db.updatePair(this.pair.id, { seeded: false });
+                    this.pair = { ...this.pair, seeded: false };
+                    this.tree.setPair(this.pair);
                     await this.tree.seed(signal);
                 }
             }
             this.pair = this.db.getPair(pair.id) ?? pair;
             this.tree.setPair(this.pair);
+
+            // Never reconcile against a half-enumerated remote view. Files we
+            // have not listed yet look exactly like files deleted on Drive, and
+            // acting on that would trash the local copies (or, with a base in
+            // place, the remote ones). Resume the enumeration instead.
+            if (!this.pair.seeded) {
+                logger.info(`Pair ${this.pair.id}: enumeration incomplete, continuing before syncing`);
+                this.dirty = true;
+                this.setStatus('setup');
+                return;
+            }
 
             // --- Local side.
             this.setStatus('scanning');

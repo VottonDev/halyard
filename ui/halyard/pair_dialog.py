@@ -223,7 +223,7 @@ class PairDialog(Adw.Dialog):
         editing = pair is not None
         self.set_title("Edit Folder Pair" if editing else "Add Folder Pair")
         self.set_content_width(500)
-        self.set_content_height(520)
+        self.set_content_height(640)
 
         self._nav = Adw.NavigationView()
         self.set_child(self._nav)

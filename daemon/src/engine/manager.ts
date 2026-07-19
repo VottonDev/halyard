@@ -353,6 +353,7 @@ export class SyncManager {
                 excludes,
                 treeEventScopeId: null,
                 eventCursor: null,
+                seeded: false,
                 createdAt: Date.now(),
                 lastSyncAt: null,
             };
@@ -454,11 +455,20 @@ export class SyncManager {
             logger.info(`Pair ${id} re-targeted; discarding stale sync state`);
             this.db.clearBase(id);
             this.db.clearRemoteNodes(id);
-            this.db.updatePair(id, { treeEventScopeId: null, eventCursor: null, lastSyncAt: null });
+            this.db.updatePair(id, { treeEventScopeId: null, eventCursor: null, lastSyncAt: null, seeded: false });
         }
 
         if (patch.excludes !== undefined) {
             this.purgeExcludedBase(id, patch.excludes);
+            // Exclusions are applied while enumerating, so the stored remote
+            // view reflects the old patterns. Relaxing them would otherwise
+            // leave newly-included folders permanently invisible.
+            const before = JSON.stringify(existing.excludes ?? []);
+            if (before !== JSON.stringify(patch.excludes)) {
+                logger.info(`Pair ${id}: exclusions changed, re-enumerating the remote folder`);
+                this.db.clearRemoteNodes(id);
+                this.db.updatePair(id, { seeded: false, treeEventScopeId: null, eventCursor: null });
+            }
         }
 
         const updated = this.db.getPair(id)!;
