@@ -126,6 +126,50 @@ INTROSPECTION = f"""
 """
 
 
+#: Keys UpdatePair understands. A patch with none of them is an error.
+PATCH_KEYS = {"enabled", "localPath", "remoteUid", "remotePath", "excludes"}
+
+
+def validate_excludes(patterns) -> list[str]:
+    """Validate gitignore-style exclusions the way the contract describes.
+
+    Raises ValueError naming the offending pattern, so the UI can show the
+    message against the row it belongs to.
+    """
+    if not isinstance(patterns, list):
+        raise ValueError("excludes must be a list of patterns.")
+    cleaned: list[str] = []
+    for raw in patterns:
+        if not isinstance(raw, str):
+            raise ValueError("excludes must be a list of strings.")
+        pattern = raw.strip()
+        if not pattern:
+            continue
+        if pattern.startswith("#"):
+            cleaned.append(pattern)   # comment: kept verbatim, matches nothing
+            continue
+        if pattern.startswith("!"):
+            raise ValueError(
+                f'Exclusion "{pattern}": Negated patterns (!) are not supported'
+            )
+        if ".." in pattern.split("/"):
+            raise ValueError(
+                f'Exclusion "{pattern}": Patterns cannot walk outside the '
+                "pair with .."
+            )
+        if pattern.count("**") and "***" in pattern:
+            raise ValueError(
+                f'Exclusion "{pattern}": "***" is not a valid wildcard'
+            )
+        if pattern.startswith("~"):
+            raise ValueError(
+                f'Exclusion "{pattern}": Patterns are relative to the pair '
+                "folder, so they cannot start with ~"
+            )
+        cleaned.append(pattern)
+    return cleaned
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -157,6 +201,7 @@ class MockState:
                 "remotePath": "/Work",
                 "remoteUid": "vol_1~node_work",
                 "enabled": True,
+                "excludes": ["node_modules", "*.iso"],
                 "status": "syncing",
                 "lastSyncAt": minutes_ago(0.5),
                 "error": None,
@@ -172,6 +217,7 @@ class MockState:
                 "remotePath": "/Photos/Camera Roll",
                 "remoteUid": "vol_1~node_camera",
                 "enabled": True,
+                "excludes": [],
                 "status": "idle",
                 "lastSyncAt": minutes_ago(6),
                 "error": None,
@@ -187,6 +233,7 @@ class MockState:
                 "remotePath": "/Notes",
                 "remoteUid": "vol_1~node_notes",
                 "enabled": True,
+                "excludes": [],
                 "status": "error",
                 "lastSyncAt": minutes_ago(94),
                 "error": "The remote folder no longer exists. It may have been "
@@ -203,6 +250,7 @@ class MockState:
                 "remotePath": "/Design/Assets",
                 "remoteUid": "vol_1~node_assets",
                 "enabled": True,
+                "excludes": ["/Renders", "**/cache"],
                 "status": "scanning",
                 "lastSyncAt": minutes_ago(38),
                 "error": None,
@@ -218,6 +266,7 @@ class MockState:
                 "remotePath": "/Archive/2024",
                 "remoteUid": "vol_1~node_archive",
                 "enabled": False,
+                "excludes": [],
                 "status": "paused",
                 "lastSyncAt": minutes_ago(60 * 24 * 3),
                 "error": None,
@@ -622,12 +671,14 @@ class MockDaemon:
             raise ValueError("localPath is required.")
         if any(p["localPath"] == local for p in self.state.pairs):
             raise ValueError(f"{local} is already synced.")
+        excludes = validate_excludes(data.get("excludes") or [])
         pair = {
             "id": f"p_{random.randint(0x1000, 0xffff):04x}",
             "localPath": local,
             "remotePath": data.get("remotePath") or "/",
             "remoteUid": data.get("remoteUid") or "",
             "enabled": True,
+            "excludes": excludes,
             "status": "setup",
             "lastSyncAt": None,
             "error": None,
@@ -665,6 +716,14 @@ class MockDaemon:
         if pair is None:
             raise ValueError(f"No folder pair with id {pair_id}.")
         patch = json.loads(patch_json)
+        if not isinstance(patch, dict) or not (PATCH_KEYS & set(patch)):
+            raise ValueError(
+                "The update contained nothing that can be changed."
+            )
+        if "excludes" in patch:
+            # Validated before anything is mutated, so a bad pattern leaves
+            # the pair exactly as it was.
+            pair["excludes"] = validate_excludes(patch["excludes"])
         for key in ("localPath", "remotePath", "remoteUid", "enabled"):
             if key in patch:
                 pair[key] = patch[key]

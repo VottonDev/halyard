@@ -83,6 +83,8 @@ class Pair:
     remote_path: str = ""
     remote_uid: str = ""
     enabled: bool = True
+    #: gitignore-style patterns, relative to the pair root.
+    excludes: tuple[str, ...] = ()
     status: str = STATUS_IDLE
     last_sync_at: int | None = None
     error: str | None = None
@@ -92,12 +94,17 @@ class Pair:
     def from_json(cls, data: Any) -> "Pair":
         data = _as_dict(data)
         last = data.get("lastSyncAt")
+        raw_excludes = data.get("excludes")
+        excludes = tuple(
+            str(x) for x in raw_excludes if isinstance(x, str)
+        ) if isinstance(raw_excludes, list) else ()
         return cls(
             id=str(data.get("id") or ""),
             local_path=str(data.get("localPath") or ""),
             remote_path=str(data.get("remotePath") or ""),
             remote_uid=str(data.get("remoteUid") or ""),
             enabled=bool(data.get("enabled", True)),
+            excludes=excludes,
             status=str(data.get("status") or STATUS_IDLE),
             last_sync_at=int(last) if isinstance(last, (int, float)) else None,
             error=data.get("error") or None,

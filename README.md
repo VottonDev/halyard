@@ -149,6 +149,42 @@ time you see one, so resolving is just tidying up: **Keep local** promotes your
 copy back to the original name, **Keep remote** discards the preserved copy, and
 **Dismiss** leaves both files and clears the entry.
 
+### Excluding folders
+
+A pair can cover a broad folder while leaving parts of it alone — sync
+`~/Documents` but not the `GitHub` checkout inside it. Patterns are
+gitignore-style and relative to the pair root:
+
+| Pattern | Matches |
+|---|---|
+| `GitHub` | a folder named `GitHub` at any depth, and everything under it |
+| `/GitHub` | only at the top level of the pair |
+| `Archive/old` | an anchored path (any interior slash anchors) |
+| `*.iso` | a glob within one path segment |
+| `**/cache` | an explicit any-depth match |
+
+**Excluding never deletes anything.** Content already synced simply stops being
+tracked and is left exactly where it is, both locally and on Drive. This is
+worth stating plainly because the obvious implementation gets it wrong: filter
+the local scan alone and the reconciler sees files present in its records and
+on Drive but missing on disk, concludes they were deleted, and trashes your
+remote copies. Exclusions are applied to the local view, the remote view and
+the recorded base together, so an excluded path produces no action at all.
+There is a regression test for precisely that mistake.
+
+Un-excluding later merges the two sides afresh. If a file changed on both sides
+while it was ignored, you get a conflict with both copies kept — never a
+deletion.
+
+Negation (`!pattern`) is deliberately unsupported and is rejected rather than
+ignored. Re-including part of an excluded tree makes exclusion order-dependent,
+and an exclusion you believe is active but is not could push private files to
+Drive.
+
+> Worth knowing: `node_modules` is **not** excluded by default. A single
+> JavaScript project can hold hundreds of megabytes across tens of thousands of
+> reinstallable files, so exclude it explicitly if you sync code.
+
 ### What is not synced
 
 Some names are always skipped, in both directions:

@@ -12,7 +12,15 @@ import os
 from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
 from .models import Pair, RemoteFolder
-from .util import paths_overlap, tilde_path
+from .util import (
+    EXCLUDE_SAFETY_NOTE,
+    check_exclude_pattern,
+    normalise_exclude_pattern,
+    offending_exclude,
+    paths_overlap,
+    strip_exclude_reason,
+    tilde_path,
+)
 
 ROOT_LABEL = "My Files"
 
@@ -208,6 +216,9 @@ class PairDialog(Adw.Dialog):
         self._local_path = pair.local_path if pair else ""
         self._remote_uid = pair.remote_uid if pair else ""
         self._remote_path = pair.remote_path if pair else ""
+        self._excludes: list[str] = list(pair.excludes) if pair else []
+        self._exclude_rows: dict[str, Adw.ActionRow] = {}
+        self._suggestion_rows: list[Adw.ActionRow] = []
 
         editing = pair is not None
         self.set_title("Edit Folder Pair" if editing else "Add Folder Pair")
@@ -282,6 +293,8 @@ class PairDialog(Adw.Dialog):
         remote_group.add(self._remote_row)
         content.add(remote_group)
 
+        content.add(self._build_exclusions_group())
+
         note_group = Adw.PreferencesGroup()
         note = Gtk.Label(
             label=("Files already in both folders are merged, not replaced. "
@@ -298,6 +311,196 @@ class PairDialog(Adw.Dialog):
         page.set_child(toolbar)
         self._refresh_rows()
         return page
+
+    # -- exclusions -------------------------------------------------------
+
+    def _build_exclusions_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(
+            title="Exclusions",
+            description=(
+                "Leave parts of this folder out of the sync. Patterns are "
+                "relative to the folder — for example GitHub, *.iso, "
+                "/build, or Archive/old."
+            ),
+        )
+        self._excludes_group = group
+
+        self._exclude_entry = Adw.EntryRow(title="Add a pattern")
+        self._exclude_entry.set_show_apply_button(True)
+        self._exclude_entry.connect("apply", self._on_exclude_entry_apply)
+        self._exclude_entry.add_prefix(
+            Gtk.Image.new_from_icon_name("edit-find-symbolic")
+        )
+        group.add(self._exclude_entry)
+
+        # One-click suggestions: the folders directly inside the chosen
+        # folder, which is what people almost always want to skip.
+        self._suggestions = Adw.ExpanderRow(
+            title="Skip a subfolder",
+            subtitle="Choose a folder on this computer first",
+        )
+        self._suggestions.add_prefix(
+            Gtk.Image.new_from_icon_name("folder-symbolic")
+        )
+        self._suggestions.set_sensitive(False)
+        group.add(self._suggestions)
+
+        safety = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        safety.set_margin_top(10)
+        icon = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
+        icon.set_valign(Gtk.Align.START)
+        icon.add_css_class("dim-label")
+        safety.append(icon)
+        note = Gtk.Label(
+            label=EXCLUDE_SAFETY_NOTE,
+            wrap=True,
+            xalign=0.0,
+        )
+        note.add_css_class("dim-label")
+        note.add_css_class("caption")
+        safety.append(note)
+        group.add(safety)
+
+        self._rebuild_exclude_rows()
+        self._refresh_suggestions()
+        return group
+
+    def _rebuild_exclude_rows(self) -> None:
+        for row in self._exclude_rows.values():
+            self._excludes_group.remove(row)
+        self._exclude_rows.clear()
+
+        for pattern in self._excludes:
+            row = Adw.ActionRow(title=GLib.markup_escape_text(pattern))
+            row.set_subtitle_lines(0)
+            row.add_prefix(
+                Gtk.Image.new_from_icon_name("view-conceal-symbolic")
+            )
+            remove = Gtk.Button(
+                icon_name="list-remove-symbolic",
+                valign=Gtk.Align.CENTER,
+                tooltip_text=f"Stop excluding {pattern}",
+            )
+            remove.add_css_class("flat")
+            remove.connect(
+                "clicked", lambda _b, p=pattern: self._remove_exclude(p)
+            )
+            row.add_suffix(remove)
+            self._exclude_rows[pattern] = row
+            # Keep patterns above the suggestions expander.
+            self._excludes_group.add(row)
+
+        # Re-add so ordering stays: entry, patterns, suggestions, note.
+        self._excludes_group.remove(self._suggestions)
+        self._excludes_group.add(self._suggestions)
+
+    def _on_exclude_entry_apply(self, entry) -> None:
+        self._add_exclude(entry.get_text())
+
+    def _add_exclude(self, pattern: str) -> None:
+        pattern = normalise_exclude_pattern(pattern)
+        problem = check_exclude_pattern(pattern, self._excludes)
+        if problem:
+            self._warn(problem)
+            return
+        self._clear_exclude_errors()
+        self._banner.set_revealed(False)
+        self._excludes.append(pattern)
+        self._exclude_entry.set_text("")
+        self._rebuild_exclude_rows()
+        self._refresh_suggestions()
+        self._revalidate()
+
+    def _remove_exclude(self, pattern: str) -> None:
+        if pattern in self._excludes:
+            self._excludes.remove(pattern)
+            self._clear_exclude_errors()
+            self._rebuild_exclude_rows()
+            self._refresh_suggestions()
+            self._revalidate()
+
+    def _refresh_suggestions(self) -> None:
+        for row in self._suggestion_rows:
+            self._suggestions.remove(row)
+        self._suggestion_rows.clear()
+
+        names = self._subfolder_names()
+        available = [n for n in names if n not in self._excludes]
+
+        if not self._local_path:
+            self._suggestions.set_sensitive(False)
+            self._suggestions.set_subtitle(
+                "Choose a folder on this computer first"
+            )
+            return
+        if not names:
+            self._suggestions.set_sensitive(False)
+            self._suggestions.set_subtitle("No subfolders to skip")
+            return
+        if not available:
+            self._suggestions.set_sensitive(False)
+            self._suggestions.set_subtitle("Every subfolder is already excluded")
+            return
+
+        self._suggestions.set_sensitive(True)
+        count = len(available)
+        self._suggestions.set_subtitle(
+            f"{count} subfolder{'' if count == 1 else 's'} in "
+            f"{os.path.basename(self._local_path.rstrip('/')) or self._local_path}"
+        )
+        for name in available:
+            row = Adw.ActionRow(title=GLib.markup_escape_text(name))
+            row.add_prefix(Gtk.Image.new_from_icon_name("folder-symbolic"))
+            add = Gtk.Button(
+                icon_name="list-add-symbolic",
+                valign=Gtk.Align.CENTER,
+                tooltip_text=f"Exclude {name}",
+            )
+            add.add_css_class("flat")
+            add.connect("clicked", lambda _b, n=name: self._add_exclude(n))
+            row.add_suffix(add)
+            row.set_activatable_widget(add)
+            self._suggestion_rows.append(row)
+            self._suggestions.add_row(row)
+
+    def _subfolder_names(self) -> list[str]:
+        """Immediate subfolder names of the chosen local folder."""
+        path = self._local_path
+        if not path or not os.path.isdir(path):
+            return []
+        names: list[str] = []
+        try:
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    if len(names) >= 60:
+                        break
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            names.append(entry.name)
+                    except OSError:
+                        continue
+        except OSError:
+            return []
+        return sorted(names, key=str.lower)
+
+    def _clear_exclude_errors(self) -> None:
+        for row in self._exclude_rows.values():
+            row.remove_css_class("error")
+            row.set_subtitle("")
+
+    def _show_exclude_error(self, message: str) -> bool:
+        """Mark the offending exclusion row. Returns True if one matched."""
+        pattern = offending_exclude(message, self._excludes)
+        if pattern is None:
+            return False
+        row = self._exclude_rows.get(pattern)
+        if row is None:
+            return False
+        row.add_css_class("error")
+        row.set_subtitle(
+            GLib.markup_escape_text(strip_exclude_reason(message, pattern))
+        )
+        return True
 
     def _refresh_rows(self) -> None:
         if self._local_path:
@@ -335,6 +538,7 @@ class PairDialog(Adw.Dialog):
                 return
             self._local_path = path
             self._refresh_rows()
+            self._refresh_suggestions()
             self._revalidate()
 
         dialog.select_folder(self._window, None, done)
@@ -432,36 +636,49 @@ class PairDialog(Adw.Dialog):
     # -- saving -----------------------------------------------------------
 
     def _on_save(self, _button) -> None:
+        self._clear_exclude_errors()
         self._save_button.set_sensitive(False)
         spinner = Adw.Spinner()
         self._save_button.set_child(spinner)
+
+        def restore() -> None:
+            self._save_button.set_child(None)
+            self._save_button.set_label("Save" if self._pair else "Add")
+            self._save_button.set_sensitive(True)
 
         def on_ok(_pair: Pair) -> None:
             self.emit("saved")
             self.close()
 
         def on_err(message: str) -> None:
-            self._save_button.set_child(None)
-            self._save_button.set_label(
-                "Save" if self._pair else "Add"
-            )
-            self._save_button.set_sensitive(True)
-            self._warn(message)
+            restore()
+            # An exclusion the daemon rejected belongs against its row, not
+            # in a banner that does not say which pattern is at fault.
+            if self._show_exclude_error(message):
+                self._warn("One of the exclusions was not accepted.")
+            else:
+                self._warn(message)
 
         if self._pair is not None:
-            self.client.update_pair(
-                self._pair.id,
-                {
-                    "localPath": self._local_path,
-                    "remoteUid": self._remote_uid,
-                    "remotePath": self._remote_path,
-                },
-                on_ok, on_err,
-            )
+            # Only send what actually changed: re-sending localPath or
+            # remoteUid re-points the pair and discards its sync state.
+            patch: dict = {}
+            if self._local_path != self._pair.local_path:
+                patch["localPath"] = self._local_path
+            if self._remote_uid != self._pair.remote_uid:
+                patch["remoteUid"] = self._remote_uid
+                patch["remotePath"] = self._remote_path
+            if self._excludes != list(self._pair.excludes):
+                patch["excludes"] = list(self._excludes)
+            if not patch:
+                restore()
+                self.close()
+                return
+            self.client.update_pair(self._pair.id, patch, on_ok, on_err)
         else:
             self.client.add_pair(
                 self._local_path, self._remote_uid, self._remote_path,
-                on_ok, on_err,
+                on_ok, on_err, excludes=list(self._excludes),
             )
 
     def toast(self, message: str) -> None:

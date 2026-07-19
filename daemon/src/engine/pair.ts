@@ -4,6 +4,7 @@ import fsp from 'node:fs/promises';
 
 import { getLogger } from '../log.js';
 import type { SyncDatabase } from './db.js';
+import { compileExcludes, filterExcluded } from './exclude.js';
 import { Executor, type Progress } from './execute.js';
 import { fillRequiredHashes, scanLocal } from './localScan.js';
 import { reconcile } from './reconcile.js';
@@ -121,9 +122,15 @@ export class PairSyncer {
 
             // --- Local side.
             this.setStatus('scanning');
-            const local = await scanLocal(this.pair.localPath);
-            const remote = this.tree.snapshot();
-            const base = this.db.getBase(this.pair.id);
+            const isExcluded = compileExcludes(this.pair.excludes ?? []);
+
+            // Exclusions are applied to all three views together. Filtering
+            // only the local scan would leave files present in the base and on
+            // Drive but missing locally, which reads as a deletion — and would
+            // trash the user's remote copies the moment they excluded a folder.
+            const local = filterExcluded(await scanLocal(this.pair.localPath, isExcluded), isExcluded);
+            const remote = filterExcluded(this.tree.snapshot(), isExcluded);
+            const base = filterExcluded(this.db.getBase(this.pair.id), isExcluded);
 
             await fillRequiredHashes(this.pair.localPath, local, base, remote);
 

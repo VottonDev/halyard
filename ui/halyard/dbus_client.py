@@ -263,22 +263,44 @@ class DaemonClient(GObject.Object):
         self._call("ListPairs", parse=parse, on_ok=on_ok, on_err=on_err)
 
     def add_pair(self, local_path: str, remote_uid: str, remote_path: str,
-                 on_ok: OkCallback, on_err: ErrCallback) -> None:
-        payload = json.dumps({
+                 on_ok: OkCallback, on_err: ErrCallback,
+                 excludes: list[str] | None = None) -> None:
+        payload: dict = {
             "localPath": local_path,
             "remoteUid": remote_uid,
             "remotePath": remote_path,
-        })
-        self._call("AddPair", GLib.Variant("(s)", [payload]),
+        }
+        if excludes is not None:
+            payload["excludes"] = list(excludes)
+        self._call("AddPair", GLib.Variant("(s)", [json.dumps(payload)]),
                    parse=Pair.from_json, on_ok=on_ok, on_err=on_err,
                    timeout_ms=SLOW_TIMEOUT_MS)
+
+    #: The only keys UpdatePair understands. A patch with none of them is an
+    #: error rather than a no-op, so callers must not send anything else.
+    PATCH_KEYS = frozenset(
+        {"enabled", "localPath", "remoteUid", "remotePath", "excludes"}
+    )
 
     def update_pair(self, pair_id: str, patch: dict,
                     on_ok: OkCallback | None = None,
                     on_err: ErrCallback | None = None) -> None:
+        patch = {k: v for k, v in patch.items() if k in self.PATCH_KEYS}
+        if not patch:
+            if on_err is not None:
+                GLib.idle_add(
+                    lambda: (on_err("Nothing to change."), False)[1]
+                )
+            return
         self._call("UpdatePair",
                    GLib.Variant("(ss)", [pair_id, json.dumps(patch)]),
                    parse=Pair.from_json, on_ok=on_ok, on_err=on_err)
+
+    def set_pair_excludes(self, pair_id: str, excludes: list[str],
+                          on_ok: OkCallback | None = None,
+                          on_err: ErrCallback | None = None) -> None:
+        """An empty list clears every exclusion."""
+        self.update_pair(pair_id, {"excludes": list(excludes)}, on_ok, on_err)
 
     def set_pair_enabled(self, pair_id: str, enabled: bool,
                          on_ok: OkCallback | None = None,

@@ -199,6 +199,7 @@ class PairRow(Adw.ActionRow):
         if pair.stats.conflicts:
             noun = "conflict" if pair.stats.conflicts == 1 else "conflicts"
             bits.append(f"{pair.stats.conflicts} {noun}")
+        bits.extend(exclusion_summary(pair))
         return f"{paths}\n" + " · ".join(bits)
 
     def _on_switch_toggled(self, switch, _param) -> None:

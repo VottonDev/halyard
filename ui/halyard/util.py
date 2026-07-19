@@ -87,6 +87,75 @@ def paths_overlap(a: str, b: str) -> bool:
     return a.startswith(b + os.sep) or b.startswith(a + os.sep)
 
 
+# -- exclusion patterns --------------------------------------------------
+
+#: Said wherever exclusions are edited. Excluding is the one action here that
+#: users reasonably expect to be destructive, and it is not.
+EXCLUDE_SAFETY_NOTE = (
+    "Excluding never deletes anything. Anything already synced is simply left "
+    "where it is, both on this computer and in Proton Drive."
+)
+
+
+def normalise_exclude_pattern(pattern: str) -> str:
+    return (pattern or "").strip()
+
+
+def check_exclude_pattern(pattern: str, existing: list[str]) -> str:
+    """Return a reason the pattern is unusable, or "" if it looks fine.
+
+    Deliberately minimal: the contract only rejects negation outright, and the
+    daemon is the authority on everything else. Refusing more than that here
+    would block patterns the daemon would happily accept.
+    """
+    pattern = normalise_exclude_pattern(pattern)
+    if not pattern:
+        return "Enter a pattern first."
+    if pattern.startswith("!"):
+        return "Negated patterns (!) are not supported."
+    if pattern in existing:
+        return f"“{pattern}” is already excluded."
+    return ""
+
+
+def offending_exclude(message: str, patterns: list[str]) -> str | None:
+    """Find which pattern a daemon error message is complaining about.
+
+    The daemon names it in quotes, e.g.
+    ``Exclusion "!keep": Negated patterns (!) are not supported``.
+    Matching lets the UI mark the row instead of showing a bare toast.
+    """
+    if not message:
+        return None
+    for quote_open, quote_close in (('"', '"'), ("“", "”"), ("'", "'")):
+        start = message.find(quote_open)
+        if start == -1:
+            continue
+        end = message.find(quote_close, start + 1)
+        if end == -1:
+            continue
+        quoted = message[start + 1:end]
+        if quoted in patterns:
+            return quoted
+    # Fall back to any pattern mentioned verbatim, longest first so that
+    # "build" does not win over "build/output".
+    for pattern in sorted(patterns, key=len, reverse=True):
+        if pattern and pattern in message:
+            return pattern
+    return None
+
+
+def strip_exclude_reason(message: str, pattern: str) -> str:
+    """Reduce ``Exclusion "x": reason`` to just ``reason`` for row display."""
+    marker = f"{pattern}”:" if "”" in message else f'{pattern}":'
+    index = message.find(marker)
+    if index != -1:
+        return message[index + len(marker):].strip() or message
+    if ":" in message:
+        return message.split(":", 1)[1].strip() or message
+    return message
+
+
 # -- XDG Background portal ----------------------------------------------
 
 PORTAL_BUS = "org.freedesktop.portal.Desktop"

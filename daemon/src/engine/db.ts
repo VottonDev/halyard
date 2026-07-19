@@ -33,6 +33,7 @@ export class SyncDatabase {
                 remote_uid TEXT NOT NULL,
                 remote_path TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                excludes TEXT NOT NULL DEFAULT '[]',
                 tree_event_scope_id TEXT,
                 event_cursor TEXT,
                 created_at INTEGER NOT NULL,
@@ -98,6 +99,7 @@ export class SyncDatabase {
         // existed get null devices, which simply means no move is detected for
         // those rows until they are rewritten — correct, just not optimal.
         this.ensureColumn('base_entries', 'local_device', 'INTEGER');
+        this.ensureColumn('pairs', 'excludes', "TEXT NOT NULL DEFAULT '[]'");
     }
 
     private ensureColumn(table: string, column: string, definition: string): void {
@@ -149,8 +151,8 @@ export class SyncDatabase {
     insertPair(pair: Pair): void {
         this.db
             .prepare(
-                `INSERT INTO pairs (id, local_path, remote_uid, remote_path, enabled, tree_event_scope_id, event_cursor, created_at, last_sync_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                `INSERT INTO pairs (id, local_path, remote_uid, remote_path, enabled, excludes, tree_event_scope_id, event_cursor, created_at, last_sync_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
             .run(
                 pair.id,
@@ -158,6 +160,7 @@ export class SyncDatabase {
                 pair.remoteUid,
                 pair.remotePath,
                 pair.enabled ? 1 : 0,
+                JSON.stringify(pair.excludes ?? []),
                 pair.treeEventScopeId,
                 pair.eventCursor,
                 pair.createdAt,
@@ -172,6 +175,7 @@ export class SyncDatabase {
             remoteUid: 'remote_uid',
             remotePath: 'remote_path',
             enabled: 'enabled',
+            excludes: 'excludes',
             treeEventScopeId: 'tree_event_scope_id',
             eventCursor: 'event_cursor',
             createdAt: 'created_at',
@@ -186,7 +190,13 @@ export class SyncDatabase {
                 continue;
             }
             assignments.push(`${column} = ?`);
-            values.push(typeof value === 'boolean' ? (value ? 1 : 0) : (value as string | number | null));
+            if (Array.isArray(value)) {
+                values.push(JSON.stringify(value));
+            } else if (typeof value === 'boolean') {
+                values.push(value ? 1 : 0);
+            } else {
+                values.push(value as string | number | null);
+            }
         }
         if (assignments.length === 0) {
             return;
@@ -379,6 +389,19 @@ export type RemoteNodeInput = {
     trashed: boolean;
 };
 
+/** Tolerant: a malformed value means "no exclusions", never a crash. */
+function parseExcludes(value: unknown): string[] {
+    if (typeof value !== 'string' || !value) {
+        return [];
+    }
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+    } catch {
+        return [];
+    }
+}
+
 function rowToPair(row: Record<string, unknown>): Pair {
     return {
         id: row.id as string,
@@ -386,6 +409,7 @@ function rowToPair(row: Record<string, unknown>): Pair {
         remoteUid: row.remote_uid as string,
         remotePath: row.remote_path as string,
         enabled: !!row.enabled,
+        excludes: parseExcludes(row.excludes),
         treeEventScopeId: (row.tree_event_scope_id as string | null) ?? null,
         eventCursor: (row.event_cursor as string | null) ?? null,
         createdAt: row.created_at as number,

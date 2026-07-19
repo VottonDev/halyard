@@ -7,6 +7,8 @@ export type Pair = {
     remoteUid: string;
     remotePath: string;
     enabled: boolean;
+    /** gitignore-style patterns, relative to the pair root. See engine/exclude.ts. */
+    excludes: string[];
     treeEventScopeId: string | null;
     eventCursor: string | null;
     createdAt: number;

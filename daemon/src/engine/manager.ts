@@ -7,6 +7,7 @@ import path from 'node:path';
 import type { DriveSession } from '../drive/session.js';
 import { getLogger } from '../log.js';
 import { SyncDatabase } from './db.js';
+import { compileExcludes, validatePattern } from './exclude.js';
 import type { Progress } from './execute.js';
 import { isIgnoredName } from './localScan.js';
 import { PairSyncer } from './pair.js';
@@ -32,6 +33,7 @@ export type Status = {
         remotePath: string;
         remoteUid: string;
         enabled: boolean;
+        excludes: string[];
         status: string;
         lastSyncAt: number | null;
         error: string | null;
@@ -183,6 +185,8 @@ export class SyncManager {
         if (this.watchers.has(pair.id)) {
             return;
         }
+        const isExcluded = compileExcludes(pair.excludes ?? []);
+
         const watcher = watch(pair.localPath, {
             ignoreInitial: true,
             persistent: true,
@@ -190,7 +194,19 @@ export class SyncManager {
             // Wait for writes to settle: syncing a file mid-save uploads a
             // truncated copy and then immediately has to upload it again.
             awaitWriteFinish: { stabilityThreshold: 1_500, pollInterval: 200 },
-            ignored: (target: string) => target.split(path.sep).some((segment) => isIgnoredName(segment)),
+            ignored: (target: string) => {
+                if (target.split(path.sep).some((segment) => isIgnoredName(segment))) {
+                    return true;
+                }
+                // Excluded trees should not even be watched — otherwise a busy
+                // folder like a build directory wakes the daemon constantly
+                // just for its changes to be discarded.
+                const relative = path.relative(pair.localPath, target);
+                if (!relative || relative.startsWith('..')) {
+                    return false;
+                }
+                return isExcluded(relative.split(path.sep).join('/'));
+            },
         });
 
         watcher.on('all', () => this.onLocalChange(pair.id));
@@ -260,7 +276,54 @@ export class SyncManager {
         return this.db.listPairs();
     }
 
-    async addPair(input: { localPath: string; remoteUid: string; remotePath: string }): Promise<Pair> {
+    /**
+     * Rejects patterns we cannot honour rather than silently dropping them —
+     * an exclusion the user believes is active but is not could send a folder
+     * they meant to keep private up to Drive.
+     */
+    private checkExcludes(patterns: string[] | undefined): string[] {
+        const cleaned = (patterns ?? []).map((pattern) => pattern.trim()).filter(Boolean);
+        for (const pattern of cleaned) {
+            const problem = validatePattern(pattern);
+            if (problem) {
+                throw new Error(`Exclusion "${pattern}": ${problem}`);
+            }
+        }
+        return cleaned;
+    }
+
+    /**
+     * Drops recorded state for paths that have just become excluded.
+     *
+     * Keeping it would mean that un-excluding later runs a three-way merge
+     * against a base that stopped tracking reality while the folder was
+     * ignored — and a file deleted locally during that time would then be
+     * deleted on Drive. Discarding it makes un-excluding a plain merge, which
+     * can create conflicts but can never delete.
+     */
+    private purgeExcludedBase(pairId: string, patterns: string[]): void {
+        if (patterns.length === 0) {
+            return;
+        }
+        const isExcluded = compileExcludes(patterns);
+        let purged = 0;
+        for (const entryPath of this.db.getBase(pairId).keys()) {
+            if (isExcluded(entryPath)) {
+                this.db.deleteBaseEntry(pairId, entryPath);
+                purged += 1;
+            }
+        }
+        if (purged > 0) {
+            logger.info(`Pair ${pairId}: dropped ${purged} recorded entries now covered by exclusions`);
+        }
+    }
+
+    async addPair(input: {
+        localPath: string;
+        remoteUid: string;
+        remotePath: string;
+        excludes?: string[];
+    }): Promise<Pair> {
         // Check before writing anything: creating the syncer needs a Drive
         // client, and failing after the insert would leave an orphaned pair.
         if (!this.session.isLoggedIn()) {
@@ -268,6 +331,7 @@ export class SyncManager {
         }
 
         const localPath = await this.validateTarget(input.localPath, input.remoteUid, input.remotePath);
+        const excludes = this.checkExcludes(input.excludes);
 
         // If these exact folders were paired before and the state was kept,
         // pick up where we left off rather than starting from scratch.
@@ -276,7 +340,9 @@ export class SyncManager {
         if (revived) {
             logger.info(`Reviving previously removed pair for ${localPath}`);
             this.db.markPairRemoved(revived.id, false);
-            pair = { ...revived, enabled: true };
+            this.db.updatePair(revived.id, { excludes });
+            this.purgeExcludedBase(revived.id, excludes);
+            pair = { ...revived, enabled: true, excludes };
         } else {
             pair = {
                 id: `p_${randomUUID().slice(0, 8)}`,
@@ -284,6 +350,7 @@ export class SyncManager {
                 remoteUid: input.remoteUid,
                 remotePath: input.remotePath,
                 enabled: true,
+                excludes,
                 treeEventScopeId: null,
                 eventCursor: null,
                 createdAt: Date.now(),
@@ -357,6 +424,10 @@ export class SyncManager {
             throw new Error(`No such pair: ${id}`);
         }
 
+        if (patch.excludes !== undefined) {
+            patch = { ...patch, excludes: this.checkExcludes(patch.excludes) };
+        }
+
         const wantsLocal = patch.localPath !== undefined;
         const wantsRemote = patch.remoteUid !== undefined;
         let nextLocalPath = existing.localPath;
@@ -384,6 +455,10 @@ export class SyncManager {
             this.db.clearBase(id);
             this.db.clearRemoteNodes(id);
             this.db.updatePair(id, { treeEventScopeId: null, eventCursor: null, lastSyncAt: null });
+        }
+
+        if (patch.excludes !== undefined) {
+            this.purgeExcludedBase(id, patch.excludes);
         }
 
         const updated = this.db.getPair(id)!;
@@ -496,6 +571,7 @@ export class SyncManager {
                     remotePath: pair.remotePath,
                     remoteUid: pair.remoteUid,
                     enabled: pair.enabled,
+                    excludes: pair.excludes,
                     status: !pair.enabled ? 'paused' : this.paused ? 'paused' : (syncer?.status ?? 'idle'),
                     lastSyncAt: pair.lastSyncAt,
                     error: syncer?.error ?? null,

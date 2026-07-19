@@ -44,7 +44,10 @@ export async function hashFile(absolutePath: string): Promise<string | null> {
  * Symlinks are skipped rather than followed: following them invites cycles and
  * would silently pull files from outside the pair into Drive.
  */
-export async function scanLocal(root: string): Promise<Map<string, LocalItem>> {
+export async function scanLocal(
+    root: string,
+    isExcluded: (relativePath: string) => boolean = () => false,
+): Promise<Map<string, LocalItem>> {
     const items = new Map<string, LocalItem>();
 
     async function walk(directory: string, prefix: string): Promise<void> {
@@ -64,6 +67,12 @@ export async function scanLocal(root: string): Promise<Map<string, LocalItem>> {
             const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
 
             if (entry.isSymbolicLink()) {
+                continue;
+            }
+
+            // Skip before descending: an excluded folder should cost nothing to
+            // ignore, not a full recursive walk we then discard.
+            if (isExcluded(relative)) {
                 continue;
             }
 

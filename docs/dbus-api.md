@@ -66,14 +66,44 @@ sees the password, and 2FA/SSO are handled by Proton.
 | `SyncNow` | `(s id) → ()` | empty `id` means every pair |
 | `SetPaused` | `(b paused) → ()` | global pause |
 
-`AddPair` takes `{ localPath, remoteUid, remotePath }`.
+`AddPair` takes `{ localPath, remoteUid, remotePath, excludes? }`.
 
-`UpdatePair` accepts any subset of `{ enabled, localPath, remoteUid, remotePath }`;
+`UpdatePair` accepts any subset of `{ enabled, localPath, remoteUid, remotePath, excludes }`;
 every other key is ignored, and a patch containing no supported key is an error
 rather than a silent no-op. Changing `localPath` or `remoteUid` re-points the
 pair, which discards its recorded sync state — the next sync then treats both
 sides as new and merges them, so nothing is deleted and differing files become
 conflicts with both copies kept.
+
+### Exclusions
+
+`excludes` is a list of gitignore-style patterns, relative to the pair root,
+letting a pair cover a broad folder while leaving parts of it alone — sync
+`~/Documents` but not the `GitHub` checkout inside it.
+
+| Pattern | Matches |
+|---|---|
+| `GitHub` | a segment named `GitHub` at any depth, and everything under it |
+| `/GitHub` | only at the top level of the pair |
+| `Archive/old` | anchored path (any interior slash anchors) |
+| `*.iso` | glob within one path segment |
+| `**/cache` | explicit any-depth match |
+| `build/` | trailing slash accepted and ignored |
+| `# note` | comment, ignored |
+
+Negation (`!pattern`) is **not** supported and is rejected rather than ignored:
+re-including part of an excluded tree makes exclusion order-dependent, and an
+exclusion the user believes is active but is not could push private files to
+Drive. An invalid pattern fails the whole call with a message naming it, so the
+UI can show it against the offending row.
+
+Sending `excludes` as an empty list clears every exclusion; omitting the key
+leaves them unchanged.
+
+Excluding a folder never deletes anything, on either side. Content already
+synced simply stops being tracked and is left where it is, locally and on
+Drive. Un-excluding later merges the two sides afresh, which can raise
+conflicts (both copies kept) but never deletions.
 
 Removing a pair never touches the user's files; `deleteLocalState` only discards
 Halyard's own sync database for that pair. Removing with `deleteLocalState`
@@ -88,6 +118,7 @@ instead of re-hashing and re-transferring everything.
   "remotePath": "/Work",              // display path
   "remoteUid": "volumeId~nodeId",
   "enabled": true,
+  "excludes": ["GitHub", "*.iso"],    // gitignore-style, relative to the pair
   "status": "idle",                   // setup|scanning|syncing|idle|paused|error
   "lastSyncAt": 1752940800000,
   "error": null,

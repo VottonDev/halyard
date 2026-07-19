@@ -6,6 +6,7 @@
 //
 // Creates "Halyard Test" in Drive and ~/halyard-test locally. Touches nothing else.
 
+import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -29,6 +30,23 @@ function check(name, ok, detail = '') {
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function remoteop(...args) {
+    try {
+        return execFileSync('node', ['dist/remoteop.cjs', ...args], { encoding: 'utf8' }).trim();
+    } catch {
+        return '';
+    }
+}
+
+/** Lines of `remoteop ls`, empty when the folder has no children. */
+function listRemote() {
+    const output = remoteop('ls', REMOTE_NAME);
+    if (!output || output === '(empty)' || output.startsWith('ERROR')) {
+        return [];
+    }
+    return output.split('\n').filter(Boolean);
 }
 
 async function connect() {
@@ -101,6 +119,21 @@ async function main() {
         if (pair.remoteUid === remote.uid || pair.localPath === LOCAL_ROOT) {
             await iface.RemovePair(pair.id, true);
         }
+    }
+
+    // Empty the Drive folder too. The upload and download counts below are
+    // exact, so leftovers from a previous run merge in and make them wrong —
+    // a failure that looks like a product bug but is only stale state.
+    for (const line of listRemote()) {
+        const name = line.slice(24).trim();
+        if (name) {
+            remoteop('trash', REMOTE_NAME, name);
+        }
+    }
+    if (listRemote().length > 0) {
+        console.log('  warning: could not fully clear the Drive test folder');
+    } else {
+        console.log('  cleared the Drive test folder');
     }
 
     // --- Content to sync. The large file forces the multi-block upload path.

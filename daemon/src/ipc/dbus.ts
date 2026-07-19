@@ -15,6 +15,14 @@ const ERROR_NAME = 'io.github.votton.Halyard.Error.Failed';
 
 const { Interface } = dbus.interface;
 
+/** Coerces untrusted JSON into a clean string list. */
+function toStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
+}
+
 function fail(error: unknown): never {
     const message = error instanceof Error ? error.message : String(error);
     throw new dbus.DBusError(ERROR_NAME, message);
@@ -83,11 +91,19 @@ export class HalyardInterface extends Interface {
 
     async AddPair(newPair: string): Promise<string> {
         try {
-            const input = JSON.parse(newPair) as { localPath: string; remoteUid: string; remotePath: string };
-            if (!input.localPath || !input.remoteUid) {
+            const input = JSON.parse(newPair) as Record<string, unknown>;
+            const localPath = typeof input.localPath === 'string' ? input.localPath : '';
+            const remoteUid = typeof input.remoteUid === 'string' ? input.remoteUid : '';
+            if (!localPath || !remoteUid) {
                 throw new Error('localPath and remoteUid are required');
             }
-            const pair = await this.manager.addPair(input);
+
+            const pair = await this.manager.addPair({
+                localPath,
+                remoteUid,
+                remotePath: typeof input.remotePath === 'string' ? input.remotePath : '',
+                excludes: toStringArray(input.excludes),
+            });
             const status = this.manager.getStatus().pairs.find((entry) => entry.id === pair.id);
             return JSON.stringify(status ?? pair);
         } catch (error) {
@@ -114,6 +130,10 @@ export class HalyardInterface extends Interface {
             }
             if (typeof parsed.remotePath === 'string' && parsed.remotePath) {
                 allowed.remotePath = parsed.remotePath;
+            }
+            // Present-but-empty is meaningful here: it clears every exclusion.
+            if (parsed.excludes !== undefined) {
+                allowed.excludes = toStringArray(parsed.excludes);
             }
             if (Object.keys(allowed).length === 0) {
                 throw new Error('No supported fields in patch');
