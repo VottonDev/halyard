@@ -105,21 +105,25 @@ local recovery path independent of Proton's Trash.
   bun is what applies it
 - Python 3 with PyGObject, GTK 4 and libadwaita 1
 
-A checkout of [proton-sdk](https://github.com/protonprivacy/proton-sdk-preview)
-must sit **next to** this repository, since the daemon depends on it by relative
-path:
+Proton's [Drive SDK](https://github.com/ProtonDriveApps/sdk) is pinned as a git
+submodule at `proton-sdk/` (tag `js/v0.19.2`); the daemon builds against it by
+relative path. Clone with `--recurse-submodules`, or fetch it in an existing
+checkout, then build it once:
 
+```bash
+git submodule update --init                    # skip if you cloned --recurse-submodules
+cd proton-sdk/client/js && bun install && bun run build
 ```
-GitHub/
-├── proton-sdk/     # Proton's SDK, built with `cd client/js && bun install && bun run build`
-└── halyard/
-```
+
+`install.sh` does both of these for you on a fresh clone — this is only needed
+if you build the daemon by hand.
 
 ## Install
 
 ```bash
+git clone --recurse-submodules https://github.com/VottonDev/halyard
 cd halyard
-./packaging/install.sh
+./packaging/install.sh    # fetches + builds the pinned Proton SDK, then the daemon
 systemctl --user enable --now halyard-daemon.service
 halyard
 ```
@@ -215,6 +219,9 @@ Everything else syncs, including dotfiles. The list lives in
 ## Development
 
 ```bash
+git submodule update --init                    # once, if not cloned --recurse-submodules
+(cd proton-sdk/client/js && bun install && bun run build)   # build the pinned SDK
+
 cd daemon
 bun install
 bun test                    # reconciler decision matrix
@@ -294,7 +301,7 @@ gdbus call --session --dest io.github.votton.Halyard.Daemon \
 | Symptom | Likely cause |
 |---|---|
 | "No usable secret service found" at startup | `gnome-keyring` is not running, or the login keyring is locked. Unlock it and restart the daemon. |
-| The app sits on "connecting" | The daemon is not running. The window offers a **Start Sync Service** button; if the service has never been set up it offers to do that first. Failing that, check `journalctl --user -u halyard-daemon` — a missing or unbuilt `../proton-sdk` is the usual reason. |
+| The app sits on "connecting" | The daemon is not running. The window offers a **Start Sync Service** button; if the service has never been set up it offers to do that first. Failing that, check `journalctl --user -u halyard-daemon` — a missing or unbuilt `proton-sdk` submodule (`git submodule update --init`, then build `proton-sdk/client/js`) is the usual reason. |
 | A pair shows an error and stalls | The message is verbatim from the daemon. Failed items are retried on the next cycle; sync does not stop for one bad file. |
 | Notifications never appear | GNOME only shows them once the `.desktop` file is installed in `XDG_DATA_DIRS`, which `install.sh` does. |
 | Nothing syncs after sign-in | Check the pair is enabled and not globally paused (`GetStatus` shows both). |

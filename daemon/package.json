@@ -16,11 +16,11 @@
     },
     "dependencies": {
         "@protontech/crypto": "2.0.0",
-        "@protontech/drive-sdk": "file:../../proton-sdk/client/js",
+        "@protontech/drive-sdk": "file:../proton-sdk/client/js",
         "chokidar": "^4.0.3",
         "dbus-next": "^0.10.2",
         "ky": "^1.14.3",
-        "proton-drive-sdk-account": "file:../../proton-sdk/incubating/account/js"
+        "proton-drive-sdk-account": "file:../proton-sdk/incubating/account/js"
     },
     "devDependencies": {
         "@types/node": "^26.1.1",

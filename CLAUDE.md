@@ -66,9 +66,12 @@ Each of these cost real debugging time. Do not "simplify" them away.
   cannot resolve the `.js` specifiers the `src/` tree uses, so that script
   loads `test/support/register.mjs`, which rewrites them to `.ts`. Pure logic
   stays in `*.test.ts` under Bun.
-- The sibling `proton-sdk` checkout must exist at `../proton-sdk` and
-  `client/js` must be built (`bun install && bun run build`) before this will
-  compile.
+- The `proton-sdk` submodule (pinned at tag `js/v0.19.2`) lives at the repo root
+  — `../proton-sdk` from `daemon/` — and `client/js` must be built (`bun install
+  && bun run build`) before this will compile. `git submodule update --init`
+  fetches it; `packaging/install.sh` runs both the fetch and the build. It is a
+  submodule of `github.com/ProtonDriveApps/sdk`, not a sibling checkout — the
+  daemon no longer depends on anything outside this repo.
 
 ## Proton's rules — do not break these
 

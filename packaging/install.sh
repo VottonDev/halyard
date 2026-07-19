@@ -28,13 +28,29 @@ if [ "$NODE_MAJOR" -lt 22 ]; then
     die "Node 22 or newer is required (found $(node -v)); the daemon uses the built-in node:sqlite module"
 fi
 
+# ------------------------------------------------------------ proton sdk
+# The daemon builds against Proton's Drive SDK, pinned as a git submodule at
+# proton-sdk/. Fetch it if this checkout skipped --recurse-submodules, and build
+# it once so the daemon has dist/ to bundle.
+command -v bun >/dev/null || die "bun is required to install dependencies (the Proton crypto package needs a patch that only bun applies)"
+
+SDK_DIR="$REPO_ROOT/proton-sdk/client/js"
+if [ ! -f "$SDK_DIR/package.json" ]; then
+    if [ -f "$REPO_ROOT/.gitmodules" ] && command -v git >/dev/null; then
+        say "Fetching the Proton SDK submodule"
+        (cd "$REPO_ROOT" && git submodule update --init proton-sdk)
+    else
+        die "the proton-sdk submodule is missing — clone with --recurse-submodules, or run 'git submodule update --init'"
+    fi
+fi
+if [ ! -f "$SDK_DIR/dist/index.js" ]; then
+    say "Building the Proton SDK"
+    (cd "$SDK_DIR" && bun install && bun run build)
+fi
+
 # ---------------------------------------------------------------- build
 say "Building the daemon"
-if command -v bun >/dev/null; then
-    (cd "$DAEMON_DIR" && bun install --frozen-lockfile 2>/dev/null || bun install)
-else
-    die "bun is required to install dependencies (the Proton crypto package needs a patch that only bun applies)"
-fi
+(cd "$DAEMON_DIR" && bun install --frozen-lockfile 2>/dev/null || bun install)
 (cd "$DAEMON_DIR" && node scripts/build.mjs)
 
 [ -f "$DAEMON_DIR/dist/halyard-daemon.cjs" ] || die "build did not produce dist/halyard-daemon.cjs"

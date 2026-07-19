@@ -1,0 +1,4 @@
+[submodule "proton-sdk"]
+	path = proton-sdk
+	url = https://github.com/ProtonDriveApps/sdk.git
+	ignore = dirty
