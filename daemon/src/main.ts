@@ -14,17 +14,29 @@ async function main(): Promise<void> {
 
     const bus = dbus.sessionBus();
 
-    // Claim the well-known name before doing any real work. If another daemon
-    // already holds it, this instance must exit rather than compete for the
-    // sync database.
+    // Open the keyring-backed session up front. It talks to the secret service,
+    // not our own database, so it is safe to run even when another daemon turns
+    // out to own the name — and doing it before requestName is what lets
+    // everything after the name check stay synchronous (see below).
+    const store = await createSecretStore(bus);
+    const session = await DriveSession.create(store);
+
+    // Claim the well-known name before opening the sync database. If another
+    // daemon already holds it, this instance must exit rather than compete for
+    // the database.
     const nameFlags = await bus.requestName(BUS_NAME, dbus.NameFlag.DO_NOT_QUEUE);
     if (nameFlags !== dbus.RequestNameReply.PRIMARY_OWNER) {
         logger.error('Another Halyard daemon is already running; exiting');
         process.exit(1);
     }
 
-    const store = await createSecretStore(bus);
-    const session = await DriveSession.create(store);
+    // From here to bus.export() there must be no `await`. A client watching the
+    // bus name reacts to it appearing by immediately calling a method (the UI
+    // fires GetStatus); if we yielded to the event loop before exporting the
+    // object, that call would be dispatched against an unexported path and
+    // dbus-next would answer UnknownMethod. Exporting in the same tick the name
+    // becomes ours guarantees the handler is registered before any such call is
+    // processed.
     const manager = new SyncManager(session);
 
     let quitting = false;
