@@ -264,7 +264,15 @@ class DaemonClient(GObject.Object):
 
     def add_pair(self, local_path: str, remote_uid: str, remote_path: str,
                  on_ok: OkCallback, on_err: ErrCallback,
-                 excludes: list[str] | None = None) -> None:
+                 excludes: list[str] | None = None,
+                 create_remote: bool = False,
+                 remote_name: str | None = None) -> None:
+        """Pair a local folder with Proton Drive.
+
+        Pass an existing ``remote_uid``, or set ``create_remote`` to have the
+        daemon make a new folder at the top of My Files — named ``remote_name``,
+        or after the local folder when that is omitted — and pair with it.
+        """
         payload: dict = {
             "localPath": local_path,
             "remoteUid": remote_uid,
@@ -272,6 +280,10 @@ class DaemonClient(GObject.Object):
         }
         if excludes is not None:
             payload["excludes"] = list(excludes)
+        if create_remote:
+            payload["createRemote"] = True
+            if remote_name:
+                payload["remoteName"] = remote_name
         self._call("AddPair", GLib.Variant("(s)", [json.dumps(payload)]),
                    parse=Pair.from_json, on_ok=on_ok, on_err=on_err,
                    timeout_ms=SLOW_TIMEOUT_MS)

@@ -216,6 +216,10 @@ class PairDialog(Adw.Dialog):
         self._local_path = pair.local_path if pair else ""
         self._remote_uid = pair.remote_uid if pair else ""
         self._remote_path = pair.remote_path if pair else ""
+        # Set when the remote side is a folder to be created at the My Files
+        # root on save, rather than an existing one that was browsed to.
+        self._create_remote = False
+        self._remote_name = ""
         self._excludes: list[str] = list(pair.excludes) if pair else []
         self._exclude_rows: dict[str, Adw.ActionRow] = {}
         self._suggestion_rows: list[Adw.ActionRow] = []
@@ -291,6 +295,19 @@ class PairDialog(Adw.Dialog):
         self._remote_row.add_suffix(browse)
         self._remote_row.connect("activated", self._on_browse_remote)
         remote_group.add(self._remote_row)
+
+        # Repointing an existing pair to a brand-new folder would throw away its
+        # sync state, so this shortcut is only offered when adding a pair.
+        if not editing:
+            new = Gtk.Button(
+                label="New…",
+                valign=Gtk.Align.CENTER,
+                tooltip_text="Create a folder at the top of My Files and "
+                             "sync with it",
+            )
+            new.connect("clicked", self._on_create_remote)
+            self._remote_row.add_suffix(new)
+
         content.add(remote_group)
 
         content.add(self._build_exclusions_group())
@@ -507,7 +524,11 @@ class PairDialog(Adw.Dialog):
             self._local_row.set_subtitle(
                 GLib.markup_escape_text(tilde_path(self._local_path))
             )
-        if self._remote_path:
+        if self._create_remote and self._remote_name:
+            self._remote_row.set_subtitle(GLib.markup_escape_text(
+                f"New folder “{self._remote_name}” in My Files"
+            ))
+        elif self._remote_path:
             self._remote_row.set_subtitle(
                 GLib.markup_escape_text(self._remote_path)
             )
@@ -556,6 +577,9 @@ class PairDialog(Adw.Dialog):
         page.load()
 
     def choose_remote(self, uid: str, path: str) -> None:
+        # Selecting an existing folder supersedes any pending create-new intent.
+        self._create_remote = False
+        self._remote_name = ""
         self._remote_uid = uid
         self._remote_path = path
         self._refresh_rows()
@@ -563,6 +587,53 @@ class PairDialog(Adw.Dialog):
         # Unwind the browser and return to the form.
         while self._nav.get_navigation_stack().get_n_items() > 1:
             self._nav.pop()
+
+    # -- creating a folder at the root ------------------------------------
+
+    def _on_create_remote(self, *_args) -> None:
+        default = (os.path.basename(self._local_path.rstrip("/"))
+                   if self._local_path else "")
+        dialog = Adw.AlertDialog(
+            heading="New Folder in Proton Drive",
+            body="Create a folder at the top of My Files and sync with it. "
+                 "It is created when you add the pair.",
+        )
+        entry = Adw.EntryRow(title="Folder name")
+        entry.set_text(default)
+        group = Adw.PreferencesGroup()
+        group.add(entry)
+        dialog.set_extra_child(group)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("use", "Use This Folder")
+        dialog.set_response_appearance("use", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("use")
+        dialog.set_close_response("cancel")
+
+        def on_response(_dialog, response: str) -> None:
+            if response != "use":
+                return
+            name = entry.get_text().strip()
+            if not name:
+                self._warn("Enter a name for the new folder.")
+                return
+            if "/" in name:
+                self._warn("Folder names cannot contain “/”.")
+                return
+            self._set_create_remote(name)
+
+        dialog.connect("response", on_response)
+        dialog.present(self)
+
+    def _set_create_remote(self, name: str) -> None:
+        self._create_remote = True
+        self._remote_name = name
+        self._remote_uid = ""
+        # A display path so the form reads as "ready"; the daemon fills in the
+        # real one once it has created the folder.
+        self._remote_path = f"/{name}"
+        self._banner.set_revealed(False)
+        self._refresh_rows()
+        self._revalidate()
 
     # -- validation -------------------------------------------------------
 
@@ -675,6 +746,12 @@ class PairDialog(Adw.Dialog):
                 self.close()
                 return
             self.client.update_pair(self._pair.id, patch, on_ok, on_err)
+        elif self._create_remote:
+            self.client.add_pair(
+                self._local_path, "", "", on_ok, on_err,
+                excludes=list(self._excludes),
+                create_remote=True, remote_name=self._remote_name,
+            )
         else:
             self.client.add_pair(
                 self._local_path, self._remote_uid, self._remote_path,

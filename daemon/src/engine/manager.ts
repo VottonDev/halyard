@@ -323,6 +323,8 @@ export class SyncManager {
         remoteUid: string;
         remotePath: string;
         excludes?: string[];
+        createRemote?: boolean;
+        remoteName?: string;
     }): Promise<Pair> {
         // Check before writing anything: creating the syncer needs a Drive
         // client, and failing after the insert would leave an orphaned pair.
@@ -330,12 +332,27 @@ export class SyncManager {
             throw new Error('Sign in to Proton Drive before adding a folder pair');
         }
 
+        // Validate the local side first. When we are about to create the
+        // remote folder, doing so only once the local target is known good
+        // means a rejected local path never strands an empty folder in Drive.
         const localPath = await this.validateTarget(input.localPath, input.remoteUid, input.remotePath);
         const excludes = this.checkExcludes(input.excludes);
 
+        let remoteUid = input.remoteUid;
+        let remotePath = input.remotePath;
+        if (input.createRemote && !remoteUid) {
+            const name = input.remoteName?.trim() || path.basename(localPath);
+            ({ remoteUid, remotePath } = await this.createRootFolder(name));
+        }
+        if (!remoteUid) {
+            throw new Error('remoteUid is required');
+        }
+
         // If these exact folders were paired before and the state was kept,
-        // pick up where we left off rather than starting from scratch.
-        const revived = this.db.findRemovedPair(localPath, input.remoteUid);
+        // pick up where we left off rather than starting from scratch. A
+        // freshly created remote folder has a brand-new uid, so this never
+        // matches for the create-remote case.
+        const revived = this.db.findRemovedPair(localPath, remoteUid);
         let pair: Pair;
         if (revived) {
             logger.info(`Reviving previously removed pair for ${localPath}`);
@@ -347,8 +364,8 @@ export class SyncManager {
             pair = {
                 id: `p_${randomUUID().slice(0, 8)}`,
                 localPath,
-                remoteUid: input.remoteUid,
-                remotePath: input.remotePath,
+                remoteUid,
+                remotePath,
                 enabled: true,
                 excludes,
                 treeEventScopeId: null,
@@ -370,6 +387,24 @@ export class SyncManager {
 
         this.scheduleEmit();
         return pair;
+    }
+
+    /**
+     * Creates a folder at the top level of My Files and returns its uid and
+     * display path. Used when a pair is set up against a local folder that has
+     * no counterpart on Drive yet — the daemon makes one rather than making
+     * the user pre-create it by hand.
+     */
+    private async createRootFolder(rawName: string): Promise<{ remoteUid: string; remotePath: string }> {
+        const name = rawName.trim();
+        if (!name) {
+            throw new Error('Cannot work out a name for the new Proton Drive folder');
+        }
+        const client = this.session.getClient();
+        const root = await client.getMyFilesRootFolder();
+        const node = await client.createFolder(root.uid, name);
+        logger.info(`Created Proton Drive folder /${name} for a new pair`);
+        return { remoteUid: node.uid, remotePath: `/${name}` };
     }
 
     /**
