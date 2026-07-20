@@ -314,6 +314,52 @@ export function reconcile(input: ReconcileInput): Plan {
             continue;
         }
 
+        // ---- Same path, a different kind of thing on each side.
+        //
+        // A file replaced by a folder (or vice versa) cannot be expressed as a
+        // content transfer, and the branches below assume both items are the
+        // same kind — routing a swap through them either does nothing (and
+        // recurs forever) or targets a folder uid with a file operation. An
+        // *unchanged* file is replaced outright: its bytes equal what the base
+        // recorded, so the copy Drive holds (or trashes) preserves it. Anything
+        // else keeps both, the local copy stepping aside under a dated name.
+        if (localItem && remoteItem && localItem.type !== remoteItem.type) {
+            if (remoteItem.type === 'folder' && localState === 'unchanged') {
+                // The executor clears the base-identical file before mkdir.
+                actions.push({ kind: 'createLocalFolder', path });
+            } else if (localItem.type === 'folder' && remoteState === 'unchanged') {
+                // The executor trashes the remote file before creating.
+                actions.push({ kind: 'createRemoteFolder', path });
+            } else {
+                const keptPath = conflictName(path, now);
+                actions.push({ kind: 'moveLocal', from: path, to: keptPath });
+                if (remoteItem.type === 'file') {
+                    actions.push({
+                        kind: 'download',
+                        path,
+                        remoteUid: remoteItem.uid,
+                        revisionUid: remoteItem.revisionUid,
+                    });
+                } else {
+                    actions.push({ kind: 'createLocalFolder', path });
+                }
+                if (localItem.type === 'file') {
+                    actions.push({ kind: 'upload', path: keptPath, existingRemoteUid: null });
+                }
+                // A moved-aside local folder is not uploaded here: it surfaces
+                // as a created tree next cycle and is walked up normally.
+                conflicts.push({
+                    path,
+                    kind: 'bothModified',
+                    detectedAt: now,
+                    keptCopyPath: keptPath,
+                    localModifiedAt: localItem.mtime,
+                    remoteModifiedAt: remoteItem.mtime,
+                });
+            }
+            continue;
+        }
+
         // ---- Only one side changed: propagate it.
         if (remoteState === 'unchanged' && (localState === 'created' || localState === 'modified')) {
             if (localItem!.type === 'folder') {
