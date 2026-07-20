@@ -47,9 +47,9 @@ class PreferencesDialog(Adw.PreferencesDialog):
             title="Start Sync Service on Login",
             subtitle="Sync in the background without opening Halyard",
         )
-        self._updating = True
-        self._service_row.set_active(daemon_control.is_enabled_at_login())
-        self._updating = False
+        # The switch starts off and flips once systemctl answers; querying it
+        # synchronously here would stall the main loop while the dialog builds.
+        daemon_control.is_enabled_at_login(self._set_service_row_active)
         self._service_row.set_sensitive(
             daemon_control.has_systemd() and daemon_control.unit_installed()
         )
@@ -101,6 +101,11 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._load_account()
 
     # -- data ------------------------------------------------------------
+
+    def _set_service_row_active(self, enabled: bool) -> None:
+        self._updating = True
+        self._service_row.set_active(enabled)
+        self._updating = False
 
     def _load_version(self) -> None:
         def on_ok(version) -> None:

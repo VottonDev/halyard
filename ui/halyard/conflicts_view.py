@@ -244,6 +244,9 @@ class ConflictsPage(Adw.NavigationPage):
         toolbar.set_content(self._stack)
         self.set_child(toolbar)
         self._rows: list[ConflictRow] = []
+        #: Bumped per request so a superseded reply is discarded rather than
+        #: painted over the current one, mirroring HistoryPage.
+        self._request = 0
 
     def set_pairs(self, pairs: list[Pair]) -> None:
         self._pairs = pairs
@@ -252,10 +255,19 @@ class ConflictsPage(Adw.NavigationPage):
         if not self._rows:
             self._stack.set_visible_child_name("loading")
 
+        # Reloads come from the refresh button, from resolving, and from the
+        # window noticing a count change — replies can therefore overlap, and
+        # an older one must not paint over a newer one.
+        self._request += 1
+        request = self._request
+
         def on_ok(conflicts: list[Conflict]) -> None:
-            self._render(conflicts)
+            if request == self._request:
+                self._render(conflicts)
 
         def on_err(message: str) -> None:
+            if request != self._request:
+                return
             self._error_page.set_description(message)
             self._stack.set_visible_child_name("error")
 

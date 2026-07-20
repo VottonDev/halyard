@@ -313,6 +313,8 @@ class HalyardWindow(Adw.ApplicationWindow):
 
         def on_status(status: Status) -> None:
             self._status = status
+            # Status already says whether we are signed in; asking GetAccount
+            # as well doubled the round-trips and renders for the same answer.
             self._account_logged_in = status.logged_in
             self._render()
 
@@ -320,12 +322,6 @@ class HalyardWindow(Adw.ApplicationWindow):
             self.toast(message)
 
         self._client.get_status(on_status, on_status_err)
-
-        def on_account(account) -> None:
-            self._account_logged_in = account.logged_in
-            self._render()
-
-        self._client.get_account(on_account, lambda _m: None)
 
     def _on_status_changed(self, _client, status: Status) -> None:
         self._status = status
@@ -393,7 +389,13 @@ class HalyardWindow(Adw.ApplicationWindow):
 
         if conflicts != self._last_conflict_count:
             self._last_conflict_count = conflicts
-            if self._conflicts_page is not None:
+            # Only refresh the list the user is actually looking at; opening
+            # the page reloads it anyway, so a hidden one can stay stale
+            # rather than costing a round-trip per status change mid-sync.
+            if (
+                self._conflicts_page is not None
+                and self._nav.get_visible_page() is self._conflicts_page
+            ):
                 self._conflicts_page.set_pairs(list(status.pairs))
                 self._conflicts_page.reload()
 

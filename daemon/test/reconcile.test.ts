@@ -355,3 +355,89 @@ describe('folders', () => {
         expect(actions).toContainEqual({ kind: 'createRemoteFolder', path: 'a' });
     });
 });
+
+describe('a path that changed kind on one side', () => {
+    const folder = (path: string): LocalItem => ({ path, type: 'folder', mtime: 0, size: 0, inode: 9, device: 100 });
+    const remoteFolder = (path: string): RemoteItem => ({
+        path,
+        type: 'folder',
+        uid: `vol~${path}`,
+        parentUid: null,
+        revisionUid: null,
+        hash: null,
+        size: 0,
+        mtime: 0,
+        trashed: false,
+    });
+
+    test('replaces an unchanged local file when the remote side became a folder', () => {
+        const { actions, kinds } = run(
+            [baseFile('x')],
+            [localFile('x')],
+            [remoteFolder('x')],
+        );
+        // The local file matches the base, so it is simply cleared for the
+        // folder; nothing is downloadable about a folder, and nothing recurs.
+        expect(actions).toContainEqual({ kind: 'createLocalFolder', path: 'x' });
+        expect(kinds).not.toContain('download');
+        expect(kinds).not.toContain('upload');
+    });
+
+    test('replaces an unchanged remote file when the local side became a folder', () => {
+        const { actions, kinds } = run(
+            [baseFile('x')],
+            [folder('x')],
+            [remoteFile('x')],
+        );
+        expect(actions).toContainEqual({ kind: 'createRemoteFolder', path: 'x' });
+        expect(kinds).not.toContain('upload');
+        expect(kinds).not.toContain('download');
+    });
+
+    test('keeps both when a local file displaced a folder the remote still holds', () => {
+        const kept = conflictName('x', NOW);
+        const { actions, conflicts } = run(
+            [baseFile('x', { type: 'folder', remoteUid: 'vol~x' })],
+            [localFile('x', { mtime: 2000, hash: 'bbb' })],
+            [remoteFolder('x')],
+        );
+        expect(actions).toContainEqual({ kind: 'moveLocal', from: 'x', to: kept });
+        expect(actions).toContainEqual({ kind: 'createLocalFolder', path: 'x' });
+        expect(actions).toContainEqual({ kind: 'upload', path: kept, existingRemoteUid: null });
+        expect(conflicts).toHaveLength(1);
+        expect(conflicts[0]?.keptCopyPath).toBe(kept);
+    });
+
+    test('keeps both when the remote side turned a locally unchanged folder into a file', () => {
+        const kept = conflictName('x', NOW);
+        const { actions, kinds, conflicts } = run(
+            [baseFile('x', { type: 'folder', remoteUid: 'vol~x', remoteRevisionUid: null })],
+            [folder('x')],
+            [remoteFile('x', { revisionUid: 'rev2' })],
+        );
+        expect(actions).toContainEqual({ kind: 'moveLocal', from: 'x', to: kept });
+        expect(actions).toContainEqual({
+            kind: 'download',
+            path: 'x',
+            remoteUid: 'vol~x',
+            revisionUid: 'rev2',
+        });
+        // A folder cannot be uploaded in one action; the renamed tree is
+        // picked up as new work next cycle instead.
+        expect(kinds).not.toContain('upload');
+        expect(conflicts).toHaveLength(1);
+    });
+
+    test('keeps both for independent creations of different kinds at one path', () => {
+        const kept = conflictName('x', NOW);
+        const { actions, conflicts } = run(
+            [],
+            [localFile('x')],
+            [remoteFolder('x')],
+        );
+        expect(actions).toContainEqual({ kind: 'moveLocal', from: 'x', to: kept });
+        expect(actions).toContainEqual({ kind: 'createLocalFolder', path: 'x' });
+        expect(actions).toContainEqual({ kind: 'upload', path: kept, existingRemoteUid: null });
+        expect(conflicts).toHaveLength(1);
+    });
+});

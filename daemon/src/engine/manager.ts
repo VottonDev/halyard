@@ -74,7 +74,13 @@ export class SyncManager {
 
     private notify(kind: 'info' | 'warning' | 'error', title: string, body: string): void {
         for (const listener of this.notifyListeners) {
-            listener(kind, title, body);
+            try {
+                listener(kind, title, body);
+            } catch (error) {
+                // Same containment as status listeners: a broken notification
+                // channel must not unwind the sync that triggered it.
+                logger.error('Notify listener failed', error);
+            }
         }
     }
 
@@ -480,9 +486,21 @@ export class SyncManager {
         const retargeted =
             nextLocalPath !== existing.localPath ||
             (wantsRemote && patch.remoteUid !== existing.remoteUid);
+        const excludesChanged =
+            patch.excludes !== undefined &&
+            JSON.stringify(existing.excludes ?? []) !== JSON.stringify(patch.excludes);
 
         // The watcher holds the old path; stop it before anything moves.
         this.stopWatching(id);
+
+        const syncer = this.syncers.get(id);
+        if (syncer && (retargeted || excludesChanged)) {
+            // About to discard the pair's recorded state. A cycle still in
+            // flight decided against that state and would write base rows
+            // back on top of the clear — stop it and wait before touching
+            // anything.
+            await syncer.cancel();
+        }
 
         this.db.updatePair(id, { ...patch, localPath: nextLocalPath });
 
@@ -498,8 +516,7 @@ export class SyncManager {
             // Exclusions are applied while enumerating, so the stored remote
             // view reflects the old patterns. Relaxing them would otherwise
             // leave newly-included folders permanently invisible.
-            const before = JSON.stringify(existing.excludes ?? []);
-            if (before !== JSON.stringify(patch.excludes)) {
+            if (excludesChanged) {
                 logger.info(`Pair ${id}: exclusions changed, re-enumerating the remote folder`);
                 this.db.clearRemoteNodes(id);
                 this.db.updatePair(id, { seeded: false, treeEventScopeId: null, eventCursor: null });
@@ -507,7 +524,6 @@ export class SyncManager {
         }
 
         const updated = this.db.getPair(id)!;
-        const syncer = this.syncers.get(id);
         syncer?.updatePair(updated);
         if (retargeted && syncer) {
             syncer.stats = { pending: 0, conflicts: 0, filesUp: 0, filesDown: 0, bytesUp: 0, bytesDown: 0 };
@@ -678,6 +694,12 @@ export class SyncManager {
         this.abort.abort();
         if (this.periodic) {
             clearInterval(this.periodic);
+        }
+        if (this.emitTimer) {
+            // A pending emit firing after db.close() would throw inside the
+            // timer callback; nothing useful can be emitted during shutdown.
+            clearTimeout(this.emitTimer);
+            this.emitTimer = undefined;
         }
         for (const id of [...this.watchers.keys()]) {
             this.stopWatching(id);

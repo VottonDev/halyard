@@ -76,6 +76,15 @@ function toRemoteNode(node: NodeEntity): RemoteNodeInput | null {
 export class RemoteTree {
     private isExcluded: (relativePath: string) => boolean;
 
+    /**
+     * Memoised result of buildFolderPaths(). A pull() can deliver thousands of
+     * events, and rebuilding the map for each one made applying a batch
+     * O(events × nodes). File events never change folder paths, and a brand-new
+     * folder only extends the map, so the cache survives the common cases and
+     * is dropped only when a folder is renamed, moved, or removed.
+     */
+    private folderPathsCache: Map<string, string> | null = null;
+
     constructor(
         private readonly db: SyncDatabase,
         private readonly client: ProtonDriveClient,
@@ -89,6 +98,40 @@ export class RemoteTree {
     setPair(pair: Pair): void {
         this.pair = pair;
         this.isExcluded = compileExcludes(pair.excludes ?? []);
+        this.folderPathsCache = null;
+    }
+
+    private folderPaths(): Map<string, string> {
+        this.folderPathsCache ??= this.buildFolderPaths();
+        return this.folderPathsCache;
+    }
+
+    /** Keeps the cached path map aligned with a folder row just written. */
+    private noteFolderStored(row: RemoteNodeInput): void {
+        const cache = this.folderPathsCache;
+        if (!cache) {
+            return;
+        }
+        const parentPath = row.parentUid ? cache.get(row.parentUid) : '';
+        if (parentPath === undefined) {
+            this.folderPathsCache = null;
+            return;
+        }
+        const newPath = parentPath ? `${parentPath}/${row.name}` : row.name;
+        const existing = cache.get(row.uid);
+        if (existing === undefined) {
+            cache.set(row.uid, newPath);
+        } else if (existing !== newPath) {
+            // Rename or move: every descendant's path shifted with it.
+            this.folderPathsCache = null;
+        }
+    }
+
+    /** Invalidates the cached path map when a removed node was a known folder. */
+    private noteNodeRemoved(uid: string): void {
+        if (this.folderPathsCache?.has(uid)) {
+            this.folderPathsCache = null;
+        }
     }
 
     private async *listChildren(parentUid: string, signal?: AbortSignal): AsyncGenerator<NodeEntity> {
@@ -151,6 +194,7 @@ export class RemoteTree {
      */
     async seed(signal?: AbortSignal): Promise<void> {
         const pairId = this.pair.id;
+        this.folderPathsCache = null;
         const resuming =
             !!this.pair.treeEventScopeId && !this.pair.seeded && this.db.countRemoteNodes(pairId) > 0;
 
@@ -208,6 +252,7 @@ export class RemoteTree {
                     continue;
                 }
 
+                const rows: RemoteNodeInput[] = [];
                 for await (const node of this.listChildren(folderUid, signal)) {
                     const row = toRemoteNode(node);
                     if (!row || row.trashed) {
@@ -218,10 +263,18 @@ export class RemoteTree {
                         skipped += 1;
                         continue;
                     }
-                    this.db.upsertRemoteNode(pairId, row);
+                    rows.push(row);
                 }
 
-                this.db.markChildrenListed(pairId, folderUid);
+                // One commit per listed folder rather than one per child: a
+                // seed writes thousands of rows, and per-row auto-commits were
+                // a prepare + WAL flush apiece.
+                this.db.transaction(() => {
+                    for (const row of rows) {
+                        this.db.upsertRemoteNode(pairId, row);
+                    }
+                    this.db.markChildrenListed(pairId, folderUid);
+                });
                 listed += 1;
 
                 if (listed % 100 === 0) {
@@ -307,6 +360,7 @@ export class RemoteTree {
                 }
                 this.db.deleteRemoteNode(this.pair.id, event.nodeUid);
                 known.delete(event.nodeUid);
+                this.noteNodeRemoved(event.nodeUid);
                 return 'changed';
             }
 
@@ -332,6 +386,7 @@ export class RemoteTree {
                     // node keeps existing. For us it means "gone from the tree".
                     this.db.deleteRemoteNode(this.pair.id, event.nodeUid);
                     known.delete(event.nodeUid);
+                    this.noteNodeRemoved(event.nodeUid);
                     return 'changed';
                 }
 
@@ -352,24 +407,29 @@ export class RemoteTree {
                 if (row.parentUid && !known.has(row.parentUid) && row.uid !== this.pair.remoteUid) {
                     this.db.deleteRemoteNode(this.pair.id, row.uid);
                     known.delete(row.uid);
+                    this.noteNodeRemoved(row.uid);
                     return 'changed';
                 }
 
                 // An event can bring a node into a path we are excluding;
                 // ignoring it here keeps excluded subtrees genuinely absent.
-                const paths = this.buildFolderPaths();
+                const paths = this.folderPaths();
                 const parentPath = row.parentUid ? paths.get(row.parentUid) : '';
                 if (parentPath !== undefined) {
                     const nodePath = parentPath ? `${parentPath}/${row.name}` : row.name;
                     if (this.isExcluded(nodePath)) {
                         this.db.deleteRemoteNode(this.pair.id, row.uid);
                         known.delete(row.uid);
+                        this.noteNodeRemoved(row.uid);
                         return 'ignored';
                     }
                 }
 
                 this.db.upsertRemoteNode(this.pair.id, row);
                 known.add(row.uid);
+                if (row.type === 'folder') {
+                    this.noteFolderStored(row);
+                }
 
                 // A folder that has just entered our subtree may bring
                 // descendants we have never listed, whose own events arrived
@@ -394,11 +454,12 @@ export class RemoteTree {
     }
 
     private async enumerateInto(parentUid: string, known: Set<string>): Promise<void> {
-        const paths = this.buildFolderPaths();
+        const paths = this.folderPaths();
         const queue: Array<{ uid: string; path: string }> = [{ uid: parentUid, path: paths.get(parentUid) ?? '' }];
 
         while (queue.length > 0) {
             const current = queue.shift()!;
+            const rows: RemoteNodeInput[] = [];
             for await (const node of this.listChildren(current.uid)) {
                 const row = toRemoteNode(node);
                 if (!row || row.trashed) {
@@ -408,13 +469,22 @@ export class RemoteTree {
                 if (this.isExcluded(childPath)) {
                     continue;
                 }
-                this.db.upsertRemoteNode(this.pair.id, row);
+                rows.push(row);
                 known.add(row.uid);
                 if (row.type === 'folder') {
                     queue.push({ uid: row.uid, path: childPath });
                 }
             }
-            this.db.markChildrenListed(this.pair.id, current.uid);
+            // One commit per listed folder, not one per child row.
+            this.db.transaction(() => {
+                for (const row of rows) {
+                    this.db.upsertRemoteNode(this.pair.id, row);
+                    if (row.type === 'folder') {
+                        this.noteFolderStored(row);
+                    }
+                }
+                this.db.markChildrenListed(this.pair.id, current.uid);
+            });
         }
     }
 

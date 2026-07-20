@@ -154,6 +154,12 @@ class HistoryRow(Adw.ExpanderRow):
     def __init__(self, entry: HistoryEntry, pair: Pair | None) -> None:
         super().__init__()
         self._entry = entry
+        #: Filesystem probes postponed until the row is first expanded. A
+        #: hundred rows are built per page, and stat'ing every synced path up
+        #: front froze the whole window when a synced folder sat on a slow or
+        #: stalled mount.
+        self._deferred_probes: list = []
+        self.connect("notify::expanded", self._on_expanded)
 
         title, explanation = ACTION_TEXT.get(
             entry.action, ("Changed", "Halyard changed this file.")
@@ -241,19 +247,30 @@ class HistoryRow(Adw.ExpanderRow):
         row.add_suffix(copy)
 
         # Offered only when there is something to open: after a deletion the
-        # file is gone, but its folder usually is not.
-        folder = full if os.path.isdir(full) else os.path.dirname(full)
-        if openable and folder and os.path.isdir(folder):
-            reveal = Gtk.Button(
-                icon_name="folder-symbolic",
-                valign=Gtk.Align.CENTER,
-                tooltip_text="Open containing folder",
-            )
-            reveal.add_css_class("flat")
-            reveal.connect("clicked", lambda *_: self._open(folder))
-            row.add_suffix(reveal)
+        # file is gone, but its folder usually is not. Checked lazily via
+        # _deferred_probes so the stat happens per expanded row, not per page.
+        if openable:
+            def probe() -> None:
+                folder = full if os.path.isdir(full) else os.path.dirname(full)
+                if not folder or not os.path.isdir(folder):
+                    return
+                reveal = Gtk.Button(
+                    icon_name="folder-symbolic",
+                    valign=Gtk.Align.CENTER,
+                    tooltip_text="Open containing folder",
+                )
+                reveal.add_css_class("flat")
+                reveal.connect("clicked", lambda *_: self._open(folder))
+                row.add_suffix(reveal)
+
+            self._deferred_probes.append(probe)
 
         self.add_row(row)
+
+    def _on_expanded(self, *_args) -> None:
+        probes, self._deferred_probes = self._deferred_probes, []
+        for probe in probes:
+            probe()
 
     @staticmethod
     def _open(folder: str) -> None:

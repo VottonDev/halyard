@@ -477,7 +477,9 @@ class MockState:
             "paused": self.paused,
             "online": self.online,
             "activity": self.activity,
-            "pairs": self.pairs if self.logged_in else [],
+            # The real daemon lists pairs from its database regardless of the
+            # login state; hiding them here made the mock kinder than reality.
+            "pairs": self.pairs,
         }
 
     def find_pair(self, pair_id: str) -> dict | None:
@@ -883,8 +885,8 @@ class MockDaemon:
             self.state.pairs if not pair_id
             else [p for p in self.state.pairs if p["id"] == pair_id]
         )
-        if pair_id and not targets:
-            raise ValueError(f"No folder pair with id {pair_id}.")
+        # An unknown id is a silent no-op, matching the real daemon: SyncNow
+        # is fire-and-forget there and filters targets without complaint.
         for pair in targets:
             if pair["enabled"] and pair["status"] != "error":
                 pair["status"] = "scanning"

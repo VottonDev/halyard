@@ -266,6 +266,14 @@ export class Executor {
 
         switch (action.kind) {
             case 'createLocalFolder': {
+                // The path may hold a file this folder is replacing (a type
+                // swap on the remote side). Reconcile only plans that when the
+                // file's content matches the base, so the bytes being removed
+                // are exactly what Drive already holds.
+                const existing = await fsp.lstat(this.absolute(action.path)).catch(() => null);
+                if (existing && !existing.isDirectory()) {
+                    await fsp.rm(this.absolute(action.path), { force: true });
+                }
                 await fsp.mkdir(this.absolute(action.path), { recursive: true });
                 const remote = this.context.remote.get(action.path);
                 if (remote) {
@@ -291,6 +299,19 @@ export class Executor {
             case 'createRemoteFolder': {
                 const parentUid = this.parentUidFor(action.path);
                 const name = path.basename(action.path);
+                // A remote file may hold the name this folder is taking over (a
+                // type swap on the local side). Reconcile only plans that when
+                // the file is unchanged, so trashing it loses nothing — the
+                // same content stays recoverable from Proton's Trash.
+                const occupant = this.context.remote.get(action.path);
+                if (occupant && occupant.type === 'file') {
+                    for await (const outcome of this.context.client.trashNodes([occupant.uid])) {
+                        if (!outcome.ok) {
+                            throw outcome.error;
+                        }
+                    }
+                    this.pathToUid.delete(action.path);
+                }
                 const local = this.context.local.get(action.path);
                 const node = await this.context.client.createFolder(
                     parentUid,
@@ -322,10 +343,15 @@ export class Executor {
             case 'upload':
                 return await this.upload(action.path, action.existingRemoteUid, result);
 
-            case 'deleteLocal':
-                await this.deleteLocal(action.path, action.type);
+            case 'deleteLocal': {
+                if (!(await this.deleteLocal(action.path, action.type))) {
+                    // Changed since the scan; leave the base so next cycle's
+                    // reconcile sees the edit and takes the edit-wins path.
+                    return false;
+                }
                 db.deleteBaseEntry(pair.id, action.path);
                 return true;
+            }
 
             case 'trashRemote': {
                 for await (const outcome of this.context.client.trashNodes([action.remoteUid])) {
@@ -375,19 +401,16 @@ export class Executor {
      */
     private async rebaseMovedSubtree(from: string, to: string): Promise<void> {
         const { db, pair } = this.context;
-        const base = db.getBase(pair.id);
-        const entry = base.get(from);
-        if (!entry) {
+        // Capture the node and its descendants before deleting anything.
+        const subtree = db.getBaseSubtree(pair.id, from);
+        if (subtree.length === 0) {
             return;
         }
 
-        // Capture the node and its descendants before deleting anything.
-        const relocated: Array<{ newPath: string; entry: BaseEntry }> = [{ newPath: to, entry }];
-        for (const [entryPath, descendant] of base) {
-            if (entryPath.startsWith(`${from}/`)) {
-                relocated.push({ newPath: `${to}${entryPath.slice(from.length)}`, entry: descendant });
-            }
-        }
+        const relocated: Array<{ newPath: string; entry: BaseEntry }> = subtree.map((entry) => ({
+            newPath: entry.path === from ? to : `${to}${entry.path.slice(from.length)}`,
+            entry,
+        }));
 
         // Removes `from` and every `from/…` row in one statement; re-inserted below.
         db.deleteBaseEntry(pair.id, from);
@@ -430,7 +453,7 @@ export class Executor {
         this.pathToUid.delete(from);
         this.pathToUid.set(to, remoteUid);
 
-        const entry = db.getBase(pair.id).get(from);
+        const entry = db.getBaseEntry(pair.id, from);
         if (entry) {
             db.deleteBaseEntry(pair.id, from);
             db.setBaseEntry(pair.id, { ...entry, path: to });
@@ -601,9 +624,36 @@ export class Executor {
      * exactly what Drive is holding. A file with unsynced local edits takes
      * the "edit beats deletion" path in the reconciler and is re-uploaded
      * instead, so local-only work is never destroyed.
+     *
+     * That "unchanged" judgement was made at scan time, and a write can land
+     * between the scan and this call — content Drive has never seen, which no
+     * Trash would hold. So the path is re-stat'd immediately before removal
+     * and the deletion deferred if anything drifted; returns false to signal
+     * "skipped, decide again next cycle".
      */
-    private async deleteLocal(relative: string, type: 'file' | 'folder'): Promise<void> {
+    private async deleteLocal(relative: string, type: 'file' | 'folder'): Promise<boolean> {
         const target = this.absolute(relative);
+        const scanned = this.context.local.get(relative);
+        // Files only: a folder's mtime is bumped by our own child deletions
+        // (which run first), so it cannot distinguish a raced-in write from
+        // this very sync's work. Raced-in files inside a folder are still
+        // caught — each file has its own deleteLocal, ordered before the
+        // folder's, and defers individually.
+        if (scanned && type === 'file') {
+            try {
+                const stats = await fsp.stat(target);
+                if (Math.floor(stats.mtimeMs) !== scanned.mtime || stats.size !== scanned.size) {
+                    logger.info(`Skipping deletion of ${relative}: modified since the scan`);
+                    return false;
+                }
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                    return true;
+                }
+                throw error;
+            }
+        }
+
         try {
             if (type === 'folder') {
                 // Recursive, but the reconciler orders children before parents
@@ -615,11 +665,11 @@ export class Executor {
             }
             logger.info(`Deleted ${relative} (removed on Drive; recoverable from Proton's Trash)`);
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-                return;
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+                throw error;
             }
-            throw error;
         }
+        return true;
     }
 
     /** Records that the two sides already agree, without transferring anything. */
@@ -631,7 +681,7 @@ export class Executor {
             return;
         }
 
-        const existing = db.getBase(pair.id).get(relative);
+        const existing = db.getBaseEntry(pair.id, relative);
         const entry: BaseEntry = {
             path: relative,
             type: local.type,

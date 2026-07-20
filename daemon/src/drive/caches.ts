@@ -37,13 +37,22 @@ class SqliteCache implements ProtonDriveCache<string> {
     }
 
     async setEntity(key: string, value: string, tags?: string[]): Promise<void> {
-        this.db.prepare('INSERT OR REPLACE INTO entities (key, value) VALUES (?, ?)').run(key, value);
-        // Tags are replaced wholesale, not merged: the SDK treats the tag list
-        // passed here as the complete set for this entity.
-        this.db.prepare('DELETE FROM entity_tags WHERE key = ?').run(key);
-        const insert = this.db.prepare('INSERT OR IGNORE INTO entity_tags (tag, key) VALUES (?, ?)');
-        for (const tag of tags ?? []) {
-            insert.run(tag, key);
+        // One transaction: an interruption between the value write and the tag
+        // rewrite would otherwise leave the entity indexed under stale tags.
+        this.db.exec('BEGIN');
+        try {
+            this.db.prepare('INSERT OR REPLACE INTO entities (key, value) VALUES (?, ?)').run(key, value);
+            // Tags are replaced wholesale, not merged: the SDK treats the tag
+            // list passed here as the complete set for this entity.
+            this.db.prepare('DELETE FROM entity_tags WHERE key = ?').run(key);
+            const insert = this.db.prepare('INSERT OR IGNORE INTO entity_tags (tag, key) VALUES (?, ?)');
+            for (const tag of tags ?? []) {
+                insert.run(tag, key);
+            }
+            this.db.exec('COMMIT');
+        } catch (error) {
+            this.db.exec('ROLLBACK');
+            throw error;
         }
     }
 
@@ -107,6 +116,16 @@ class EncryptedCache implements ProtonDriveCache<string> {
         private readonly inner: SqliteCache,
         private readonly getPassword: () => Promise<string>,
     ) {}
+
+    /**
+     * Forgets the derived key. Must be called on sign-out: the keyring's cache
+     * password is deleted then, and a memoised key would otherwise keep
+     * encrypting new rows under a secret that no longer exists anywhere —
+     * unreadable after the next restart generates a fresh password.
+     */
+    dropKey(): void {
+        this.key = undefined;
+    }
 
     private async getKey(): Promise<Buffer> {
         if (!this.key) {
@@ -366,7 +385,8 @@ export function createCaches(getPassword: () => Promise<string>): Caches {
     const cryptoDb = new SqliteCache(path.join(cacheDir, 'crypto.sqlite'));
 
     const entitiesCache = new EncryptedCache(entitiesDb, getPassword);
-    const cryptoCache = new CryptoMaterialAdapter(new EncryptedCache(cryptoDb, getPassword));
+    const cryptoEncrypted = new EncryptedCache(cryptoDb, getPassword);
+    const cryptoCache = new CryptoMaterialAdapter(cryptoEncrypted);
 
     return {
         entitiesCache,
@@ -375,6 +395,11 @@ export function createCaches(getPassword: () => Promise<string>): Caches {
             logger.info('Clearing metadata caches');
             await entitiesDb.clear();
             await cryptoDb.clear();
+            // The derived keys go with the rows: after sign-out the keyring
+            // password they came from is gone, and the next sign-in must not
+            // keep writing under it.
+            entitiesCache.dropKey();
+            cryptoEncrypted.dropKey();
         },
     };
 }

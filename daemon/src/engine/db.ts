@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
 import { dataDir } from '../config.js';
 import type { BaseEntry, Conflict, HistoryFilter, NodeKind, Pair, SyncEvent } from './types.js';
@@ -23,6 +23,7 @@ const HISTORY_MAX_ROWS = 20_000;
  */
 export class SyncDatabase {
     private readonly db: DatabaseSync;
+    private readonly statements = new Map<string, StatementSync>();
 
     constructor(file = path.join(dataDir, 'sync.sqlite')) {
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -133,8 +134,22 @@ export class SyncDatabase {
         this.ensureColumn('remote_nodes', 'children_listed', 'INTEGER NOT NULL DEFAULT 0');
     }
 
+    /**
+     * Prepares a statement once and reuses it. node:sqlite has no statement
+     * cache of its own, so a bare `db.prepare` recompiles the SQL on every
+     * call — measurable when seeding writes thousands of rows in a loop.
+     */
+    private prepare(sql: string): StatementSync {
+        let statement = this.statements.get(sql);
+        if (!statement) {
+            statement = this.db.prepare(sql);
+            this.statements.set(sql, statement);
+        }
+        return statement;
+    }
+
     private ensureColumn(table: string, column: string, definition: string): void {
-        const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+        const columns = this.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
         if (!columns.some((existing) => existing.name === column)) {
             this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
         }
@@ -143,45 +158,42 @@ export class SyncDatabase {
     // ---- Settings
 
     getSetting(key: string): string | undefined {
-        const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+        const row = this.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
             | { value: string }
             | undefined;
         return row?.value;
     }
 
     setSetting(key: string, value: string): void {
-        this.db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
+        this.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
     }
 
     // ---- Pairs
 
     listPairs(): Pair[] {
-        const rows = this.db
-            .prepare('SELECT * FROM pairs WHERE removed = 0 ORDER BY created_at')
+        const rows = this.prepare('SELECT * FROM pairs WHERE removed = 0 ORDER BY created_at')
             .all() as Record<string, unknown>[];
         return rows.map(rowToPair);
     }
 
     getPair(id: string): Pair | undefined {
-        const row = this.db.prepare('SELECT * FROM pairs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+        const row = this.prepare('SELECT * FROM pairs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
         return row ? rowToPair(row) : undefined;
     }
 
     /** Finds a previously removed pair covering the same folders, for revival. */
     findRemovedPair(localPath: string, remoteUid: string): Pair | undefined {
-        const row = this.db
-            .prepare('SELECT * FROM pairs WHERE removed = 1 AND local_path = ? AND remote_uid = ?')
+        const row = this.prepare('SELECT * FROM pairs WHERE removed = 1 AND local_path = ? AND remote_uid = ?')
             .get(localPath, remoteUid) as Record<string, unknown> | undefined;
         return row ? rowToPair(row) : undefined;
     }
 
     markPairRemoved(id: string, removed: boolean): void {
-        this.db.prepare('UPDATE pairs SET removed = ?, enabled = ? WHERE id = ?').run(removed ? 1 : 0, removed ? 0 : 1, id);
+        this.prepare('UPDATE pairs SET removed = ?, enabled = ? WHERE id = ?').run(removed ? 1 : 0, removed ? 0 : 1, id);
     }
 
     insertPair(pair: Pair): void {
-        this.db
-            .prepare(
+        this.prepare(
                 `INSERT INTO pairs (id, local_path, remote_uid, remote_path, enabled, excludes, tree_event_scope_id, event_cursor, created_at, last_sync_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
@@ -234,25 +246,25 @@ export class SyncDatabase {
             return;
         }
         values.push(id);
-        this.db.prepare(`UPDATE pairs SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
+        this.prepare(`UPDATE pairs SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
     }
 
     deletePair(id: string): void {
         // Explicit child deletes: SQLite only cascades when foreign_keys is on
         // for this connection, and we would rather not depend on that here.
-        this.db.prepare('DELETE FROM base_entries WHERE pair_id = ?').run(id);
-        this.db.prepare('DELETE FROM remote_nodes WHERE pair_id = ?').run(id);
-        this.db.prepare('DELETE FROM conflicts WHERE pair_id = ?').run(id);
+        this.prepare('DELETE FROM base_entries WHERE pair_id = ?').run(id);
+        this.prepare('DELETE FROM remote_nodes WHERE pair_id = ?').run(id);
+        this.prepare('DELETE FROM conflicts WHERE pair_id = ?').run(id);
         // "Forget this folder's sync history" means the activity log too — it
         // names files the user has asked us to stop remembering.
-        this.db.prepare('DELETE FROM sync_events WHERE pair_id = ?').run(id);
-        this.db.prepare('DELETE FROM pairs WHERE id = ?').run(id);
+        this.prepare('DELETE FROM sync_events WHERE pair_id = ?').run(id);
+        this.prepare('DELETE FROM pairs WHERE id = ?').run(id);
     }
 
     // ---- Base entries
 
     getBase(pairId: string): Map<string, BaseEntry> {
-        const rows = this.db.prepare('SELECT * FROM base_entries WHERE pair_id = ?').all(pairId) as Record<
+        const rows = this.prepare('SELECT * FROM base_entries WHERE pair_id = ?').all(pairId) as Record<
             string,
             unknown
         >[];
@@ -264,9 +276,25 @@ export class SyncDatabase {
         return map;
     }
 
+    /** One row by primary key — use instead of getBase() to pluck a single path. */
+    getBaseEntry(pairId: string, entryPath: string): BaseEntry | undefined {
+        const row = this.prepare('SELECT * FROM base_entries WHERE pair_id = ? AND path = ?').get(
+            pairId,
+            entryPath,
+        ) as Record<string, unknown> | undefined;
+        return row ? rowToBase(row) : undefined;
+    }
+
+    /** A node and everything beneath it, without materialising the whole base. */
+    getBaseSubtree(pairId: string, entryPath: string): BaseEntry[] {
+        const rows = this.prepare(
+            "SELECT * FROM base_entries WHERE pair_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')",
+        ).all(pairId, entryPath, `${escapeLike(entryPath)}/%`) as Record<string, unknown>[];
+        return rows.map(rowToBase);
+    }
+
     setBaseEntry(pairId: string, entry: BaseEntry): void {
-        this.db
-            .prepare(
+        this.prepare(
                 `INSERT OR REPLACE INTO base_entries
                  (pair_id, path, type, local_mtime, local_size, local_inode, local_device, local_hash,
                   remote_uid, remote_revision_uid, remote_hash, remote_size, remote_mtime)
@@ -290,24 +318,27 @@ export class SyncDatabase {
     }
 
     deleteBaseEntry(pairId: string, entryPath: string): void {
-        this.db.prepare('DELETE FROM base_entries WHERE pair_id = ? AND path = ?').run(pairId, entryPath);
-        // A folder's descendants go with it.
-        this.db.prepare('DELETE FROM base_entries WHERE pair_id = ? AND path LIKE ?').run(pairId, `${entryPath}/%`);
+        this.prepare('DELETE FROM base_entries WHERE pair_id = ? AND path = ?').run(pairId, entryPath);
+        // A folder's descendants go with it. Escaped so a literal % or _ in a
+        // folder name does not widen the match to unrelated paths.
+        this.prepare("DELETE FROM base_entries WHERE pair_id = ? AND path LIKE ? ESCAPE '\\'").run(
+            pairId,
+            `${escapeLike(entryPath)}/%`,
+        );
     }
 
     clearBase(pairId: string): void {
-        this.db.prepare('DELETE FROM base_entries WHERE pair_id = ?').run(pairId);
+        this.prepare('DELETE FROM base_entries WHERE pair_id = ?').run(pairId);
     }
 
     // ---- Remote node mirror
 
     getRemoteNodes(pairId: string): RemoteNodeRow[] {
-        return this.db.prepare('SELECT * FROM remote_nodes WHERE pair_id = ?').all(pairId) as RemoteNodeRow[];
+        return this.prepare('SELECT * FROM remote_nodes WHERE pair_id = ?').all(pairId) as RemoteNodeRow[];
     }
 
     upsertRemoteNode(pairId: string, node: RemoteNodeInput): void {
-        this.db
-            .prepare(
+        this.prepare(
                 `INSERT OR REPLACE INTO remote_nodes
                  (pair_id, uid, parent_uid, name, type, revision_uid, hash, size, mtime, trashed)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -327,30 +358,29 @@ export class SyncDatabase {
     }
 
     deleteRemoteNode(pairId: string, uid: string): void {
-        this.db.prepare('DELETE FROM remote_nodes WHERE pair_id = ? AND uid = ?').run(pairId, uid);
+        this.prepare('DELETE FROM remote_nodes WHERE pair_id = ? AND uid = ?').run(pairId, uid);
     }
 
     /** Folder uids whose children have not been listed yet — the seed frontier. */
     getUnlistedFolders(pairId: string): string[] {
-        const rows = this.db
-            .prepare("SELECT uid FROM remote_nodes WHERE pair_id = ? AND type = 'folder' AND children_listed = 0")
+        const rows = this.prepare("SELECT uid FROM remote_nodes WHERE pair_id = ? AND type = 'folder' AND children_listed = 0")
             .all(pairId) as { uid: string }[];
         return rows.map((row) => row.uid);
     }
 
     markChildrenListed(pairId: string, uid: string): void {
-        this.db.prepare('UPDATE remote_nodes SET children_listed = 1 WHERE pair_id = ? AND uid = ?').run(pairId, uid);
+        this.prepare('UPDATE remote_nodes SET children_listed = 1 WHERE pair_id = ? AND uid = ?').run(pairId, uid);
     }
 
     countRemoteNodes(pairId: string): number {
-        const row = this.db.prepare('SELECT COUNT(*) AS n FROM remote_nodes WHERE pair_id = ?').get(pairId) as {
+        const row = this.prepare('SELECT COUNT(*) AS n FROM remote_nodes WHERE pair_id = ?').get(pairId) as {
             n: number;
         };
         return row.n;
     }
 
     clearRemoteNodes(pairId: string): void {
-        this.db.prepare('DELETE FROM remote_nodes WHERE pair_id = ?').run(pairId);
+        this.prepare('DELETE FROM remote_nodes WHERE pair_id = ?').run(pairId);
     }
 
     // ---- Conflicts
@@ -358,22 +388,21 @@ export class SyncDatabase {
     listConflicts(pairId?: string): Conflict[] {
         const rows = (
             pairId
-                ? this.db.prepare('SELECT * FROM conflicts WHERE pair_id = ? ORDER BY detected_at DESC').all(pairId)
-                : this.db.prepare('SELECT * FROM conflicts ORDER BY detected_at DESC').all()
+                ? this.prepare('SELECT * FROM conflicts WHERE pair_id = ? ORDER BY detected_at DESC').all(pairId)
+                : this.prepare('SELECT * FROM conflicts ORDER BY detected_at DESC').all()
         ) as Record<string, unknown>[];
         return rows.map(rowToConflict);
     }
 
     countConflicts(pairId: string): number {
-        const row = this.db.prepare('SELECT COUNT(*) AS n FROM conflicts WHERE pair_id = ?').get(pairId) as {
+        const row = this.prepare('SELECT COUNT(*) AS n FROM conflicts WHERE pair_id = ?').get(pairId) as {
             n: number;
         };
         return row.n;
     }
 
     insertConflict(conflict: Conflict): void {
-        this.db
-            .prepare(
+        this.prepare(
                 `INSERT OR REPLACE INTO conflicts
                  (id, pair_id, path, kind, detected_at, kept_copy_path, local_modified_at, remote_modified_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -391,14 +420,14 @@ export class SyncDatabase {
     }
 
     getConflict(id: string): Conflict | undefined {
-        const row = this.db.prepare('SELECT * FROM conflicts WHERE id = ?').get(id) as
+        const row = this.prepare('SELECT * FROM conflicts WHERE id = ?').get(id) as
             | Record<string, unknown>
             | undefined;
         return row ? rowToConflict(row) : undefined;
     }
 
     deleteConflict(id: string): void {
-        this.db.prepare('DELETE FROM conflicts WHERE id = ?').run(id);
+        this.prepare('DELETE FROM conflicts WHERE id = ?').run(id);
     }
 
     // ---- Activity log
@@ -414,7 +443,7 @@ export class SyncDatabase {
         if (events.length === 0) {
             return;
         }
-        const insert = this.db.prepare(
+        const insert = this.prepare(
             `INSERT INTO sync_events (pair_id, at, action, path, to_path, type, size, outcome, error)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
@@ -437,16 +466,33 @@ export class SyncDatabase {
     }
 
     private pruneEvents(): void {
-        this.db.prepare('DELETE FROM sync_events WHERE at < ?').run(Date.now() - HISTORY_MAX_AGE_MS);
+        // There is deliberately no index on `at` (it would tax every insert),
+        // so the age prune is a full-table scan. Events are appended with
+        // non-decreasing timestamps, which makes the lowest id the oldest row;
+        // one primary-key lookup tells us whether the scan would find anything,
+        // so the common every-cycle case costs a single row read.
+        const cutoff = Date.now() - HISTORY_MAX_AGE_MS;
+        const oldest = this.prepare('SELECT at FROM sync_events ORDER BY id LIMIT 1').get() as
+            | { at: number }
+            | undefined;
+        if (oldest && oldest.at < cutoff) {
+            this.prepare('DELETE FROM sync_events WHERE at < ?').run(cutoff);
+        }
+
         // Trim by id rather than by count so this stays a single statement:
-        // anything below the id of the Nth-newest row is surplus.
-        this.db
-            .prepare(
+        // anything below the id of the Nth-newest row is surplus. Gated on the
+        // id span — ids autoincrement, so hi - lo bounds the row count from
+        // above and a span under the cap proves there is nothing to trim.
+        const span = this.prepare('SELECT MIN(id) AS lo, MAX(id) AS hi FROM sync_events').get() as
+            | { lo: number | null; hi: number | null }
+            | undefined;
+        if (span?.lo != null && span.hi != null && span.hi - span.lo + 1 > HISTORY_MAX_ROWS) {
+            this.prepare(
                 `DELETE FROM sync_events WHERE id < (
                      SELECT MIN(id) FROM (SELECT id FROM sync_events ORDER BY id DESC LIMIT ?)
                  )`,
-            )
-            .run(HISTORY_MAX_ROWS);
+            ).run(HISTORY_MAX_ROWS);
+        }
     }
 
     listEvents(filter: HistoryFilter = {}): SyncEvent[] {
@@ -481,15 +527,14 @@ export class SyncDatabase {
         const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
         values.push(limit);
 
-        const rows = this.db
-            .prepare(`SELECT * FROM sync_events ${where} ORDER BY id DESC LIMIT ?`)
+        const rows = this.prepare(`SELECT * FROM sync_events ${where} ORDER BY id DESC LIMIT ?`)
             .all(...values) as Record<string, unknown>[];
         return rows.map(rowToEvent);
     }
 
     clearEvents(pairId?: string): void {
         if (pairId) {
-            this.db.prepare('DELETE FROM sync_events WHERE pair_id = ?').run(pairId);
+            this.prepare('DELETE FROM sync_events WHERE pair_id = ?').run(pairId);
         } else {
             this.db.exec('DELETE FROM sync_events');
         }
@@ -536,6 +581,11 @@ export type RemoteNodeInput = {
     mtime: number;
     trashed: boolean;
 };
+
+/** Escapes LIKE wildcards so a pattern built from a path matches it literally. */
+function escapeLike(value: string): string {
+    return value.replace(/[\\%_]/g, '\\$&');
+}
 
 /** Tolerant: a malformed value means "no exclusions", never a crash. */
 function parseExcludes(value: unknown): string[] {
