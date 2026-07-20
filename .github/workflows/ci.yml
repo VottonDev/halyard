@@ -68,6 +68,13 @@ jobs:
         working-directory: daemon
         run: dbus-run-session -- bun run doctor --strict
 
+      - name: Deinitialise the SDK before checkout cleanup
+        if: always()
+        # actions/checkout recursively inspects any initialised submodule during
+        # its post-job cleanup. Proton has an intentionally unconfigured nested
+        # fixture, so leave only Halyard initialised for that cleanup pass.
+        run: git submodule deinit --force proton-sdk
+
   ui-and-packaging:
     name: UI and packaging
     runs-on: ubuntu-latest

@@ -151,3 +151,10 @@ jobs:
           } > "$issue_body"
 
           gh issue create --title "$title" --body-file "$issue_body"
+
+      - name: Deinitialise the SDK before checkout cleanup
+        if: always()
+        # actions/checkout recursively inspects any initialised submodule during
+        # its post-job cleanup. Proton has an intentionally unconfigured nested
+        # fixture, so leave only Halyard initialised for that cleanup pass.
+        run: git submodule deinit --force proton-sdk
