@@ -239,6 +239,67 @@ describe('moves are detected, not re-transferred', () => {
     });
 });
 
+describe('a moved folder is carried by one directory rename', () => {
+    const localFolder = (path: string, inode: number): LocalItem => ({
+        path,
+        type: 'folder',
+        mtime: 0,
+        size: 0,
+        inode,
+        device: 100,
+    });
+    const remoteFolder = (path: string, uid: string): RemoteItem => ({
+        path,
+        type: 'folder',
+        uid,
+        parentUid: null,
+        revisionUid: null,
+        hash: null,
+        size: 0,
+        mtime: 0,
+        trashed: false,
+    });
+
+    test('a remote folder move emits a single move and rebases its descendants', () => {
+        // On Drive, folder A (holding file.txt) was moved into the existing
+        // folder B: A -> B/A and A/file.txt -> B/A/file.txt. Uids are stable
+        // across the move; only the paths change.
+        const base = new Map<string, BaseEntry>([
+            ['B', baseFile('B', { type: 'folder', remoteUid: 'uidB', localInode: 2 })],
+            ['A', baseFile('A', { type: 'folder', remoteUid: 'uidA', localInode: 3 })],
+            ['A/file.txt', baseFile('A/file.txt', { remoteUid: 'uidFile', localInode: 4 })],
+        ]);
+        const local = new Map<string, LocalItem>([
+            ['B', localFolder('B', 2)],
+            ['A', localFolder('A', 3)],
+            ['A/file.txt', localFile('A/file.txt', { inode: 4 })],
+        ]);
+        const remote = new Map<string, RemoteItem>([
+            ['B', remoteFolder('B', 'uidB')],
+            ['B/A', remoteFolder('B/A', 'uidA')],
+            ['B/A/file.txt', remoteFile('B/A/file.txt', { uid: 'uidFile' })],
+        ]);
+
+        const plan = reconcile({ base, local, remote, now: NOW });
+
+        // Exactly one move — the folder itself. The descendant is not moved
+        // separately: renaming the directory already relocated it, and a second
+        // move would only fail with ENOENT and log a bogus failure.
+        const moves = plan.actions.filter((a) => a.kind === 'moveLocal' || a.kind === 'moveRemote');
+        expect(moves).toEqual([{ kind: 'moveLocal', from: 'A', to: 'B/A' }]);
+
+        // Nothing is re-transferred.
+        expect(plan.actions.some((a) => a.kind === 'download' || a.kind === 'upload')).toBe(false);
+
+        // The base is rewritten in place to the new paths, so the next cycle
+        // reads agreement rather than dropping and re-hashing each descendant.
+        expect(base.has('A')).toBe(false);
+        expect(base.has('A/file.txt')).toBe(false);
+        expect(base.get('B/A')?.remoteUid).toBe('uidA');
+        expect(base.get('B/A/file.txt')?.remoteUid).toBe('uidFile');
+    });
+});
+
 describe('folders', () => {
     const folder = (path: string): LocalItem => ({ path, type: 'folder', mtime: 0, size: 0, inode: 9, device: 100 });
     const remoteFolder = (path: string): RemoteItem => ({

@@ -239,7 +239,13 @@ export class Executor {
             case 'moveLocal':
                 return describeAs('movedLocal', action.from, {
                     toPath: action.to,
-                    type: this.context.local.get(action.from)?.type ?? 'file',
+                    // A remote-detected move rewrites the local snapshot to the
+                    // destination path, so the source key is already gone; fall
+                    // back to the destination to recover the node type.
+                    type:
+                        this.context.local.get(action.from)?.type ??
+                        this.context.local.get(action.to)?.type ??
+                        'file',
                 });
 
             case 'moveRemote':
@@ -336,23 +342,7 @@ export class Executor {
                 const to = this.absolute(action.to);
                 await fsp.mkdir(path.dirname(to), { recursive: true });
                 await movePath(from, to);
-
-                const entry = db.getBase(pair.id).get(action.from);
-                if (entry) {
-                    db.deleteBaseEntry(pair.id, action.from);
-                    try {
-                        const stats = await fsp.stat(to);
-                        db.setBaseEntry(pair.id, {
-                            ...entry,
-                            path: action.to,
-                            localMtime: Math.floor(stats.mtimeMs),
-                            localInode: Number(stats.ino),
-                        localDevice: Number(stats.dev),
-                        });
-                    } catch {
-                        // Destination vanished; the next cycle will sort it out.
-                    }
-                }
+                await this.rebaseMovedSubtree(action.from, action.to);
                 return true;
             }
 
@@ -368,6 +358,53 @@ export class Executor {
             case 'dropBase':
                 db.deleteBaseEntry(pair.id, action.path);
                 return true;
+        }
+    }
+
+    /**
+     * Rewrites the base after a local move, following the whole subtree.
+     *
+     * A folder move is a single directory rename that relocates everything
+     * beneath it at once, so the reconciler emits one move for the folder and
+     * none for its contents. The base has to follow suit: each descendant row
+     * moves with the folder, or the next cycle sees those paths vanish and
+     * reappear and re-hashes each file just to re-record an agreement that
+     * already holds. Every row is re-stat'd from its destination, which also
+     * picks up the fresh inodes a cross-device clone hands out. A plain file
+     * move has no descendants, so this reduces to relocating the one row.
+     */
+    private async rebaseMovedSubtree(from: string, to: string): Promise<void> {
+        const { db, pair } = this.context;
+        const base = db.getBase(pair.id);
+        const entry = base.get(from);
+        if (!entry) {
+            return;
+        }
+
+        // Capture the node and its descendants before deleting anything.
+        const relocated: Array<{ newPath: string; entry: BaseEntry }> = [{ newPath: to, entry }];
+        for (const [entryPath, descendant] of base) {
+            if (entryPath.startsWith(`${from}/`)) {
+                relocated.push({ newPath: `${to}${entryPath.slice(from.length)}`, entry: descendant });
+            }
+        }
+
+        // Removes `from` and every `from/…` row in one statement; re-inserted below.
+        db.deleteBaseEntry(pair.id, from);
+
+        for (const { newPath, entry: previous } of relocated) {
+            try {
+                const stats = await fsp.stat(this.absolute(newPath));
+                db.setBaseEntry(pair.id, {
+                    ...previous,
+                    path: newPath,
+                    localMtime: Math.floor(stats.mtimeMs),
+                    localInode: Number(stats.ino),
+                    localDevice: Number(stats.dev),
+                });
+            } catch {
+                // Destination vanished; the next cycle will sort it out.
+            }
         }
     }
 

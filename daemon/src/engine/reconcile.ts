@@ -210,6 +210,34 @@ function detectMoves(input: ReconcileInput, actions: Action[]): void {
         base.delete(previous.path);
         base.set(path, { ...previous, path });
     }
+
+    // --- Collapse a moved folder's subtree into the single folder move.
+    //
+    // Matching by identity finds the folder *and* every node inside it, so a
+    // folder move surfaces here as one move for the folder plus one for each
+    // descendant. But a directory rename relocates the whole subtree in a
+    // single syscall, so the executor would then try to move descendants their
+    // parent has already carried off — each failing with ENOENT and landing in
+    // the activity log as a bogus failed move. Drop any move already implied by
+    // an ancestor's move (same source subtree, same destination subtree); the
+    // in-place base/local/remote rewrites above have already relocated it.
+    const moves = actions.filter(
+        (action): action is Extract<Action, { kind: 'moveLocal' | 'moveRemote' }> =>
+            action.kind === 'moveLocal' || action.kind === 'moveRemote',
+    );
+    const carriedByAncestor = (move: { from: string; to: string }): boolean =>
+        moves.some(
+            (other) =>
+                other !== move &&
+                isDescendantOf(move.from, other.from) &&
+                move.to === other.to + move.from.slice(other.from.length),
+        );
+    for (let i = actions.length - 1; i >= 0; i -= 1) {
+        const action = actions[i];
+        if ((action.kind === 'moveLocal' || action.kind === 'moveRemote') && carriedByAncestor(action)) {
+            actions.splice(i, 1);
+        }
+    }
 }
 
 /**
