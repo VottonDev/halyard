@@ -336,7 +336,7 @@ Drive session") in **Passwords and Keys** to drop the stored session.
 ## Complying with Proton's third-party rules
 
 Proton allows personal, non-commercial use of the Drive SDK under
-[conditions](https://github.com/protonprivacy/proton-sdk-preview#usage-guidelines-for-personal-projects).
+[conditions](https://github.com/ProtonDriveApps/sdk).
 Halyard is built to meet them, and changes should keep meeting them:
 
 - **Honest identification.** Every request sends
