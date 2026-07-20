@@ -65,7 +65,11 @@ Each of these cost real debugging time. Do not "simplify" them away.
   glob skips them) and run under Node via `bun run test:node`. Node in turn
   cannot resolve the `.js` specifiers the `src/` tree uses, so that script
   loads `test/support/register.mjs`, which rewrites them to `.ts`. Pure logic
-  stays in `*.test.ts` under Bun.
+  stays in `*.test.ts` under Bun. The crypto-cache regression is the one
+  exception: it needs both `node:sqlite` and Proton's raw TypeScript crypto
+  package, which Node refuses to type-strip under `node_modules`. It is named
+  `*.bundletest.ts`; `bun run test:crypto` bundles it before running it with
+  Node.
 - The `proton-sdk` submodule (pinned at tag `js/v0.19.2`) lives at the repo root
   — `../proton-sdk` from `daemon/` — and `client/js` must be built (`bun install
   && bun run build`) before this will compile. `git submodule update --init`

@@ -8,6 +8,8 @@
  *
  * Touches no account data and makes no network calls.
  */
+import '@protontech/crypto/polyfill';
+
 import { CryptoProxy } from '@protontech/crypto';
 import { Api as CryptoApi } from '@protontech/crypto/proxy/endpoint/api.ts';
 import { OpenPGPCryptoWithCryptoProxy, ProtonDriveClient, VERSION } from '@protontech/drive-sdk';
@@ -16,6 +18,27 @@ import { DatabaseSync } from 'node:sqlite';
 import { initAccount } from 'proton-drive-sdk-account';
 
 const results: Record<string, unknown> = {};
+const strict = process.argv.includes('--strict');
+
+function applyStrictChecks(): void {
+    if (!strict) {
+        return;
+    }
+
+    const failures: string[] = [];
+    if (results.sqlite !== 'ok (blob round-trip)') failures.push('sqlite');
+    if (results.cryptoRoundTrip !== 'ok') failures.push('cryptoRoundTrip');
+    if (results.openPGPModule !== 'ok') failures.push('openPGPModule');
+    if (results.dbus !== 'ok') failures.push('dbus');
+    if (typeof results.sdkVersion !== 'string' || !results.sdkVersion) failures.push('sdkVersion');
+    if (results.sdkClientCtor !== 'function') failures.push('sdkClientCtor');
+    if (results.accountInit !== 'function') failures.push('accountInit');
+
+    if (failures.length > 0) {
+        results.strictFailures = failures;
+        process.exitCode = 1;
+    }
+}
 
 async function main() {
     results.node = process.versions.node;
@@ -69,6 +92,7 @@ async function main() {
     results.sdkClientCtor = typeof ProtonDriveClient;
     results.accountInit = typeof initAccount;
 
+    applyStrictChecks();
     console.log('PROBE_RESULT ' + JSON.stringify(results, null, 2));
 }
 
