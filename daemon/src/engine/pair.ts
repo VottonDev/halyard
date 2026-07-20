@@ -33,6 +33,9 @@ export class PairSyncer {
     private running = false;
     /** Set when a change arrives mid-sync, so we immediately run again. */
     private dirty = false;
+    /** Abort scope of the in-flight run, so one pair can be stopped alone. */
+    private currentAbort: AbortController | null = null;
+    private currentRun: Promise<void> | null = null;
 
     status: PairStatus = 'idle';
     error: string | null = null;
@@ -82,26 +85,55 @@ export class PairSyncer {
             this.dirty = true;
             return;
         }
-        this.running = true;
-        try {
-            let guard = 0;
-            do {
-                this.dirty = false;
-                await this.runOnce(signal);
-                // A cycle can legitimately cause the next one to find work
-                // (a conflict copy needs uploading, for example), but it must
-                // converge. Stop looping if it does not.
-                // A resumable enumeration can need several passes before any
-                // syncing happens, so the guard has to be generous. It exists
-                // only to stop a genuine oscillation running forever.
-                if (++guard >= 50) {
-                    logger.warn(`Pair ${this.pair.id}: stopping after ${guard} passes without settling`);
-                    break;
-                }
-            } while (this.dirty && !signal?.aborted);
-        } finally {
-            this.running = false;
+        // The caller's signal is manager-wide (it trips on sign-out and
+        // shutdown). Chaining a per-run controller onto it lets cancel() stop
+        // this one pair — for a retarget — without touching the others.
+        const controller = new AbortController();
+        const propagate = () => controller.abort();
+        if (signal?.aborted) {
+            controller.abort();
+        } else {
+            signal?.addEventListener('abort', propagate, { once: true });
         }
+        this.currentAbort = controller;
+        this.running = true;
+        const run = (async () => {
+            try {
+                let guard = 0;
+                do {
+                    this.dirty = false;
+                    await this.runOnce(controller.signal);
+                    // A cycle can legitimately cause the next one to find work
+                    // (a conflict copy needs uploading, for example), but it must
+                    // converge. Stop looping if it does not.
+                    // A resumable enumeration can need several passes before any
+                    // syncing happens, so the guard has to be generous. It exists
+                    // only to stop a genuine oscillation running forever.
+                    if (++guard >= 50) {
+                        logger.warn(`Pair ${this.pair.id}: stopping after ${guard} passes without settling`);
+                        break;
+                    }
+                } while (this.dirty && !controller.signal.aborted);
+            } finally {
+                this.running = false;
+                this.currentAbort = null;
+                this.currentRun = null;
+                signal?.removeEventListener('abort', propagate);
+            }
+        })();
+        this.currentRun = run;
+        await run;
+    }
+
+    /**
+     * Aborts the in-flight run, if any, and waits for it to unwind. Used
+     * before discarding a pair's sync state: clearing the base while a cycle
+     * is mid-flight would let it write rows against the discarded world.
+     */
+    async cancel(): Promise<void> {
+        this.dirty = false;
+        this.currentAbort?.abort();
+        await this.currentRun?.catch(() => undefined);
     }
 
     private async runOnce(signal?: AbortSignal): Promise<void> {
