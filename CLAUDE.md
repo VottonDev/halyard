@@ -101,7 +101,15 @@ testable, and every sync decision goes through it.
 - **A deletion never beats an edit.** Remote deletions are applied locally only
   when the local copy is *unchanged* — so an identical copy is recoverable from
   Proton's Trash. Unsynced local edits are re-uploaded instead. If you touch the
-  decision matrix, preserve this asymmetry.
+  decision matrix, preserve this asymmetry. The executor re-checks it too:
+  `deleteLocal` re-stats the file just before removing and defers if a write
+  landed after the scan — the scan-time judgement alone is a TOCTOU hole.
+- **Type swaps are explicit, not emergent.** A path that is a file on one side
+  and a folder on the other gets its own branch in the matrix: an *unchanged*
+  file is replaced outright (its bytes are Trash-recoverable); anything else
+  keeps both copies via the conflict rename. Do not let these fall through to
+  the single-sided branches — that path either loops forever or aims file
+  operations at a folder uid.
 - **A vanished or empty local root pauses the pair; it never reconciles.**
   `runOnce` (`daemon/src/engine/pair.ts`) refuses to sync when the local folder
   is missing, or exists but scans empty, while the base is non-empty — that
@@ -141,6 +149,12 @@ none of them prompt for a password.
 If a change here appears to need `sudo`, the change is wrong. A sync tool that
 asks for root to move the user's own files is teaching them a bad habit, and
 Proton's own clients do not do it either.
+
+The systemd unit has one source of truth: `packaging/halyard-daemon.service.in`.
+`ui/halyard/daemon_control.py` reads that template when a checkout provides it
+and carries a byte-identical embedded fallback for installed UIs — both write
+the same file and last-writer-wins, so a change to one must be mirrored in the
+other (an earlier inline copy silently dropped the entire hardening block).
 
 ## GNOME specifics
 

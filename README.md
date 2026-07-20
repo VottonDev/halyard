@@ -29,6 +29,7 @@ directions, and only one of them is recoverable:
 | File edited locally, deleted in Drive | The edit wins — the file is re-uploaded. Local work is never destroyed by a remote deletion. |
 | File renamed or moved | Detected as a move, so nothing is re-transferred. A renamed 4 GB file costs one API call, not 4 GB. |
 | Same content on both sides, different timestamps | Records agreement and transfers nothing. |
+| A file replaced by a folder of the same name (or vice versa) | The changed side wins when the displaced file is unchanged — its bytes stay recoverable. Otherwise both survive: the local copy steps aside under a dated conflict name. |
 
 Resurrecting a file you deleted is an annoyance. Destroying a file you edited is
 not, so every ambiguous case resolves toward keeping data.
@@ -37,7 +38,9 @@ Note the asymmetry in the two deletion rows. Halyard will delete a local file
 when Drive says it is gone — but only when that file is *unchanged*, meaning an
 identical copy is recoverable from Proton's Trash. The moment there are local
 edits Drive has never seen, deletion stops being reversible and the edit wins
-instead.
+instead. That check is even made twice: once when planning, and again
+immediately before the file is removed, so a save that lands mid-sync defers
+the deletion rather than racing it.
 
 Sync is a three-way merge between the local filesystem, the remote tree, and a
 recorded *base* — the last state at which the two agreed. Without that base you
