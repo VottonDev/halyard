@@ -312,11 +312,17 @@ export class RemoteTree {
 
             case DriveEventType.NodeCreated:
             case DriveEventType.NodeUpdated: {
+                // Whether we tracked this node *before* this event is what tells
+                // a folder that has just entered our subtree apart from one that
+                // was already inside it. It decides, further down, if we owe the
+                // folder a catch-up enumeration.
+                const wasKnown = known.has(event.nodeUid);
+
                 // Events cover the whole volume, not just our folder. A node is
                 // ours if we already track it, or if its parent is something we
                 // track — which also catches nodes moved *into* the pair.
                 const relevant =
-                    known.has(event.nodeUid) || (!!event.parentNodeUid && known.has(event.parentNodeUid));
+                    wasKnown || (!!event.parentNodeUid && known.has(event.parentNodeUid));
                 if (!relevant) {
                     return 'ignored';
                 }
@@ -365,10 +371,18 @@ export class RemoteTree {
                 this.db.upsertRemoteNode(this.pair.id, row);
                 known.add(row.uid);
 
-                // A newly visible folder may bring descendants we have never
-                // listed, and events for those arrived before we knew the
-                // parent. Enumerate it once to catch up.
-                if (row.type === 'folder' && event.type === DriveEventType.NodeCreated) {
+                // A folder that has just entered our subtree may bring
+                // descendants we have never listed, whose own events arrived
+                // before we knew the parent. Enumerate it once to catch up.
+                // This covers a folder freshly created here (NodeCreated) *and*
+                // one moved in from another device (NodeUpdated with a new
+                // parent) alike — both surface as a folder we did not previously
+                // track. Gating on `!wasKnown` — not the event type — is what
+                // makes the move-in case work while an ordinary update of an
+                // already-tracked folder does not re-list it. Re-enumerating on
+                // every update would be wasteful and, under Proton's rules,
+                // abusive.
+                if (row.type === 'folder' && !wasKnown) {
                     await this.enumerateInto(row.uid, known);
                 }
                 return 'changed';
