@@ -107,6 +107,27 @@ export class PairSyncer {
     private async runOnce(signal?: AbortSignal): Promise<void> {
         const pair = this.pair;
 
+        // A previously-synced local root that has vanished was almost certainly
+        // moved, deleted, or unmounted out from under us — not emptied file by
+        // file. If we recreate it empty below and then reconcile, every synced
+        // file reads as a local deletion and we trash the user's Drive copies.
+        // Refuse instead, exactly as we refuse to reconcile a half-enumerated
+        // remote. Recreating it empty would also risk writing a phantom folder
+        // into a bare mountpoint, hiding the real data behind it.
+        const rootExists = await fsp
+            .stat(pair.localPath)
+            .then((stats) => stats.isDirectory())
+            .catch(() => false);
+        if (!rootExists && this.db.getBase(pair.id).size > 0) {
+            this.setStatus(
+                'error',
+                `${pair.localPath} is missing. It may have been moved or its drive unmounted — ` +
+                    `sync is paused so your Proton Drive copies aren't deleted. ` +
+                    `Restore the folder or re-point this pair to resume.`,
+            );
+            return;
+        }
+
         try {
             await fsp.mkdir(pair.localPath, { recursive: true });
         } catch (error) {
@@ -154,6 +175,22 @@ export class PairSyncer {
             const local = filterExcluded(await scanLocal(this.pair.localPath, isExcluded), isExcluded);
             const remote = filterExcluded(this.tree.snapshot(), isExcluded);
             const base = filterExcluded(this.db.getBase(this.pair.id), isExcluded);
+
+            // The same protection as the missing-root check above, for a root
+            // that still exists but scans empty (a stale mountpoint, say): a
+            // pair that was previously non-empty and now has no local files at
+            // all must not be allowed to propagate a full-tree deletion to
+            // Drive. A genuine "delete everything" is rare, recoverable from
+            // Proton's Trash if intended, and worth pausing on either way.
+            if (local.size === 0 && base.size > 0) {
+                this.setStatus(
+                    'error',
+                    `${this.pair.localPath} is empty but was previously synced. ` +
+                        `It may have been moved or its drive unmounted — sync is paused so your ` +
+                        `Proton Drive copies aren't deleted. Restore the folder or re-point this pair to resume.`,
+                );
+                return;
+            }
 
             await fillRequiredHashes(this.pair.localPath, local, base, remote);
 

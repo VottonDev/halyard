@@ -102,6 +102,14 @@ testable, and every sync decision goes through it.
   when the local copy is *unchanged* — so an identical copy is recoverable from
   Proton's Trash. Unsynced local edits are re-uploaded instead. If you touch the
   decision matrix, preserve this asymmetry.
+- **A vanished or empty local root pauses the pair; it never reconciles.**
+  `runOnce` (`daemon/src/engine/pair.ts`) refuses to sync when the local folder
+  is missing, or exists but scans empty, while the base is non-empty — that
+  means the folder was moved, deleted, or unmounted out from under us, and
+  reconciling would read the whole tree as deleted and trash the Drive copies.
+  This mirrors the half-enumerated-remote guard. Do not remove it, and do not
+  let the `mkdir -p` at the top recreate a missing root when there is state to
+  lose (it would also mask a bare mountpoint with a phantom folder).
 - **Conflicts keep both copies.** Remote takes the canonical path; the local
   version is renamed `file (conflict YYYY-MM-DD).ext` and uploaded.
 - **Never re-transfer on rename.** Moves are detected by node uid (remote) and
