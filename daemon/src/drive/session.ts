@@ -1,3 +1,5 @@
+import '@protontech/crypto/polyfill';
+
 import { CryptoProxy } from '@protontech/crypto';
 import { Api as CryptoApi } from '@protontech/crypto/proxy/endpoint/api.ts';
 import {

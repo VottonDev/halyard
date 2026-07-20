@@ -1,0 +1,153 @@
+name: Proton SDK canary
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: Proton SDK revision to test
+        required: true
+        default: latest-tag
+        type: choice
+        options:
+          - latest-tag
+          - main
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: proton-sdk-canary-${{ github.event_name == 'workflow_dispatch' && inputs.sdk || 'scheduled' }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    name: SDK ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: ${{ matrix.sdk == 'main' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.sdk) || '["latest-tag","main"]') }}
+
+    steps:
+      - name: Check out Halyard
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check out the pinned Proton SDK
+        # Do not ask actions/checkout to recurse into submodules. Proton's
+        # repository contains an intentionally unconfigured nested fixture.
+        run: git submodule update --init proton-sdk
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Select upstream SDK revision
+        id: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C proton-sdk fetch --force origin \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/*:refs/tags/*'
+
+          if [[ '${{ matrix.sdk }}' == 'latest-tag' ]]; then
+            target="$(git -C proton-sdk tag --list 'js/v*' --sort=-version:refname | head -n 1)"
+            [[ -n "$target" ]] || { echo 'No js/v* SDK tag was found' >&2; exit 1; }
+          else
+            target='origin/main'
+          fi
+
+          git -C proton-sdk checkout --detach "$target"
+          echo "revision=$(git -C proton-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "description=$(git -C proton-sdk describe --tags --always)" >> "$GITHUB_OUTPUT"
+
+      - name: Install, build and test the selected SDK
+        working-directory: proton-sdk/client/js
+        run: |
+          bun install --frozen-lockfile
+          bun run build:ci
+          bun run test:ci
+
+      - name: Install Halyard dependencies
+        working-directory: daemon
+        run: bun install --frozen-lockfile
+
+      - name: Test Halyard against the selected SDK
+        working-directory: daemon
+        run: |
+          bun run check-types
+          bun run test
+          bun run build
+          dbus-run-session -- bun run doctor --strict
+
+      - name: Record the tested SDK revision
+        if: always()
+        run: |
+          {
+            echo '## Proton SDK canary'
+            echo
+            echo '* Channel: `${{ matrix.sdk }}`'
+            echo '* Revision: `${{ steps.sdk.outputs.description }}`'
+            echo '* Commit: `${{ steps.sdk.outputs.revision }}`'
+            echo
+            echo 'This workflow uses no Proton account and makes no Drive API calls.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify when a new SDK release is available
+        if: always() && matrix.sdk == 'latest-tag' && steps.sdk.outputs.revision != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDK_TAG: ${{ steps.sdk.outputs.description }}
+          SDK_REVISION: ${{ steps.sdk.outputs.revision }}
+          CANARY_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned_revision="$(git ls-tree HEAD proton-sdk | awk '{print $3}')"
+          if [[ "$SDK_REVISION" == "$pinned_revision" ]]; then
+            echo "The pinned SDK is already $SDK_TAG."
+            exit 0
+          fi
+
+          title="Proton SDK $SDK_TAG is available"
+          existing_issue="$(
+            gh issue list --state all --limit 10 \
+              --search "\"$title\" in:title" \
+              --json number,title \
+              --jq ".[] | select(.title == \"$title\") | .number" \
+              | head -n 1
+          )"
+          if [[ -n "$existing_issue" ]]; then
+            echo "Issue #$existing_issue already tracks $SDK_TAG."
+            exit 0
+          fi
+
+          issue_body="$RUNNER_TEMP/proton-sdk-update.md"
+          {
+            echo "A newer tagged Proton Drive SDK release is available."
+            echo
+            echo "- Current Halyard commit: \`$pinned_revision\`"
+            echo "- Available release: \`$SDK_TAG\`"
+            echo "- Available commit: \`$SDK_REVISION\`"
+            echo "- Account-free compatibility run: **$CANARY_STATUS**"
+            echo
+            echo "[View the compatibility run]($RUN_URL)"
+            echo
+            echo "Review Proton's changelog and update the \`proton-sdk\` submodule deliberately."
+          } > "$issue_body"
+
+          gh issue create --title "$title" --body-file "$issue_body"

@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  daemon:
+    name: Daemon (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+
+    steps:
+      - name: Check out Halyard
+        uses: actions/checkout@v7
+
+      - name: Check out the pinned Proton SDK
+        # Do not ask actions/checkout to recurse into submodules. Proton's
+        # repository contains an intentionally unconfigured nested fixture.
+        run: git submodule update --init proton-sdk
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Build the pinned Proton SDK
+        working-directory: proton-sdk/client/js
+        run: |
+          bun install --frozen-lockfile
+          bun run build:ci
+
+      - name: Install daemon dependencies
+        working-directory: daemon
+        run: bun install --frozen-lockfile
+
+      - name: Check daemon types
+        working-directory: daemon
+        run: bun run check-types
+
+      - name: Run daemon tests
+        working-directory: daemon
+        run: bun run test
+
+      - name: Build the runnable daemon bundle
+        working-directory: daemon
+        run: bun run build
+
+      - name: Probe the bundled SDK, crypto, SQLite and D-Bus
+        working-directory: daemon
+        run: dbus-run-session -- bun run doctor --strict
+
+  ui-and-packaging:
+    name: UI and packaging
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out Halyard
+        uses: actions/checkout@v7
+
+      - name: Compile Python sources
+        run: python3 -m compileall -q ui/halyard ui/tests
+
+      - name: Validate shell scripts
+        run: bash -n packaging/install.sh ui/run-dev.sh
+
+      - name: Verify the embedded systemd unit matches its template
+        run: |
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+
+          source = Path('ui/halyard/daemon_control.py').read_text()
+          module = ast.parse(source)
+          fallback = None
+          for statement in module.body:
+              if isinstance(statement, ast.Assign):
+                  names = [target.id for target in statement.targets if isinstance(target, ast.Name)]
+                  if '_UNIT_TEMPLATE_FALLBACK' in names:
+                      fallback = ast.literal_eval(statement.value)
+                      break
+          if fallback is None:
+              raise SystemExit('Could not find _UNIT_TEMPLATE_FALLBACK')
+          template = Path('packaging/halyard-daemon.service.in').read_text()
+          if fallback != template:
+              raise SystemExit('The embedded and packaged systemd units differ')
+          PY
