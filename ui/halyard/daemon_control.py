@@ -113,18 +113,28 @@ def is_running(on_result: Callable[[bool], None]) -> None:
     )
 
 
-def is_enabled_at_login() -> bool:
+def is_enabled_at_login(on_result: Callable[[bool], None]) -> None:
+    """Asks systemd whether the unit starts at login; never blocks the UI."""
     if not has_systemd() or not unit_installed():
-        return False
+        on_result(False)
+        return
     try:
         proc = Gio.Subprocess.new(
             ["systemctl", "--user", "is-enabled", UNIT_NAME],
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
         )
-        ok, out, _err = proc.communicate_utf8(None, None)
-        return ok and (out or "").strip() == "enabled"
     except GLib.Error:
-        return False
+        on_result(False)
+        return
+
+    def finished(source: Gio.Subprocess, result: Gio.AsyncResult) -> None:
+        try:
+            ok, out, _err = source.communicate_utf8_finish(result)
+            on_result(bool(ok) and (out or "").strip() == "enabled")
+        except GLib.Error:
+            on_result(False)
+
+    proc.communicate_utf8_async(None, None, finished)
 
 
 # --------------------------------------------------------------------------- actions
@@ -193,6 +203,61 @@ def set_enabled_at_login(enabled: bool, done: Callable[[bool, str], None]) -> No
     _run(["systemctl", "--user", verb, UNIT_NAME], done)
 
 
+#: Fallback for when no checkout provides packaging/halyard-daemon.service.in
+#: (an installed UI, for instance). Must stay byte-identical to that template:
+#: both write the same file, and whichever runs last wins — an earlier version
+#: of this inline unit silently dropped the template's whole hardening block.
+_UNIT_TEMPLATE_FALLBACK = """\
+[Unit]
+Description=Halyard — two-way sync for Proton Drive (unofficial)
+Documentation=https://github.com/votton/halyard
+# The daemon needs the session bus and the keyring to reach the account.
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=io.github.votton.Halyard.Daemon
+ExecStart=@NODE@ @DAEMON@
+Restart=on-failure
+RestartSec=10
+# Sync is background work; never let it compete with the desktop for CPU or IO.
+Nice=10
+IOSchedulingClass=idle
+
+# The daemon only ever needs the user's own files, and hardening a sync tool
+# that legitimately writes all over $HOME is mostly about limiting blast radius
+# elsewhere on the system.
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+NoNewPrivileges=yes
+ReadWritePaths=%h
+
+[Install]
+WantedBy=default.target
+"""
+
+_UNIT_TEMPLATE_FILE = Path(__file__).resolve().parent.parent.parent / "packaging" / "halyard-daemon.service.in"
+
+
+def _unit_text(node: str, bundle: Path) -> str:
+    """The systemd unit, from the packaging template when a checkout has it."""
+    try:
+        template = _UNIT_TEMPLATE_FILE.read_text()
+    except OSError:
+        template = _UNIT_TEMPLATE_FALLBACK
+    return (
+        template.replace("@NODE@", node)
+        .replace("@DAEMON@", str(bundle))
+        # The template hardcodes the production name; honour HALYARD_BUS_NAME
+        # the same way the rest of this module does.
+        .replace("BusName=io.github.votton.Halyard.Daemon", f"BusName={BUS_NAME}")
+    )
+
+
 def install_service_files(done: Callable[[bool, str], None]) -> None:
     """
     Writes the D-Bus activation file and systemd unit into the user's own
@@ -217,23 +282,7 @@ def install_service_files(done: Callable[[bool, str], None]) -> None:
         )
 
         SYSTEMD_UNIT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SYSTEMD_UNIT_FILE.write_text(
-            "[Unit]\n"
-            "Description=Halyard — two-way sync for Proton Drive (unofficial)\n"
-            "After=graphical-session.target\n"
-            "\n"
-            "[Service]\n"
-            "Type=dbus\n"
-            f"BusName={BUS_NAME}\n"
-            f"ExecStart={node} {bundle}\n"
-            "Restart=on-failure\n"
-            "RestartSec=10\n"
-            "Nice=10\n"
-            "IOSchedulingClass=idle\n"
-            "\n"
-            "[Install]\n"
-            "WantedBy=default.target\n"
-        )
+        SYSTEMD_UNIT_FILE.write_text(_unit_text(node, bundle))
     except OSError as error:
         done(False, str(error))
         return
