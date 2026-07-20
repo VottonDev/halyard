@@ -57,6 +57,11 @@ class FakeDb {
     // matters to what these tests assert.
     markChildrenListed(): void {}
     updatePair(): void {}
+
+    // The in-memory map needs no atomicity; run the batch directly.
+    transaction<T>(fn: () => T): T {
+        return fn();
+    }
 }
 
 /** A Drive client whose tree and event stream are scripted per test. */
