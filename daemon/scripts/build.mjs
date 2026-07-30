@@ -38,7 +38,7 @@ const options = {
         x11: path.join(root, 'scripts/stubs/x11-unavailable.cjs'),
     },
     define: {
-        'process.env.HALYARD_VERSION': JSON.stringify(process.env.HALYARD_VERSION ?? '0.1.0'),
+        'process.env.HALYARD_VERSION': JSON.stringify(process.env.HALYARD_VERSION ?? '0.1.1'),
         // openpgp calls createRequire(import.meta.url) internally. That is
         // undefined once bundled to CJS, so point it at this bundle's own path.
         'import.meta.url': '__halyardModuleUrl',
