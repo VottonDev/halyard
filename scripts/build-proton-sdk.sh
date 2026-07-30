@@ -18,7 +18,10 @@ elif [ "$#" -ne 0 ]; then
 fi
 
 cd "$SDK_DIR"
-bun install --frozen-lockfile
+# Upstream does not ship a lockfile for this release. Do not create or update
+# one in the submodule: a locally generated lock can become stale and makes a
+# later --frozen-lockfile install fail before we can apply Halyard's pins.
+bun install --no-save
 
 CRYPTO_VERSION="$(
     node -e 'process.stdout.write(require(process.argv[1]).dependencies["@protontech/crypto"])' \

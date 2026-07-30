@@ -70,7 +70,7 @@ Each of these cost real debugging time. Do not "simplify" them away.
   package, which Node refuses to type-strip under `node_modules`. It is named
   `*.bundletest.ts`; `bun run test:crypto` bundles it before running it with
   Node.
-- The `proton-sdk` submodule (pinned at tag `js/v0.19.2`) lives at the repo root
+- The `proton-sdk` submodule (pinned at tag `js/v0.20.0`) lives at the repo root
   — `../proton-sdk` from `daemon/` — and `client/js` must be built
   (`./scripts/build-proton-sdk.sh`) before this will compile. `git submodule update --init`
   fetches it; `packaging/install.sh` runs both the fetch and the build. It is a

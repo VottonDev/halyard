@@ -109,7 +109,7 @@ local recovery path independent of Proton's Trash.
 - Python 3 with PyGObject, GTK 4 and libadwaita 1
 
 Proton's [Drive SDK](https://github.com/ProtonDriveApps/sdk) is pinned as a git
-submodule at `proton-sdk/` (tag `js/v0.19.2`); the daemon builds against it by
+submodule at `proton-sdk/` (tag `js/v0.20.0`); the daemon builds against it by
 relative path. Clone with `--recurse-submodules`, or fetch it in an existing
 checkout, then build it once:
 
