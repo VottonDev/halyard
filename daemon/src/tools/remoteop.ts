@@ -82,7 +82,7 @@ async function main(): Promise<void> {
                 continue;
             }
             const name = child.name.ok ? child.name.value : '<undecryptable>';
-            const revision = child.activeRevision?.ok ? child.activeRevision.value : undefined;
+            const revision = child.activeRevision;
             rows.push(
                 `${child.type === NodeType.Folder ? 'd' : '-'} ${String(revision?.claimedSize ?? 0).padStart(9)} ` +
                     `${revision?.claimedDigests?.sha1?.slice(0, 12) ?? '-'.padEnd(12)} ${name}`,

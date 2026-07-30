@@ -16,7 +16,7 @@
         "test:crypto": "node scripts/build.mjs --entry=test/crypto-cache.bundletest.ts --out=dist/crypto-cache.bundletest.cjs && node --test dist/crypto-cache.bundletest.cjs"
     },
     "dependencies": {
-        "@protontech/crypto": "2.0.0",
+        "@protontech/crypto": "2.1.1",
         "@protontech/drive-sdk": "file:../proton-sdk/client/js",
         "chokidar": "^4.0.3",
         "dbus-next": "^0.10.2",
@@ -29,6 +29,6 @@
         "typescript": "5.9.3"
     },
     "patchedDependencies": {
-        "@protontech/crypto@2.0.0": "patches/@protontech%2Fcrypto@2.0.0.patch"
+        "@protontech/crypto@2.1.1": "patches/@protontech%2Fcrypto@2.1.1.patch"
     }
 }

@@ -34,12 +34,22 @@ It temporarily replaces the SDK submodule checkout with either:
   candidate;
 - upstream `main`, which provides earlier but noisier warning.
 
-The selected SDK's own JavaScript build and test suite run before the complete
-Halyard daemon suite. The latest-tag job fails normally. The upstream-main job
-is allowed to fail because development commits may be incomplete, but its
-result remains visible in the Actions run and its exact commit is written to
-the job summary. The workflow never changes Halyard's committed submodule
+The selected SDK is first installed, built and tested exactly as published.
+It is then rebuilt with Halyard's pinned crypto version before the complete
+daemon suite runs. This separates an upstream packaging failure from a genuine
+Halyard compatibility failure. The latest-tag job still fails when either
+surface is broken. The upstream-main job is allowed to fail because development
+commits may be incomplete, but both results and the exact commit remain visible
+in the job summary. The workflow never changes Halyard's committed submodule
 pointer.
+
+`js/v0.20.0` removed its lockfile and its `@types/mocha` declaration while
+retaining `mocha` in `tsconfig.json`. `scripts/build-proton-sdk.sh` supplies
+that missing build-only type package without modifying the submodule. It also
+installs and patches Halyard's exact crypto version inside the SDK so the
+linked package and runnable daemon use the same crypto ABI. Halyard tracks
+crypto 2.1.1 with this SDK release, including its streaming crypto interface,
+rather than holding the previous 2.0.0 implementation.
 
 ### SDK update notifications
 
@@ -71,7 +81,7 @@ scripts remain manual for that reason.
 
 ```bash
 git submodule update --init
-(cd proton-sdk/client/js && bun install && bun run build:ci)
+./scripts/build-proton-sdk.sh
 (cd daemon && bun install --frozen-lockfile && bun run check-types && bun run test && bun run build)
 ```
 

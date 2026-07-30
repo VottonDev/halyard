@@ -109,13 +109,13 @@ local recovery path independent of Proton's Trash.
 - Python 3 with PyGObject, GTK 4 and libadwaita 1
 
 Proton's [Drive SDK](https://github.com/ProtonDriveApps/sdk) is pinned as a git
-submodule at `proton-sdk/` (tag `js/v0.19.2`); the daemon builds against it by
+submodule at `proton-sdk/` (tag `js/v0.20.0`); the daemon builds against it by
 relative path. Clone with `--recurse-submodules`, or fetch it in an existing
 checkout, then build it once:
 
 ```bash
 git submodule update --init                    # skip if you cloned --recurse-submodules
-cd proton-sdk/client/js && bun install && bun run build
+./scripts/build-proton-sdk.sh
 ```
 
 `install.sh` does both of these for you on a fresh clone — this is only needed
@@ -223,7 +223,7 @@ Everything else syncs, including dotfiles. The list lives in
 
 ```bash
 git submodule update --init                    # once, if not cloned --recurse-submodules
-(cd proton-sdk/client/js && bun install && bun run build)   # build the pinned SDK
+./scripts/build-proton-sdk.sh                               # build the pinned SDK
 
 cd daemon
 bun install
