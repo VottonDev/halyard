@@ -626,7 +626,7 @@ export class SyncManager {
     getStatus(): Status {
         const account = this.session.isLoggedIn();
         return {
-            version: process.env.HALYARD_VERSION ?? '0.1.0',
+            version: process.env.HALYARD_VERSION ?? '0.1.1',
             loggedIn: account,
             email: this.cachedEmail,
             paused: this.paused,

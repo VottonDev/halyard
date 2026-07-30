@@ -3,7 +3,7 @@ import path from 'node:path';
 
 export const APP_ID = 'io.github.votton.Halyard';
 export const APP_NAME = 'halyard';
-export const VERSION: string = process.env.HALYARD_VERSION ?? '0.1.0';
+export const VERSION: string = process.env.HALYARD_VERSION ?? '0.1.1';
 
 /**
  * Proton requires third-party clients to identify themselves honestly in the
