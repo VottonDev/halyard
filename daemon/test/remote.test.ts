@@ -124,14 +124,11 @@ function fileNode(uid: string, parentUid: string, name: string, mtime = 1000): N
         type: NodeType.File,
         modificationTime: new Date(mtime),
         activeRevision: {
-            ok: true,
-            value: {
-                uid: `${uid}-rev`,
-                claimedDigests: { sha1: `sha-${uid}` },
-                claimedSize: 10,
-                storageSize: 12,
-                claimedModificationTime: new Date(mtime),
-            },
+            uid: `${uid}-rev`,
+            claimedDigests: { sha1: `sha-${uid}` },
+            claimedSize: 10,
+            storageSize: 12,
+            claimedModificationTime: new Date(mtime),
         },
         trashTime: undefined,
     } as unknown as NodeEntity;

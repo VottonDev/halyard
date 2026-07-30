@@ -115,7 +115,7 @@ checkout, then build it once:
 
 ```bash
 git submodule update --init                    # skip if you cloned --recurse-submodules
-cd proton-sdk/client/js && bun install && bun run build
+./scripts/build-proton-sdk.sh
 ```
 
 `install.sh` does both of these for you on a fresh clone — this is only needed
@@ -223,7 +223,7 @@ Everything else syncs, including dotfiles. The list lives in
 
 ```bash
 git submodule update --init                    # once, if not cloned --recurse-submodules
-(cd proton-sdk/client/js && bun install && bun run build)   # build the pinned SDK
+./scripts/build-proton-sdk.sh                               # build the pinned SDK
 
 cd daemon
 bun install

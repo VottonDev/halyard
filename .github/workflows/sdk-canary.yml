@@ -74,12 +74,17 @@ jobs:
           echo "revision=$(git -C proton-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "description=$(git -C proton-sdk describe --tags --always)" >> "$GITHUB_OUTPUT"
 
-      - name: Install, build and test the selected SDK
+      - name: Install, build and test the selected SDK as published
+        id: upstream_sdk
+        continue-on-error: true
         working-directory: proton-sdk/client/js
         run: |
           bun install --frozen-lockfile
           bun run build:ci
           bun run test:ci
+
+      - name: Build the selected SDK with Halyard's dependency pins
+        run: ./scripts/build-proton-sdk.sh --test
 
       - name: Install Halyard dependencies
         working-directory: daemon
@@ -102,6 +107,8 @@ jobs:
             echo '* Channel: `${{ matrix.sdk }}`'
             echo '* Revision: `${{ steps.sdk.outputs.description }}`'
             echo '* Commit: `${{ steps.sdk.outputs.revision }}`'
+            echo '* Published SDK package: `${{ steps.upstream_sdk.outcome }}`'
+            echo '* Halyard-pinned compatibility: `${{ job.status }}`'
             echo
             echo 'This workflow uses no Proton account and makes no Drive API calls.'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -112,7 +119,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SDK_TAG: ${{ steps.sdk.outputs.description }}
           SDK_REVISION: ${{ steps.sdk.outputs.revision }}
-          CANARY_STATUS: ${{ job.status }}
+          UPSTREAM_STATUS: ${{ steps.upstream_sdk.outcome }}
+          HALYARD_STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
@@ -143,7 +151,8 @@ jobs:
             echo "- Current Halyard commit: \`$pinned_revision\`"
             echo "- Available release: \`$SDK_TAG\`"
             echo "- Available commit: \`$SDK_REVISION\`"
-            echo "- Account-free compatibility run: **$CANARY_STATUS**"
+            echo "- Published SDK package: **$UPSTREAM_STATUS**"
+            echo "- Halyard-pinned compatibility: **$HALYARD_STATUS**"
             echo
             echo "[View the compatibility run]($RUN_URL)"
             echo
@@ -151,6 +160,12 @@ jobs:
           } > "$issue_body"
 
           gh issue create --title "$title" --body-file "$issue_body"
+
+      - name: Fail for an upstream SDK packaging regression
+        if: always() && steps.upstream_sdk.outcome == 'failure'
+        run: |
+          echo 'The SDK did not build and test with its published dependency declarations.' >&2
+          exit 1
 
       - name: Deinitialise the SDK before checkout cleanup
         if: always()

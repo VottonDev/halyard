@@ -45,7 +45,7 @@ if [ ! -f "$SDK_DIR/package.json" ]; then
 fi
 if [ ! -f "$SDK_DIR/dist/index.js" ]; then
     say "Building the Proton SDK"
-    (cd "$SDK_DIR" && bun install && bun run build)
+    "$REPO_ROOT/scripts/build-proton-sdk.sh"
 fi
 
 # ---------------------------------------------------------------- build

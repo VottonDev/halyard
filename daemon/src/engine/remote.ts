@@ -47,7 +47,7 @@ function toRemoteNode(node: NodeEntity): RemoteNodeInput | null {
         return null;
     }
 
-    const revision = node.activeRevision?.ok ? node.activeRevision.value : undefined;
+    const revision = node.activeRevision;
 
     return {
         uid: node.uid,
