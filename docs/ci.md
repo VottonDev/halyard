@@ -34,14 +34,21 @@ It temporarily replaces the SDK submodule checkout with either:
   candidate;
 - upstream `main`, which provides earlier but noisier warning.
 
-The selected SDK is first installed, built and tested exactly as published.
-It is then rebuilt with Halyard's pinned crypto version before the complete
-daemon suite runs. This separates an upstream packaging failure from a genuine
-Halyard compatibility failure. The latest-tag job still fails when either
-surface is broken. The upstream-main job is allowed to fail because development
-commits may be incomplete, but both results and the exact commit remain visible
-in the job summary. The workflow never changes Halyard's committed submodule
-pointer.
+The selected SDK is first installed, built and tested exactly as published,
+with the untouched output retained in the workflow log. If that fails because
+the package requests Mocha types without declaring `@types/mocha`, the workflow
+reports the known packaging defect and adds only that missing build dependency
+before continuing the upstream build and tests. This exposes any failure that
+the first TypeScript error would otherwise hide.
+
+The SDK is then rebuilt with Halyard's pinned crypto version before the complete
+daemon suite runs. This keeps three separate signals visible: the published
+package health, the upstream result after the minimal diagnostic repair, and
+Halyard compatibility. An unrecognised packaging failure, a failure after the
+minimal repair, or a Halyard compatibility failure makes the latest-tag job
+fail. The upstream-main job is allowed to fail because development commits may
+be incomplete, but all results and the exact commit remain visible in the job
+summary. The workflow never changes Halyard's committed submodule pointer.
 
 `js/v0.20.0` removed its lockfile and its `@types/mocha` declaration while
 retaining `mocha` in `tsconfig.json`. `scripts/build-proton-sdk.sh` supplies
@@ -49,7 +56,9 @@ that missing build-only type package without modifying the submodule. It also
 installs and patches Halyard's exact crypto version inside the SDK so the
 linked package and runnable daemon use the same crypto ABI. Halyard tracks
 crypto 2.1.1 with this SDK release, including its streaming crypto interface,
-rather than holding the previous 2.0.0 implementation.
+rather than holding the previous 2.0.0 implementation. The daily canary keeps
+the original missing-types failure visible as a warning, but does not remain
+red solely for that accepted defect.
 
 ### SDK update notifications
 

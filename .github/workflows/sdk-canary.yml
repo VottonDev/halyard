@@ -66,31 +66,78 @@ jobs:
           if [[ '${{ matrix.sdk }}' == 'latest-tag' ]]; then
             target="$(git -C proton-sdk tag --list 'js/v*' --sort=-version:refname | head -n 1)"
             [[ -n "$target" ]] || { echo 'No js/v* SDK tag was found' >&2; exit 1; }
+            description="$target"
           else
             target='origin/main'
+            description="main@$(git -C proton-sdk rev-parse --short=12 "$target")"
           fi
 
           git -C proton-sdk checkout --detach "$target"
           echo "revision=$(git -C proton-sdk rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "description=$(git -C proton-sdk describe --tags --always)" >> "$GITHUB_OUTPUT"
+          echo "description=$description" >> "$GITHUB_OUTPUT"
 
       - name: Install, build and test the selected SDK as published
         id: upstream_sdk
         continue-on-error: true
         working-directory: proton-sdk/client/js
+        shell: bash
         run: |
-          bun install --frozen-lockfile
+          set -o pipefail
+          (
+            set -e
+            bun install --frozen-lockfile
+            bun run build:ci
+            bun run test:ci
+          ) 2>&1 | tee "$RUNNER_TEMP/proton-sdk-as-published.log"
+
+      - name: Diagnose a published SDK failure
+        id: upstream_diagnostic
+        if: always() && steps.sdk.outcome == 'success'
+        working-directory: proton-sdk/client/js
+        env:
+          UPSTREAM_OUTCOME: ${{ steps.upstream_sdk.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$UPSTREAM_OUTCOME" == 'success' ]]; then
+            echo 'classification=clean' >> "$GITHUB_OUTPUT"
+            echo 'The SDK builds and tests with its published declarations.'
+            exit 0
+          fi
+
+          echo 'classification=unrecognised-failure' >> "$GITHUB_OUTPUT"
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const pkg = require("./package.json");
+          const types = fs.readFileSync("tsconfig.json", "utf8");
+          const dependencies = { ...pkg.dependencies, ...pkg.devDependencies };
+          if (!types.includes('"mocha"') || dependencies["@types/mocha"]) {
+            process.exit(1);
+          }
+          NODE
+          grep -Fq "error TS2688: Cannot find type definition file for 'mocha'." \
+            "$RUNNER_TEMP/proton-sdk-as-published.log"
+
+          echo 'classification=known-missing-mocha-types' >> "$GITHUB_OUTPUT"
+          echo '::warning title=Known Proton SDK packaging defect::The published package requests Mocha types but does not declare @types/mocha. The untouched failure is preserved in the preceding step.'
+
+          # Apply only the missing build-time declaration, without changing the
+          # checkout, so further upstream build or test errors remain visible.
+          bun add --dev --no-save @types/mocha@10.0.10
           bun run build:ci
           bun run test:ci
 
       - name: Build the selected SDK with Halyard's dependency pins
+        id: halyard_sdk
         run: ./scripts/build-proton-sdk.sh --test
 
       - name: Install Halyard dependencies
+        id: halyard_dependencies
         working-directory: daemon
         run: bun install --frozen-lockfile
 
       - name: Test Halyard against the selected SDK
+        id: halyard_test
         working-directory: daemon
         run: |
           bun run check-types
@@ -108,7 +155,9 @@ jobs:
             echo '* Revision: `${{ steps.sdk.outputs.description }}`'
             echo '* Commit: `${{ steps.sdk.outputs.revision }}`'
             echo '* Published SDK package: `${{ steps.upstream_sdk.outcome }}`'
-            echo '* Halyard-pinned compatibility: `${{ job.status }}`'
+            echo '* Published SDK diagnosis: `${{ steps.upstream_diagnostic.outputs.classification }}` (`${{ steps.upstream_diagnostic.outcome }}`)'
+            echo '* Halyard SDK build: `${{ steps.halyard_sdk.outcome }}`'
+            echo '* Halyard compatibility: `${{ steps.halyard_test.outcome }}`'
             echo
             echo 'This workflow uses no Proton account and makes no Drive API calls.'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -120,7 +169,9 @@ jobs:
           SDK_TAG: ${{ steps.sdk.outputs.description }}
           SDK_REVISION: ${{ steps.sdk.outputs.revision }}
           UPSTREAM_STATUS: ${{ steps.upstream_sdk.outcome }}
-          HALYARD_STATUS: ${{ job.status }}
+          UPSTREAM_DIAGNOSIS: ${{ steps.upstream_diagnostic.outputs.classification }}
+          UPSTREAM_DIAGNOSTIC_STATUS: ${{ steps.upstream_diagnostic.outcome }}
+          HALYARD_STATUS: ${{ steps.halyard_test.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
         run: |
@@ -152,6 +203,7 @@ jobs:
             echo "- Available release: \`$SDK_TAG\`"
             echo "- Available commit: \`$SDK_REVISION\`"
             echo "- Published SDK package: **$UPSTREAM_STATUS**"
+            echo "- Published SDK diagnosis: **$UPSTREAM_DIAGNOSIS** ($UPSTREAM_DIAGNOSTIC_STATUS)"
             echo "- Halyard-pinned compatibility: **$HALYARD_STATUS**"
             echo
             echo "[View the compatibility run]($RUN_URL)"
@@ -160,12 +212,6 @@ jobs:
           } > "$issue_body"
 
           gh issue create --title "$title" --body-file "$issue_body"
-
-      - name: Fail for an upstream SDK packaging regression
-        if: always() && steps.upstream_sdk.outcome == 'failure'
-        run: |
-          echo 'The SDK did not build and test with its published dependency declarations.' >&2
-          exit 1
 
       - name: Deinitialise the SDK before checkout cleanup
         if: always()
