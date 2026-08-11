@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the pinned Drive SDK with the dependency versions Halyard actually
-# bundles. The upstream js/v0.20.0 package dropped its lockfile and
+# bundles. Upstream SDK releases since js/v0.20.0 have omitted their lockfile and
 # @types/mocha declaration, so a plain install is neither reproducible nor
 # currently buildable.
 set -euo pipefail

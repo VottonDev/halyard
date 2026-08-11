@@ -50,7 +50,8 @@ fail. The upstream-main job is allowed to fail because development commits may
 be incomplete, but all results and the exact commit remain visible in the job
 summary. The workflow never changes Halyard's committed submodule pointer.
 
-`js/v0.20.0` removed its lockfile and its `@types/mocha` declaration while
+Starting with `js/v0.20.0`, upstream releases omit their lockfile and
+`@types/mocha` declaration while
 retaining `mocha` in `tsconfig.json`. `scripts/build-proton-sdk.sh` supplies
 that missing build-only type package without modifying the submodule. It also
 installs and patches Halyard's exact crypto version inside the SDK so the
