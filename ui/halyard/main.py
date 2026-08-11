@@ -115,7 +115,7 @@ class HalyardApplication(Adw.Application):
 
     def do_handle_local_options(self, options: GLib.VariantDict) -> int:
         if options.contains("version"):
-            print("Halyard 0.1.1")
+            print("Halyard 0.1.2")
             return 0
         return -1
 

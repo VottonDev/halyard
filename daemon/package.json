@@ -1,6 +1,6 @@
 {
     "name": "halyard-daemon",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "Sync engine for Halyard, an unofficial two-way sync client for Proton Drive",
     "license": "MIT",
     "private": true,

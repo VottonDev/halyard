@@ -184,6 +184,18 @@ data.
   production bus name. Keep it that way — an earlier version claimed the real
   name with replace-flags and displaced the live daemon.
 
+## Versioning
+
+- An SDK upgrade requires a Halyard version bump in the same change. Increment
+  the final component for an SDK update that remains compatible with Halyard's
+  public behaviour, for example `0.1.1` to `0.1.2`, even if Proton labels an
+  internal SDK change as breaking.
+- Increment the middle component for a user-facing breaking change while
+  Halyard is pre-1.0, for example `0.1.x` to `0.2.0`.
+- Increment the leading component for a whole-product refactor or another major
+  product update. Assess Halyard's exposed behaviour rather than copying the
+  upstream SDK's commit label.
+
 ## Conventions
 
 - The D-Bus boundary carries JSON strings, not typed structs. Changing a payload

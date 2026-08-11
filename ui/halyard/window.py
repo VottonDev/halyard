@@ -573,7 +573,7 @@ class HalyardWindow(Adw.ApplicationWindow):
             application_name="Halyard",
             application_icon="io.github.votton.Halyard",
             developer_name="The Halyard contributors",
-            version=self._status.version or "0.1.1",
+            version=self._status.version or "0.1.2",
             website="https://github.com/votton/halyard",
             issue_url="https://github.com/votton/halyard/issues",
             license_type=Gtk.License.GPL_3_0,

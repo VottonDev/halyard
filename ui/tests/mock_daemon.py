@@ -49,7 +49,7 @@ OBJECT_PATH = "/io/github/votton/Halyard/Daemon"
 INTERFACE = "io.github.votton.Halyard.Daemon"
 ERROR_FAILED = "io.github.votton.Halyard.Error.Failed"
 
-VERSION = "0.1.1-mock"
+VERSION = "0.1.2-mock"
 
 INTROSPECTION = f"""
 <node>
