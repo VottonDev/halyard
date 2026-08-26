@@ -150,7 +150,7 @@ rm -f ~/.config/systemd/user/halyard-daemon.service \
       ~/.local/share/dbus-1/services/io.github.votton.Halyard.Daemon.service \
       ~/.local/bin/halyard \
       ~/.local/share/applications/io.github.votton.Halyard.desktop
-rm -rf ~/.local/lib/halyard                 # the program
+rm -rf ~/.local/lib/halyard ~/.local/share/doc/halyard
 systemctl --user daemon-reload
 
 # Optional: remove sync state, cache, and logs
@@ -179,4 +179,7 @@ with non-critical files.
 
 ## Licence
 
-MIT. Use of Proton's hosted services remains subject to Proton's own terms.
+Halyard is licensed under the [MIT License](LICENSE). It bundles Proton Drive
+SDK code under its own MIT licence; see the
+[third-party notices](THIRD_PARTY_NOTICES.md). Use of Proton's hosted services
+remains subject to Proton's terms.

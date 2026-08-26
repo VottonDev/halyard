@@ -12,6 +12,7 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 DBUS_SERVICE_DIR="$DATA_HOME/dbus-1/services"
 SYSTEMD_USER_DIR="$CONFIG_HOME/systemd/user"
+DOC_DIR="$DATA_HOME/doc/halyard"
 # Installed code goes under lib, not $DATA_HOME/halyard. The latter holds the
 # sync database, and mixing program files with user data makes
 # "delete the app" and "delete my sync state" the same command.
@@ -60,6 +61,11 @@ say "Installing the daemon to $LIBEXEC_DIR"
 mkdir -p "$LIBEXEC_DIR"
 install -m 0644 "$DAEMON_DIR/dist/halyard-daemon.cjs" "$LIBEXEC_DIR/halyard-daemon.cjs"
 DAEMON_PATH="$LIBEXEC_DIR/halyard-daemon.cjs"
+
+say "Installing licence notices"
+mkdir -p "$DOC_DIR"
+install -m 0644 "$REPO_ROOT/LICENSE" "$DOC_DIR/LICENSE"
+install -m 0644 "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$DOC_DIR/THIRD_PARTY_NOTICES.md"
 
 say "Registering the D-Bus service"
 mkdir -p "$DBUS_SERVICE_DIR"
