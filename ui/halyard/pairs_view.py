@@ -13,6 +13,7 @@ from .models import (
     STATUS_SCANNING,
     STATUS_SETUP,
     STATUS_SYNCING,
+    STATUS_WAITING,
     Activity,
     Pair,
     Status,
@@ -24,12 +25,14 @@ STATUS_LABELS = {
     STATUS_SCANNING: "Checking for changes",
     STATUS_SYNCING: "Syncing",
     STATUS_IDLE: "Up to date",
+    STATUS_WAITING: "Waiting for Proton Drive",
     STATUS_PAUSED: "Paused",
     STATUS_ERROR: "Error",
 }
 
 STATUS_ICONS = {
     STATUS_IDLE: "object-select-symbolic",
+    STATUS_WAITING: "network-offline-symbolic",
     STATUS_PAUSED: "media-playback-pause-symbolic",
     STATUS_ERROR: "dialog-warning-symbolic",
 }
@@ -158,6 +161,8 @@ class PairRow(Adw.ActionRow):
             self._icon.add_css_class("success")
         elif pair.status == STATUS_PAUSED:
             self._icon.add_css_class("dim-label")
+        elif pair.status == STATUS_WAITING:
+            self._icon.add_css_class("warning")
 
         show_progress = activity is not None and pair.enabled
         self._progress.set_visible(show_progress)
@@ -213,7 +218,7 @@ class PairRow(Adw.ActionRow):
             bits[0] = f"Syncing · {pair.stats.pending} files left"
         elif pair.status == STATUS_SCANNING and pair.stats.pending:
             bits[0] = f"Checking for changes · {pair.stats.pending} found"
-        if pair.status in (STATUS_IDLE, STATUS_PAUSED) or not pair.stats.pending:
+        if pair.status in (STATUS_IDLE, STATUS_WAITING, STATUS_PAUSED) or not pair.stats.pending:
             bits.append(f"Synced {format_relative_time(pair.last_sync_at)}")
         if pair.stats.conflicts:
             noun = "conflict" if pair.stats.conflicts == 1 else "conflicts"

@@ -342,7 +342,7 @@ class TrayIcon(GObject.Object):
             return (
                 first_available_icon("network-offline-symbolic",
                                      "folder-symbolic"),
-                "Halyard", "Waiting for a connection", "Active",
+                "Halyard", "Waiting for Proton Drive", "Active",
             )
         errored = [p for p in status.pairs if p.status == STATUS_ERROR]
         if errored:

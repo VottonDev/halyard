@@ -126,7 +126,9 @@ instead of re-hashing and re-transferring everything.
   "remoteUid": "volumeId~nodeId",
   "enabled": true,
   "excludes": ["GitHub", "*.iso"],    // gitignore-style, relative to the pair
-  "status": "idle",                   // setup|scanning|syncing|idle|paused|error
+  // waiting means a temporary connection/service failure; Halyard retries it.
+  // paused means the user explicitly paused syncing or disabled this pair.
+  "status": "idle",                   // setup|scanning|syncing|idle|waiting|paused|error
   "lastSyncAt": 1752940800000,
   "error": null,
   "stats": {
@@ -174,10 +176,12 @@ just tidies up and clears it from the list.
 ```jsonc
 // Status
 {
-  "version": "0.1.2",
+  "version": "0.1.3",
   "loggedIn": true,
   "email": "you@proton.me",
   "paused": false,
+  // False while a temporary connection or Proton service failure is cooling
+  // down. The daemon retries automatically; this is not a pair-specific error.
   "online": true,
   // Single object, not a list: the daemon syncs pairs sequentially so that
   // several pairs cannot compete for one API session and rate limit. Only one

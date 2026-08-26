@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
+import { VERSION } from '../config.js';
 import type { DriveSession } from '../drive/session.js';
 import { getLogger } from '../log.js';
 import { SyncDatabase } from './db.js';
@@ -19,6 +20,8 @@ const logger = getLogger('manager');
 const LOCAL_DEBOUNCE_MS = 2_000;
 /** Backstop cycle, in case an event or filesystem notification is missed. */
 const PERIODIC_SYNC_MS = 15 * 60_000;
+/** The SDK's 5xx circuit breaker cools down after one minute. */
+const TRANSIENT_RETRY_MS = 60_000;
 
 export type Status = {
     version: string;
@@ -52,7 +55,9 @@ export class SyncManager {
     private debounces = new Map<string, NodeJS.Timeout>();
     private scheduler?: EventScheduler;
     private periodic?: NodeJS.Timeout;
+    private transientRetry?: NodeJS.Timeout;
     private abort = new AbortController();
+    private online = true;
 
     private activity: (Progress & { pairId: string }) | null = null;
     private paused: boolean;
@@ -153,7 +158,9 @@ export class SyncManager {
                     (syncer) => syncer.pair.treeEventScopeId === scopeId && syncer.pair.enabled,
                 );
                 for (const syncer of affected) {
-                    await this.runSync(syncer);
+                    if (!(await this.runSync(syncer))) {
+                        break;
+                    }
                 }
             });
 
@@ -251,17 +258,47 @@ export class SyncManager {
         );
     }
 
-    private async runSync(syncer: PairSyncer): Promise<void> {
-        if (this.paused || !syncer.pair.enabled || !this.session.isLoggedIn()) {
+    private scheduleTransientRetry(): void {
+        if (this.transientRetry || this.paused || !this.session.isLoggedIn()) {
             return;
+        }
+        this.transientRetry = setTimeout(() => {
+            this.transientRetry = undefined;
+            void this.syncAll();
+        }, TRANSIENT_RETRY_MS);
+    }
+
+    private clearTransientRetry(): void {
+        if (this.transientRetry) {
+            clearTimeout(this.transientRetry);
+            this.transientRetry = undefined;
+        }
+    }
+
+    private async runSync(syncer: PairSyncer): Promise<boolean> {
+        if (this.paused || !syncer.pair.enabled || !this.session.isLoggedIn()) {
+            return true;
         }
         const before = syncer.status;
         await syncer.sync(this.abort.signal);
+
+        if (syncer.transientFailure) {
+            this.online = false;
+            this.scheduleTransientRetry();
+            this.scheduleEmit();
+            return false;
+        }
+
+        if (!this.online) {
+            this.online = true;
+            this.clearTransientRetry();
+        }
 
         if (syncer.status === 'error' && before !== 'error' && syncer.error) {
             this.notify('error', 'Sync problem', `${path.basename(syncer.pair.localPath)}: ${syncer.error}`);
         }
         this.scheduleEmit();
+        return true;
     }
 
     async syncAll(pairId?: string): Promise<void> {
@@ -272,7 +309,9 @@ export class SyncManager {
         // limit, and hammering Drive from several pairs at once is exactly
         // what gets a client throttled.
         for (const syncer of targets) {
-            await this.runSync(syncer);
+            if (!(await this.runSync(syncer))) {
+                break;
+            }
         }
     }
 
@@ -567,6 +606,9 @@ export class SyncManager {
     setPaused(paused: boolean): void {
         this.paused = paused;
         this.db.setSetting('paused', paused ? '1' : '0');
+        if (paused) {
+            this.clearTransientRetry();
+        }
         if (!paused) {
             void this.syncAll();
         }
@@ -626,11 +668,11 @@ export class SyncManager {
     getStatus(): Status {
         const account = this.session.isLoggedIn();
         return {
-            version: process.env.HALYARD_VERSION ?? '0.1.2',
+            version: VERSION,
             loggedIn: account,
             email: this.cachedEmail,
             paused: this.paused,
-            online: true,
+            online: this.online,
             activity: this.activity,
             pairs: this.db.listPairs().map((pair) => {
                 const syncer = this.syncers.get(pair.id);
@@ -676,6 +718,8 @@ export class SyncManager {
      */
     onSignedOut(): void {
         this.abort.abort();
+        this.clearTransientRetry();
+        this.online = true;
         if (this.periodic) {
             clearInterval(this.periodic);
             this.periodic = undefined;
@@ -692,6 +736,7 @@ export class SyncManager {
 
     async stop(): Promise<void> {
         this.abort.abort();
+        this.clearTransientRetry();
         if (this.periodic) {
             clearInterval(this.periodic);
         }

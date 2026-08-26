@@ -8,6 +8,7 @@ import { PARTIAL_DOWNLOAD_SUFFIX } from '../config.js';
 import { getLogger } from '../log.js';
 import type { SyncDatabase } from './db.js';
 import { hashFile } from './localScan.js';
+import { describeSyncFailure } from './syncError.js';
 import type {
     Action,
     BaseEntry,
@@ -97,7 +98,7 @@ export type ExecuteContext = {
 
 export type ExecuteResult = {
     completed: number;
-    failed: Array<{ action: Action; error: string }>;
+    failed: Array<{ action: Action; error: string; transient: boolean }>;
     bytesUp: number;
     bytesDown: number;
     filesUp: number;
@@ -165,11 +166,18 @@ export class Executor {
                     events.push({ ...described, at: Date.now(), outcome: 'ok', error: null });
                 }
             } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
+                const failure = describeSyncFailure(error);
+                const message = failure.message;
                 logger.warn(`Action ${action.kind} failed: ${message}`);
-                result.failed.push({ action, error: message });
+                result.failed.push({ action, error: message, transient: failure.transient });
                 if (described) {
                     events.push({ ...described, at: Date.now(), outcome: 'failed', error: message });
+                }
+                // A service outage affects the whole batch. Continuing would
+                // repeat the same doomed request for every planned action and
+                // push the shared SDK session into its circuit breaker.
+                if (failure.transient) {
+                    break;
                 }
             }
         }

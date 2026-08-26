@@ -15,6 +15,7 @@ STATUS_SETUP = "setup"
 STATUS_SCANNING = "scanning"
 STATUS_SYNCING = "syncing"
 STATUS_IDLE = "idle"
+STATUS_WAITING = "waiting"
 STATUS_PAUSED = "paused"
 STATUS_ERROR = "error"
 

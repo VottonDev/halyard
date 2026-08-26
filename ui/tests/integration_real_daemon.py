@@ -88,7 +88,7 @@ def main() -> int:
             f"{pair.local_path} <-> {pair.remote_path} [{pair.status}]",
         )
         # A status string the UI does not recognise would render as a blank row.
-        known = {"setup", "scanning", "syncing", "idle", "paused", "error"}
+        known = {"setup", "scanning", "syncing", "idle", "waiting", "paused", "error"}
         check(f"Pair {pair.id} status is a known value", pair.status in known, pair.status)
 
     # --- ListPairs must agree with the pairs embedded in Status.

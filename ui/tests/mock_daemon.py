@@ -49,7 +49,7 @@ OBJECT_PATH = "/io/github/votton/Halyard/Daemon"
 INTERFACE = "io.github.votton.Halyard.Daemon"
 ERROR_FAILED = "io.github.votton.Halyard.Error.Failed"
 
-VERSION = "0.1.2-mock"
+VERSION = "0.1.3-mock"
 
 INTROSPECTION = f"""
 <node>
@@ -470,6 +470,18 @@ class MockState:
         }
 
     def status(self) -> dict:
+        pairs = [
+            {
+                **pair,
+                "status": (
+                    "waiting"
+                    if self.logged_in and not self.online
+                    and pair["enabled"] and pair["status"] != "error"
+                    else pair["status"]
+                ),
+            }
+            for pair in self.pairs
+        ]
         return {
             "version": VERSION,
             "loggedIn": self.logged_in,
@@ -479,7 +491,7 @@ class MockState:
             "activity": self.activity,
             # The real daemon lists pairs from its database regardless of the
             # login state; hiding them here made the mock kinder than reality.
-            "pairs": self.pairs,
+            "pairs": pairs,
         }
 
     def find_pair(self, pair_id: str) -> dict | None:
@@ -907,7 +919,7 @@ class MockDaemon:
         self.state.paused = paused
         for pair in self.state.pairs:
             if paused:
-                if pair["status"] in ("syncing", "scanning", "idle"):
+                if pair["status"] in ("syncing", "scanning", "idle", "waiting"):
                     pair["status"] = "paused"
             elif pair["enabled"] and pair["status"] == "paused":
                 pair["status"] = "idle"

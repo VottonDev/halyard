@@ -11,6 +11,7 @@ import sys
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
+from . import __version__  # noqa: E402
 from .dbus_client import DaemonClient  # noqa: E402
 from .models import Notification, Status  # noqa: E402
 from .tray import TrayIcon  # noqa: E402
@@ -115,7 +116,7 @@ class HalyardApplication(Adw.Application):
 
     def do_handle_local_options(self, options: GLib.VariantDict) -> int:
         if options.contains("version"):
-            print("Halyard 0.1.2")
+            print(f"Halyard {__version__}")
             return 0
         return -1
 

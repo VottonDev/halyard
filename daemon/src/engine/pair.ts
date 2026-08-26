@@ -9,11 +9,12 @@ import { Executor, type Progress } from './execute.js';
 import { fillRequiredHashes, scanLocal } from './localScan.js';
 import { reconcile } from './reconcile.js';
 import { RemoteTree } from './remote.js';
+import { describeSyncFailure } from './syncError.js';
 import type { Pair } from './types.js';
 
 const logger = getLogger('pair');
 
-export type PairStatus = 'setup' | 'scanning' | 'syncing' | 'idle' | 'paused' | 'error';
+export type PairStatus = 'setup' | 'scanning' | 'syncing' | 'idle' | 'waiting' | 'paused' | 'error';
 
 export type PairStats = {
     pending: number;
@@ -36,6 +37,9 @@ export class PairSyncer {
     /** Abort scope of the in-flight run, so one pair can be stopped alone. */
     private currentAbort: AbortController | null = null;
     private currentRun: Promise<void> | null = null;
+
+    /** True when the last run stopped for a retryable connection/service failure. */
+    transientFailure = false;
 
     status: PairStatus = 'idle';
     error: string | null = null;
@@ -113,7 +117,7 @@ export class PairSyncer {
                         logger.warn(`Pair ${this.pair.id}: stopping after ${guard} passes without settling`);
                         break;
                     }
-                } while (this.dirty && !controller.signal.aborted);
+                } while (this.dirty && !this.transientFailure && !controller.signal.aborted);
             } finally {
                 this.running = false;
                 this.currentAbort = null;
@@ -138,6 +142,7 @@ export class PairSyncer {
 
     private async runOnce(signal?: AbortSignal): Promise<void> {
         const pair = this.pair;
+        this.transientFailure = false;
 
         // A previously-synced local root that has vanished was almost certainly
         // moved, deleted, or unmounted out from under us — not emptied file by
@@ -271,6 +276,12 @@ export class PairSyncer {
 
             if (result.failed.length > 0) {
                 const first = result.failed[0];
+                if (result.failed.some((failure) => failure.transient)) {
+                    this.transientFailure = true;
+                    this.dirty = false;
+                    this.setStatus('waiting');
+                    return;
+                }
                 this.setStatus(
                     'error',
                     result.failed.length === 1
@@ -287,9 +298,15 @@ export class PairSyncer {
                 this.setStatus('idle');
                 return;
             }
-            const message = error instanceof Error ? error.message : String(error);
+            const failure = describeSyncFailure(error);
             logger.error(`Sync failed for pair ${this.pair.id}`, error);
-            this.setStatus('error', message);
+            if (failure.transient) {
+                this.transientFailure = true;
+                this.dirty = false;
+                this.setStatus('waiting');
+            } else {
+                this.setStatus('error', failure.message);
+            }
         }
     }
 }

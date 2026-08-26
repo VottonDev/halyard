@@ -6,6 +6,7 @@ import os
 
 from gi.repository import Adw, GLib, Gio, Gtk
 
+from . import __version__
 from . import daemon_control
 from .conflicts_view import ConflictsPage
 from .dbus_client import DaemonClient
@@ -409,7 +410,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         if status.paused:
             return "Syncing paused"
         if not status.online:
-            return "Waiting for a connection"
+            return "Waiting for Proton Drive"
 
         activity = status.activity
         if activity is not None and activity.bytes_total:
@@ -573,7 +574,7 @@ class HalyardWindow(Adw.ApplicationWindow):
             application_name="Halyard",
             application_icon="io.github.votton.Halyard",
             developer_name="The Halyard contributors",
-            version=self._status.version or "0.1.2",
+            version=self._status.version or __version__,
             website="https://github.com/votton/halyard",
             issue_url="https://github.com/votton/halyard/issues",
             license_type=Gtk.License.GPL_3_0,
