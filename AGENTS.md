@@ -162,8 +162,15 @@ other (an earlier inline copy silently dropped the entire hardening block).
 
 ## GNOME specifics
 
-- **There is no system tray.** GNOME dropped StatusNotifier. Do not add a tray
-  icon; use notifications and the Background portal.
+- **The tray is optional.** Stock GNOME has no StatusNotifier host, but
+  extensions such as AppIndicator and KStatusNotifierItem Support provide
+  `org.kde.StatusNotifierWatcher`. When a watcher is present, Halyard exposes a
+  tray icon through `org.kde.StatusNotifierItem` and `com.canonical.dbusmenu`.
+  `ui/halyard/tray.py` implements both protocols with Gio because
+  AppIndicator3 is GTK3 and cannot be loaded into the GTK4 process. Watch the
+  watcher at runtime so the icon appears and disappears with the extension.
+  The app must remain usable without a tray; keep status in the window and use
+  notifications for background events.
 - Autostart goes through `org.freedesktop.portal.Background`, never a
   hand-written `~/.config/autostart` file.
 - Notifications use `Gio.Application.send_notification`; no libnotify

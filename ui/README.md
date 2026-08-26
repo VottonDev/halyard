@@ -96,8 +96,9 @@ long enough to notice.
 
 Closing the window does not stop syncing. Halyard explains this in a dialog the
 first time you close the window, then keeps a reminder in the footer and in
-Preferences. GNOME has no system tray, so status stays in the window and in
-notifications.
+Preferences. Stock GNOME has no system tray. If a StatusNotifier extension is
+installed, Halyard adds a tray icon; otherwise status stays in the window and
+in notifications.
 
 Notifications go through `Gio.Application.send_notification`, so there is
 no libnotify dependency. For the desktop to display them, the shipped
