@@ -575,8 +575,8 @@ class HalyardWindow(Adw.ApplicationWindow):
             application_icon="io.github.votton.Halyard",
             developer_name="The Halyard contributors",
             version=self._status.version or __version__,
-            website="https://github.com/votton/halyard",
-            issue_url="https://github.com/votton/halyard/issues",
+            website="https://github.com/VottonDev/halyard",
+            issue_url="https://github.com/VottonDev/halyard/issues",
             license_type=Gtk.License.GPL_3_0,
             comments=(
                 "Two-way folder sync for Proton Drive.\n\n"

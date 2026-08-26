@@ -210,7 +210,7 @@ def set_enabled_at_login(enabled: bool, done: Callable[[bool, str], None]) -> No
 _UNIT_TEMPLATE_FALLBACK = """\
 [Unit]
 Description=Halyard — two-way sync for Proton Drive (unofficial)
-Documentation=https://github.com/votton/halyard
+Documentation=https://github.com/VottonDev/halyard
 # The daemon needs the session bus and the keyring to reach the account.
 After=graphical-session.target
 
