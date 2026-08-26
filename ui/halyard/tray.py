@@ -2,11 +2,11 @@
 
 GNOME has no built-in tray, but many users run an AppIndicator extension,
 which provides ``org.kde.StatusNotifierWatcher``. The usual client library
-for this is AppIndicator3, which is GTK3 — and GTK3 cannot be loaded into a
-GTK4 process. So both halves of the protocol are implemented here with Gio:
+for this is AppIndicator3, which is GTK3. GTK3 cannot be loaded into a GTK4
+process, so this module implements both parts of the protocol with Gio:
 
-* ``org.kde.StatusNotifierItem`` at /StatusNotifierItem — the icon itself
-* ``com.canonical.dbusmenu`` at /MenuBar — its menu
+* ``org.kde.StatusNotifierItem`` at /StatusNotifierItem provides the icon.
+* ``com.canonical.dbusmenu`` at /MenuBar provides its menu.
 
 The watcher is watched rather than assumed: an extension can be enabled or
 disabled at any time, and the tray has to appear and disappear with it.
@@ -403,7 +403,7 @@ class TrayIcon(GObject.Object):
         items = self._menu_items()
         if items == self._last_items:
             return
-        # The layout genuinely changed, so bump the revision. Hosts cache by
+        # The layout changed, so bump the revision. Hosts cache by
         # revision and will not re-read the menu if it does not move.
         self._last_items = items
         self._revision += 1

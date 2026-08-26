@@ -16,110 +16,23 @@ touched.
 ~/notes            ↔  /Notes
 ```
 
-## Design
-
-The guiding rule is **never lose data**. Sync tools fail in one of two
-directions, and only one of them is recoverable:
+## How sync behaves
 
 | Situation | What Halyard does |
 |---|---|
-| Same file edited in both places | Keeps **both**. The remote version takes the original name; your local version is renamed `file (conflict 2026-07-19).ext` and uploaded alongside it. |
-| File deleted in Drive, unchanged locally | Deleted locally too. Safe because Proton Drive keeps its own Trash, and an unchanged local copy is byte-for-byte what is sitting in it. |
-| File deleted locally, edited in Drive | The edit wins — the file comes back. |
-| File edited locally, deleted in Drive | The edit wins — the file is re-uploaded. Local work is never destroyed by a remote deletion. |
+| Same file edited in both places | Keeps both. The remote version keeps the original name. The local version gets a name such as `file (conflict 2026-07-19).ext`. |
+| File deleted on one side and unchanged on the other | Applies the deletion. The remote copy remains recoverable from Proton's Trash. |
+| File deleted on one side and edited on the other | Keeps the edit. The file is restored or re-uploaded. |
 | File renamed or moved | Detected as a move, so nothing is re-transferred. A renamed 4 GB file costs one API call, not 4 GB. |
-| Same content on both sides, different timestamps | Records agreement and transfers nothing. |
-| A file replaced by a folder of the same name (or vice versa) | The changed side wins when the displaced file is unchanged — its bytes stay recoverable. Otherwise both survive: the local copy steps aside under a dated conflict name. |
 
-Resurrecting a file you deleted is an annoyance. Destroying a file you edited is
-not, so every ambiguous case resolves toward keeping data.
-
-Note the asymmetry in the two deletion rows. Halyard will delete a local file
-when Drive says it is gone — but only when that file is *unchanged*, meaning an
-identical copy is recoverable from Proton's Trash. The moment there are local
-edits Drive has never seen, deletion stops being reversible and the edit wins
-instead. That check is even made twice: once when planning, and again
-immediately before the file is removed, so a save that lands mid-sync defers
-the deletion rather than racing it.
-
-Sync is a three-way merge between the local filesystem, the remote tree, and a
-recorded *base* — the last state at which the two agreed. Without that base you
-cannot tell "you created this file" from "the other side deleted it", which is
-how naive sync tools eat data.
-
-## Architecture
-
-```
-  halyard (Python, GTK4 + libadwaita)
-        ↕  session D-Bus  ·  io.github.votton.Halyard.Daemon
-  halyard-daemon (Node)  →  @protontech/drive-sdk  →  Proton Drive
-```
-
-Two processes, because the two halves have incompatible requirements. The Drive
-SDK is TypeScript and its crypto package ships as raw ESM TypeScript, so the
-sync engine has to run on Node. A GNOME app should be GTK, not a browser in a
-trenchcoat. So the daemon owns everything Proton-related and the UI is a thin
-client over [a documented D-Bus interface](docs/dbus-api.md).
-
-The daemon runs without the UI. Closing the window does not stop sync.
-
-Deliberately **no native modules**: SQLite comes from Node's built-in
-`node:sqlite`, and D-Bus is spoken over a pure-JS implementation. There is
-nothing to compile and nothing to rebuild per Node release.
-
-### Btrfs
-
-Halyard is built with btrfs in mind, because two of its properties break
-assumptions that sync tools normally make:
-
-- **Inode numbers are only unique per subvolume.** Two unrelated files under one
-  synced folder can share an inode number if they live in different subvolumes.
-  Move detection therefore keys on `(device, inode)`, not the inode alone —
-  keying on the inode would rename the wrong file on Drive and delete the other.
-  There is a regression test for exactly this.
-- **`rename(2)` fails with `EXDEV` across subvolume boundaries**, even within one
-  filesystem, and subvolumes look like ordinary directories. Every move falls
-  back to copy-then-delete when that happens, requesting `COPYFILE_FICLONE` so
-  the copy becomes a reflink — instant and free of extra space on btrfs, and a
-  normal copy anywhere else.
-
-Snapshots pair well with this: since remote deletions are applied locally, a
-periodic `btrfs subvolume snapshot` of a synced folder gives you a second,
-local recovery path independent of Proton's Trash.
-
-### Layout
-
-| Path | |
-|---|---|
-| `daemon/src/drive/` | Session, auth, HTTP, caches — everything the SDK needs supplied |
-| `daemon/src/engine/reconcile.ts` | The three-way merge. Pure, no I/O, heavily tested |
-| `daemon/src/engine/execute.ts` | Turns a plan into uploads, downloads and moves |
-| `daemon/src/engine/remote.ts` | Mirrors the Drive tree from the event stream |
-| `daemon/src/ipc/dbus.ts` | The D-Bus surface |
-| `ui/` | GTK4 + libadwaita front end |
-| `docs/dbus-api.md` | The contract between them |
+When the safe answer is unclear, Halyard keeps both copies.
 
 ## Requirements
 
-- GNOME (Wayland or X11), with a Secret Service provider — normally
-  `gnome-keyring`, which you already have
-- **Node 22+** — the daemon uses the built-in `node:sqlite`
-- **Bun** — required to install, because `@protontech/crypto` needs a patch and
-  bun is what applies it
+- GNOME on Wayland or X11, with a Secret Service provider such as `gnome-keyring`
+- Node 22+
+- Bun, which applies the required patch for `@protontech/crypto`
 - Python 3 with PyGObject, GTK 4 and libadwaita 1
-
-Proton's [Drive SDK](https://github.com/ProtonDriveApps/sdk) is pinned as a git
-submodule at `proton-sdk/` (tag `js/v0.21.0`); the daemon builds against it by
-relative path. Clone with `--recurse-submodules`, or fetch it in an existing
-checkout, then build it once:
-
-```bash
-git submodule update --init                    # skip if you cloned --recurse-submodules
-./scripts/build-proton-sdk.sh
-```
-
-`install.sh` does both of these for you on a fresh clone — this is only needed
-if you build the daemon by hand.
 
 ## Install
 
@@ -131,47 +44,28 @@ systemctl --user enable --now halyard-daemon.service
 halyard
 ```
 
-Sign-in happens in your browser: Halyard opens Proton's sign-in page, you
-authenticate there, and it receives a session back. **Halyard never sees your
-password**, and 2FA and SSO work because Proton handles them, not us.
-
-The session is stored in your GNOME keyring. The metadata cache is encrypted at
-rest with AES-256-GCM under a key kept in the same keyring — file names and
-folder structure are exactly what Proton's encryption protects, so leaving them
-in a plaintext database would quietly undo that.
+Sign-in happens through Proton in your browser, so Halyard never sees your
+password. It stores the resulting session in your keyring and encrypts its local
+metadata cache.
 
 ## Using it
 
-Add a pair with **+**: choose a local folder, then browse your Drive for the
-remote one (or create it). Sync starts immediately and runs from then on —
-local changes are picked up by a filesystem watcher, remote changes arrive over
-Proton's event stream.
+Add a pair with the + button. Choose a local folder, then select or create its
+Drive folder. Sync starts at once.
 
-Closing the window does **not** stop syncing. The daemon is the app; the window
-is a view onto it. Quit it properly with `systemctl --user stop
-halyard-daemon`, or **Quit** in the app menu.
-
-If the service is not running, the window says so and offers to start it — and
-to set it up first if it has never been installed. **None of this needs
-administrator access**, and Halyard will never ask for a password to sync your
-files. It is a user service throughout: it runs as you, keeps its session in
-your keyring, writes only under your home directory, and registers on the
-session bus. Anything in Halyard that appeared to need `sudo` would be a bug,
-not a missing prompt.
-
-Preferences has two independent startup switches, because they genuinely are
-independent: **Start on Login** opens the window at login, while **Start Sync
-Service on Login** keeps your folders syncing whether or not you ever open it.
+Closing the window does not stop syncing. Choose Quit from the app menu or run
+`systemctl --user stop halyard-daemon` to stop the service. Halyard runs entirely
+as your user and never needs `sudo`.
 
 Conflicts appear in their own view. Both copies already exist on disk by the
-time you see one, so resolving is just tidying up: **Keep local** promotes your
-copy back to the original name, **Keep remote** discards the preserved copy, and
-**Dismiss** leaves both files and clears the entry.
+time you see one. Keep local restores your copy to the original name. Keep
+remote discards the preserved copy. Dismiss leaves both files and clears the
+entry.
 
 ### Excluding folders
 
-A pair can cover a broad folder while leaving parts of it alone — sync
-`~/Documents` but not the `GitHub` checkout inside it. Patterns are
+A pair can cover a broad folder while leaving parts of it alone. For example,
+sync `~/Documents` but not the `GitHub` checkout inside it. Patterns are
 gitignore-style and relative to the pair root:
 
 | Pattern | Matches |
@@ -182,138 +76,69 @@ gitignore-style and relative to the pair root:
 | `*.iso` | a glob within one path segment |
 | `**/cache` | an explicit any-depth match |
 
-**Excluding never deletes anything.** Content already synced simply stops being
-tracked and is left exactly where it is, both locally and on Drive. This is
-worth stating plainly because the obvious implementation gets it wrong: filter
-the local scan alone and the reconciler sees files present in its records and
-on Drive but missing on disk, concludes they were deleted, and trashes your
-remote copies. Exclusions are applied to the local view, the remote view and
-the recorded base together, so an excluded path produces no action at all.
-There is a regression test for precisely that mistake.
+Excluding a path never deletes it. Existing content stays in place locally and
+on Drive but is no longer tracked. Removing an exclusion later merges both
+sides again. Negation patterns such as `!pattern` are not supported.
 
-Un-excluding later merges the two sides afresh. If a file changed on both sides
-while it was ignored, you get a conflict with both copies kept — never a
-deletion.
-
-Negation (`!pattern`) is deliberately unsupported and is rejected rather than
-ignored. Re-including part of an excluded tree makes exclusion order-dependent,
-and an exclusion you believe is active but is not could push private files to
-Drive.
-
-> Worth knowing: `node_modules` is **not** excluded by default. A single
+> `node_modules` is not excluded by default. A single
 > JavaScript project can hold hundreds of megabytes across tens of thousands of
 > reinstallable files, so exclude it explicitly if you sync code.
 
 ### What is not synced
 
-Some names are always skipped, in both directions:
-
-| Skipped | Why |
-|---|---|
-| `.git` | Syncing a live repository corrupts it — two machines writing the index and packfiles will destroy history. Use `git` to sync code. |
-| `.DS_Store`, `lost+found` | Noise. |
-| `*~`, `*.swp`, `*.tmp`, `*.part`, `*.partial`, `*.crdownload`, `.~lock.*`, `.goutputstream-*` | Editor and browser scratch files that exist for seconds. |
-| `*.halyard-part` | Halyard's own in-progress downloads. |
-| Symlinks | Following them invites cycles and would pull files from outside the pair into Drive. |
-
-Everything else syncs, including dotfiles. The list lives in
-`daemon/src/config.ts` if you want to change it.
+Halyard skips `.git`, `.DS_Store`, `lost+found`, common temporary files, its own
+partial downloads, and symlinks. Everything else syncs, including dotfiles.
+Use `git` rather than Halyard to sync repositories.
 
 ## Development
 
 ```bash
-git submodule update --init                    # once, if not cloned --recurse-submodules
-./scripts/build-proton-sdk.sh                               # build the pinned SDK
-
+git submodule update --init
+./scripts/build-proton-sdk.sh
 cd daemon
 bun install
-bun test                    # reconciler decision matrix
-node scripts/build.mjs      # → dist/halyard-daemon.cjs
+bun run test
+node scripts/build.mjs
 ./node_modules/.bin/tsc --noEmit
-
-HALYARD_LOG_LEVEL=debug HALYARD_LOG_STDERR=1 node dist/halyard-daemon.cjs
 ```
 
-Live tests run against a real account, in a throwaway `Halyard Test` folder.
-They touch nothing else:
-
-```bash
-node scripts/live-test.mjs            # upload, rename, download round-trip, delete
-node scripts/live-test-conflicts.mjs  # remote deletion + genuine both-sides conflict
-```
-
-For the UI, `ui/run-dev.sh` starts a mock daemon (on its own bus name, so it can
-never displace the real one) alongside the app:
+The daemon runs from `dist/`, so rebuild it after changing `daemon/src/`. For UI
+work, run the mock daemon and app together:
 
 ```bash
 cd ui
-./run-dev.sh                 # or --logged-in / --login-fails / --no-pairs / --offline
-python3 -m halyard           # against the real daemon
+./run-dev.sh
 ```
 
-The mock proves the UI *renders*; it cannot prove the UI understands what the
-Node daemon actually emits. That gap is covered separately, by feeding live
-daemon responses through the UI's own model parsers:
-
-```bash
-python3 ui/tests/integration_real_daemon.py   # read-only, safe on a real account
-```
-
-`live-test-conflicts.mjs` needs a way to change Drive from outside the daemon,
-which is what `dist/remoteop.cjs` is for — it stands in for a second device:
-
-```bash
-node dist/remoteop.cjs ls     "Halyard Test"
-node dist/remoteop.cjs trash  "Halyard Test" file.txt
-node dist/remoteop.cjs putrev "Halyard Test" file.txt ./new-contents
-```
-
-| Variable | |
-|---|---|
-| `HALYARD_LOG_LEVEL` | `debug`, `info`, `warn`, `error` |
-| `HALYARD_LOG_STDERR` | `1` to mirror all logs to stderr |
-| `HALYARD_DRIVE_BASE_URL` | Point at a test environment; the account host follows |
-| `HALYARD_UNSAFE_SECRETS` | `1` stores the session in plaintext. Testing only. |
-| `HALYARD_BUS_NAME` | Point the UI at a different daemon (used by the mock). |
+Do not run `daemon/scripts/live-test*.mjs` without checking first. Those scripts
+write to the connected Proton Drive account.
 
 ## Troubleshooting
 
-If something is wrong with the environment rather than the sync, start here — it
-checks SQLite, OpenPGP, the session bus and the keyring, and touches no account
-data:
+Run the doctor first. It checks local dependencies without touching account
+data.
 
 ```bash
 cd daemon && bun run doctor
 ```
 
-Otherwise, logs are the first stop:
+Then check the service log:
 
 ```bash
 journalctl --user -u halyard-daemon -f
-tail -f ~/.local/state/halyard/halyard.log
-```
-
-The daemon can be inspected directly, without the UI:
-
-```bash
-gdbus call --session --dest io.github.votton.Halyard.Daemon \
-  --object-path /io/github/votton/Halyard/Daemon \
-  --method io.github.votton.Halyard.Daemon.GetStatus
 ```
 
 | Symptom | Likely cause |
 |---|---|
 | "No usable secret service found" at startup | `gnome-keyring` is not running, or the login keyring is locked. Unlock it and restart the daemon. |
-| The app sits on "connecting" | The daemon is not running. The window offers a **Start Sync Service** button; if the service has never been set up it offers to do that first. Failing that, check `journalctl --user -u halyard-daemon` — a missing or unbuilt `proton-sdk` submodule (`git submodule update --init`, then build `proton-sdk/client/js`) is the usual reason. |
+| The app sits on "connecting" | Start the daemon with `systemctl --user start halyard-daemon`. |
 | A pair shows an error and stalls | The message is verbatim from the daemon. Failed items are retried on the next cycle; sync does not stop for one bad file. |
 | Notifications never appear | GNOME only shows them once the `.desktop` file is installed in `XDG_DATA_DIRS`, which `install.sh` does. |
 | Nothing syncs after sign-in | Check the pair is enabled and not globally paused (`GetStatus` shows both). |
 
-State lives in three places: the session in the keyring, sync state in
-`~/.local/share/halyard/sync.sqlite`, and a metadata cache in
-`~/.cache/halyard/`. The cache can be deleted safely — it is rebuilt. Deleting
-`sync.sqlite` forces a full re-scan and re-hash of every pair, which is slow but
-not destructive.
+You can safely delete `~/.cache/halyard/`. Do not delete
+`~/.local/share/halyard/sync.sqlite` as routine troubleshooting. It records the
+last state shared by both sides.
 
 ## Uninstall
 
@@ -326,83 +151,27 @@ rm -f ~/.config/systemd/user/halyard-daemon.service \
 rm -rf ~/.local/lib/halyard                 # the program
 systemctl --user daemon-reload
 
-# Optional — your sync state, cache and logs:
+# Optional: remove sync state, cache, and logs
 rm -rf ~/.local/share/halyard ~/.cache/halyard ~/.local/state/halyard
 ```
 
-Your synced files are left alone. Remove the keyring entry ("Halyard — Proton
-Drive session") in **Passwords and Keys** to drop the stored session.
-
-## Complying with Proton's third-party rules
-
-Proton allows personal, non-commercial use of the Drive SDK under
-[conditions](https://github.com/ProtonDriveApps/sdk).
-Halyard is built to meet them, and changes should keep meeting them:
-
-- **Honest identification.** Every request sends
-  `x-pm-appversion: external-drive-halyard@<version>-alpha`. Do not change this
-  to imitate a first-party client — that is explicitly forbidden and gets
-  applications blocked.
-- **Event-based sync.** The remote tree is enumerated once per pair and kept
-  current from the Drive event stream, at the cadence the SDK's scheduler
-  dictates. Halyard does not poll and does not repeatedly walk the tree. Adding
-  a "check every 30 seconds" loop would get the account rate-limited.
-- **No Proton branding.** No Proton logos, trademarks, or visual identity.
-- **Disclosure.** The sign-in screen states that this is a third-party
-  application not officially supported by Proton.
-- **Official endpoints only**, through the SDK rather than raw API calls.
+Your synced files are left alone. Remove the keyring entry "Halyard — Proton
+Drive session" in Passwords and Keys to drop the stored session.
 
 ## Limitations
 
-Known and deliberate:
-
-- **Linux/GNOME only.** The sync engine is portable Node, but the UI is GTK.
-- **No resumable transfers.** The SDK does not expose resumption, so an
-  interrupted large upload restarts. A stable per-installation client id means
-  the abandoned draft is cleaned up automatically rather than needing your
-  intervention.
-- **Symlinks are skipped**, not followed — following them invites cycles and
-  would pull files from outside the pair into Drive.
-- **Local moves are detected by `(device, inode)`.** A move plus an edit before
-  the next scan is seen as a delete and a create, so the file is re-uploaded.
-  Correct, just not optimal.
-- **One account.** No multi-account support.
-- **Shared-with-me folders are untested.** Pairs are intended for folders you
-  own.
+- Linux and GNOME only
+- One account
+- No resumable transfers; interrupted uploads restart
+- Symlinks are skipped
+- Shared-with-me folders are untested
 
 ## Verification status
 
-This is alpha software that moves your files around, so it is worth being
-precise about what has actually been exercised rather than merely written.
-
-Verified against a real Proton Drive account:
-
-- Upload, download, and byte-identical round-trip including a 5 MB multi-block
-  file and nested folders
-- Rename and move detection, confirmed to transfer nothing
-- Local deletion propagating to Drive, and remote deletion propagating locally
-- A genuine both-sides conflict keeping both copies, with the preserved copy
-  reaching Drive
-- A remote deletion racing an unsynced local edit, where the edit survives and
-  is restored to Drive
-- Session persistence and correct no-op resume across daemon restarts
-- The UI's parsers against live daemon payloads
-
-Covered by unit tests only: the full reconciler decision matrix, the btrfs
-inode-collision case, and the ignore rules.
-
-**Not verified:**
-
-- The local folder picker widget (`Gtk.FileDialog` opens a portal surface that
-  could not be automated; its validation logic *is* tested)
-- Autostart via the Background portal — written to spec, never run live
-- Notification rendering end-to-end
-- Very large pairs. Nothing has been run against tens of thousands of files, so
-  scan and hash timings at that scale are unknown.
-- Sustained multi-day operation, and recovery from a network drop mid-transfer
-
-Take a backup, or start with a folder you can afford to lose, until you have
-your own confidence in it.
+This is alpha software. Uploads, downloads, moves, deletions, conflicts, and
+session restore have been tested against a real account. Very large pairs,
+multi-day use, and transfer recovery after a network failure have not. Keep a
+backup and start with non-critical files.
 
 ## Licence
 

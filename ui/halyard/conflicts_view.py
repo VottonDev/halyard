@@ -256,7 +256,7 @@ class ConflictsPage(Adw.NavigationPage):
             self._stack.set_visible_child_name("loading")
 
         # Reloads come from the refresh button, from resolving, and from the
-        # window noticing a count change — replies can therefore overlap, and
+        # window noticing a count change. Replies can overlap, and
         # an older one must not paint over a newer one.
         self._request += 1
         request = self._request

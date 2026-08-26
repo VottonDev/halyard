@@ -2,8 +2,8 @@
  * Performs Drive operations directly, standing in for "another device".
  *
  * The daemon can only ever produce local-side changes during a test. To
- * exercise the remote-change paths — a file deleted elsewhere, a file edited
- * elsewhere — something has to modify Drive out of band. That is this tool.
+ * exercise remote deletion and editing, something has to modify Drive out of
+ * band. This tool makes those changes.
  *
  *   remoteop ls        <folder> [subpath]
  *   remoteop trash     <folder> <subpath>

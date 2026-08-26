@@ -65,8 +65,8 @@ function parseStored(raw: string): StoredCredentials | undefined {
 
 /**
  * Implements the `SessionCredentials` contract the Proton account module
- * expects. The SDK deliberately ships no session management, so this is ours
- * to own: hold the session in memory, persist it to the keyring, and notify
+ * expects. The SDK has no session management. This class holds the session in
+ * memory, persists it to the keyring, and notifies
  * listeners whenever it changes so the HTTP layer can refresh its auth headers.
  */
 export class Credentials {

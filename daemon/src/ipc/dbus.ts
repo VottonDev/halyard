@@ -47,7 +47,7 @@ function fail(error: unknown): never {
  * The daemon's public surface.
  *
  * Structured payloads cross the bus as JSON strings rather than typed D-Bus
- * structures — see docs/dbus-api.md. Sync state is a nested, still-evolving
+ * structures. See docs/dbus-api.md. Sync state is a nested, still-changing
  * shape, and marshalling it as a{sv} would make both ends brittle without
  * buying any real type safety.
  */
@@ -114,7 +114,7 @@ export class HalyardInterface extends Interface {
                 throw new Error('localPath is required');
             }
             // Either point at an existing folder, or ask for a new one at the
-            // My Files root — never neither.
+            // My Files root. One of the two is required.
             if (!remoteUid && !createRemote) {
                 throw new Error('remoteUid is required unless createRemote is set');
             }

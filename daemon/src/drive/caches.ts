@@ -101,7 +101,7 @@ const TAG_BYTES = 16;
 /**
  * Encrypts cache values at rest with AES-256-GCM.
  *
- * The cache holds decrypted file and folder metadata — names, sizes, structure.
+ * The cache holds decrypted names, sizes, and folder structure.
  * That is exactly the material Proton's end-to-end encryption exists to
  * protect, so leaving it as plaintext on disk would quietly undo the guarantee
  * for anyone who can read the user's home directory.
@@ -120,8 +120,8 @@ class EncryptedCache implements ProtonDriveCache<string> {
     /**
      * Forgets the derived key. Must be called on sign-out: the keyring's cache
      * password is deleted then, and a memoised key would otherwise keep
-     * encrypting new rows under a secret that no longer exists anywhere —
-     * unreadable after the next restart generates a fresh password.
+     * encrypting new rows under a deleted secret. The next restart would create
+     * a fresh password and leave those rows unreadable.
      */
     dropKey(): void {
         this.key = undefined;
@@ -239,7 +239,7 @@ function deserializeSessionKey(json: SerializedSessionKey): SessionKey {
 /**
  * Converts the SDK's live crypto objects to strings and back, so they can live
  * in the same string-valued store as everything else. Values are not encrypted
- * here — the cache underneath handles that for the whole value.
+ * here. The cache underneath encrypts the whole value.
  *
  * Ported from the reference CLI; the serialised shape must stay compatible with
  * the SDK's expectations, hence the version marker.

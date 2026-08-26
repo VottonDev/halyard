@@ -12,8 +12,8 @@ from gi.repository import Adw, GLib, Gtk
 from .models import LoginState
 
 # Required disclosure. Proton's SDK terms require this wherever account access
-# is requested, so it is a permanent, plainly legible part of this screen —
-# never a tooltip, and never hidden behind a dialog the user can dismiss.
+# is requested, so it must remain visible on this screen. Do not move it to a
+# tooltip or hide it behind a dialog.
 DISCLOSURE = ("This is a third-party application not officially supported "
               "by Proton.")
 

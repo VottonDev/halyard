@@ -121,7 +121,7 @@ async function main() {
     check('an edit inside the exclusion was not uploaded', afterEdit.includes('9 '), 'remote size unchanged');
 
     // A control change outside the exclusion must still sync, proving the pair
-    // is genuinely still active rather than silently stalled.
+    // remains active rather than stalled.
     await fs.writeFile(path.join(LOCAL_ROOT, 'kept.txt'), 'KEPT AND EDITED\n');
     await syncAndSettle(pair.id);
     check('changes outside the exclusion still sync', remoteop('ls', REMOTE_NAME).includes('kept.txt'));

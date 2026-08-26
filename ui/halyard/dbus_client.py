@@ -1,7 +1,7 @@
 """Asynchronous D-Bus client for the Halyard sync daemon.
 
 Every call on this object is non-blocking. Results arrive on callbacks running
-in the GTK main loop, so the UI never stalls waiting for the bus — some daemon
+in the GTK main loop, so the UI never stalls waiting for the bus. Some daemon
 calls (remote folder listings in particular) take seconds.
 
 The daemon's availability is tracked with ``Gio.bus_watch_name``: the UI can
@@ -95,7 +95,7 @@ class DaemonClient(GObject.Object):
     # -- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
-        """Begin watching for the daemon. Returns immediately."""
+        """Begin watching for the daemon without blocking."""
         if self._watch_id:
             return
         self._watch_id = Gio.bus_watch_name(
@@ -271,8 +271,8 @@ class DaemonClient(GObject.Object):
         """Pair a local folder with Proton Drive.
 
         Pass an existing ``remote_uid``, or set ``create_remote`` to have the
-        daemon make a new folder at the top of My Files — named ``remote_name``,
-        or after the local folder when that is omitted — and pair with it.
+        daemon create a folder at the top of My Files. It uses ``remote_name``
+        when set, otherwise it uses the local folder's name.
         """
         payload: dict = {
             "localPath": local_path,
@@ -395,7 +395,7 @@ class DaemonClient(GObject.Object):
         """Fetch activity, newest first.
 
         Every filter narrows; omitting one means "any". ``before_id`` pages
-        backwards through time — pass the id of the oldest entry you already
+        backwards through time. Pass the id of the oldest entry you already
         hold to get the next batch.
         """
         query: dict = {"limit": limit}

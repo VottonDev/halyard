@@ -143,7 +143,7 @@ export class SyncManager {
     }
 
     /**
-     * Subscribes to Drive events. The SDK decides the polling cadence — Proton
+     * Subscribes to Drive events. The SDK decides the polling cadence. Proton
      * requires event-based sync and treats independent polling as abuse, so we
      * let the scheduler drive rather than inventing our own interval.
      */
@@ -205,13 +205,13 @@ export class SyncManager {
             persistent: true,
             followSymlinks: false,
             // Wait for writes to settle: syncing a file mid-save uploads a
-            // truncated copy and then immediately has to upload it again.
+            // truncated copy and then has to upload it again.
             awaitWriteFinish: { stabilityThreshold: 1_500, pollInterval: 200 },
             ignored: (target: string) => {
                 if (target.split(path.sep).some((segment) => isIgnoredName(segment))) {
                     return true;
                 }
-                // Excluded trees should not even be watched — otherwise a busy
+                // Excluded trees should not be watched. Otherwise a busy
                 // folder like a build directory wakes the daemon constantly
                 // just for its changes to be discarded.
                 const relative = path.relative(pair.localPath, target);
@@ -322,9 +322,8 @@ export class SyncManager {
     }
 
     /**
-     * Rejects patterns we cannot honour rather than silently dropping them —
-     * an exclusion the user believes is active but is not could send a folder
-     * they meant to keep private up to Drive.
+     * Rejects patterns we cannot honour. Silently dropping a pattern could
+     * send a folder to Drive that the user meant to keep private.
      */
     private checkExcludes(patterns: string[] | undefined): string[] {
         const cleaned = (patterns ?? []).map((pattern) => pattern.trim()).filter(Boolean);
@@ -342,7 +341,7 @@ export class SyncManager {
      *
      * Keeping it would mean that un-excluding later runs a three-way merge
      * against a base that stopped tracking reality while the folder was
-     * ignored — and a file deleted locally during that time would then be
+     * ignored. A file deleted locally during that time would then be
      * deleted on Drive. Discarding it makes un-excluding a plain merge, which
      * can create conflicts but can never delete.
      */
@@ -437,7 +436,7 @@ export class SyncManager {
     /**
      * Creates a folder at the top level of My Files and returns its uid and
      * display path. Used when a pair is set up against a local folder that has
-     * no counterpart on Drive yet — the daemon makes one rather than making
+     * no counterpart on Drive yet. The daemon creates one instead of making
      * the user pre-create it by hand.
      */
     private async createRootFolder(rawName: string): Promise<{ remoteUid: string; remotePath: string }> {
@@ -492,7 +491,7 @@ export class SyncManager {
 
     /**
      * Applies changes to a pair. Beyond enabling and disabling, a pair can be
-     * re-pointed at different folders — which invalidates everything we knew
+     * re-pointed at different folders. This invalidates everything we knew
      * about it, since the recorded state refers to the old paths and node ids.
      *
      * Discarding that state is safe: with no base, the next sync treats both
@@ -536,7 +535,7 @@ export class SyncManager {
         if (syncer && (retargeted || excludesChanged)) {
             // About to discard the pair's recorded state. A cycle still in
             // flight decided against that state and would write base rows
-            // back on top of the clear — stop it and wait before touching
+            // back on top of the clear. Stop it and wait before touching
             // anything.
             await syncer.cancel();
         }

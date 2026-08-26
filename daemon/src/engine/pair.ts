@@ -32,7 +32,7 @@ export type PairStats = {
 export class PairSyncer {
     private tree: RemoteTree;
     private running = false;
-    /** Set when a change arrives mid-sync, so we immediately run again. */
+    /** Set when a change arrives mid-sync so another run starts afterward. */
     private dirty = false;
     /** Abort scope of the in-flight run, so one pair can be stopped alone. */
     private currentAbort: AbortController | null = null;
@@ -91,7 +91,7 @@ export class PairSyncer {
         }
         // The caller's signal is manager-wide (it trips on sign-out and
         // shutdown). Chaining a per-run controller onto it lets cancel() stop
-        // this one pair — for a retarget — without touching the others.
+        // this one pair during a retarget without touching the others.
         const controller = new AbortController();
         const propagate = () => controller.abort();
         if (signal?.aborted) {
@@ -144,9 +144,9 @@ export class PairSyncer {
         const pair = this.pair;
         this.transientFailure = false;
 
-        // A previously-synced local root that has vanished was almost certainly
-        // moved, deleted, or unmounted out from under us — not emptied file by
-        // file. If we recreate it empty below and then reconcile, every synced
+        // A previously-synced local root that has vanished was probably moved,
+        // deleted, or unmounted. The user probably did not empty it file by file.
+        // If we recreate it empty below and then reconcile, every synced
         // file reads as a local deletion and we trash the user's Drive copies.
         // Refuse instead, exactly as we refuse to reconcile a half-enumerated
         // remote. Recreating it empty would also risk writing a phantom folder
@@ -207,7 +207,7 @@ export class PairSyncer {
 
             // Exclusions are applied to all three views together. Filtering
             // only the local scan would leave files present in the base and on
-            // Drive but missing locally, which reads as a deletion — and would
+            // Drive but missing locally, which reads as a deletion and would
             // trash the user's remote copies the moment they excluded a folder.
             const local = filterExcluded(await scanLocal(this.pair.localPath, isExcluded), isExcluded);
             const remote = filterExcluded(this.tree.snapshot(), isExcluded);

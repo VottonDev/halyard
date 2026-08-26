@@ -309,7 +309,7 @@ class HistoryEntry:
 
     @property
     def name(self) -> str:
-        """The bare filename — what someone scanning the list recognises."""
+        """Return the bare filename shown in the activity list."""
         subject = self.to_path or self.path
         return os.path.basename(subject) or subject
 

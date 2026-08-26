@@ -8,7 +8,7 @@
  * specifier so real `.js` files still resolve.
  *
  * Only needed for tests that touch `node:sqlite`, which Bun does not
- * implement — everything else runs under `bun test`.
+ * implement. Everything else runs under `bun test`.
  */
 import { registerHooks } from 'node:module';
 
@@ -18,7 +18,7 @@ registerHooks({
             try {
                 return nextResolve(`${specifier.slice(0, -3)}.ts`, context);
             } catch {
-                // No sibling .ts — it really was a JavaScript file.
+                // No sibling .ts exists, so this was a JavaScript file.
             }
         }
         return nextResolve(specifier, context);

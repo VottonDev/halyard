@@ -68,7 +68,7 @@ function toRemoteNode(node: NodeEntity): RemoteNodeInput | null {
 /**
  * Mirrors one pair's remote folder and keeps it current from Drive events.
  *
- * Proton's operating rules require event-based sync — repeatedly listing the
+ * Proton's operating rules require event-based sync. Repeatedly listing the
  * tree is treated as abuse and gets rate-limited. So the full walk happens
  * exactly once per pair (or after a refresh event), and everything after that
  * is driven by the event stream.
@@ -374,7 +374,7 @@ export class RemoteTree {
 
                 // Events cover the whole volume, not just our folder. A node is
                 // ours if we already track it, or if its parent is something we
-                // track — which also catches nodes moved *into* the pair.
+                // track. This also catches nodes moved *into* the pair.
                 const relevant =
                     wasKnown || (!!event.parentNodeUid && known.has(event.parentNodeUid));
                 if (!relevant) {
@@ -412,7 +412,7 @@ export class RemoteTree {
                 }
 
                 // An event can bring a node into a path we are excluding;
-                // ignoring it here keeps excluded subtrees genuinely absent.
+                // ignoring it here keeps excluded subtrees out of the snapshot.
                 const paths = this.folderPaths();
                 const parentPath = row.parentUid ? paths.get(row.parentUid) : '';
                 if (parentPath !== undefined) {
@@ -436,8 +436,8 @@ export class RemoteTree {
                 // before we knew the parent. Enumerate it once to catch up.
                 // This covers a folder freshly created here (NodeCreated) *and*
                 // one moved in from another device (NodeUpdated with a new
-                // parent) alike — both surface as a folder we did not previously
-                // track. Gating on `!wasKnown` — not the event type — is what
+                // parent) alike. Both appear as a folder we did not previously
+                // track. Gating on `!wasKnown` instead of the event type
                 // makes the move-in case work while an ordinary update of an
                 // already-tracked folder does not re-list it. Re-enumerating on
                 // every update would be wasteful and, under Proton's rules,
@@ -491,7 +491,7 @@ export class RemoteTree {
     /**
      * Materialises the stored rows into a path-keyed snapshot by walking down
      * from the pair root. Nodes whose parent chain does not reach the root are
-     * dropped — they are leftovers from a move we have already handled.
+     * dropped because they are leftovers from a move already handled.
      */
     snapshot(): Map<string, RemoteItem> {
         const rows = this.db.getRemoteNodes(this.pair.id);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Installs Halyard for the current user. No root required — everything lands
-# under ~/.local and ~/.config.
+# Installs Halyard for the current user under ~/.local and ~/.config.
+# Root access is not required.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,8 +12,8 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 DBUS_SERVICE_DIR="$DATA_HOME/dbus-1/services"
 SYSTEMD_USER_DIR="$CONFIG_HOME/systemd/user"
-# Installed code goes under lib, deliberately NOT $DATA_HOME/halyard — that is
-# where the sync database lives, and mixing program files with user data makes
+# Installed code goes under lib, not $DATA_HOME/halyard. The latter holds the
+# sync database, and mixing program files with user data makes
 # "delete the app" and "delete my sync state" the same command.
 LIBEXEC_DIR="$HOME/.local/lib/halyard"
 

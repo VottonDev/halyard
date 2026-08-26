@@ -16,7 +16,7 @@ async function main(): Promise<void> {
 
     // Open the keyring-backed session up front. It talks to the secret service,
     // not our own database, so it is safe to run even when another daemon turns
-    // out to own the name — and doing it before requestName is what lets
+    // out to own the name. Doing it before requestName lets
     // everything after the name check stay synchronous (see below).
     const store = await createSecretStore(bus);
     const session = await DriveSession.create(store);
@@ -31,7 +31,7 @@ async function main(): Promise<void> {
     }
 
     // From here to bus.export() there must be no `await`. A client watching the
-    // bus name reacts to it appearing by immediately calling a method (the UI
+    // bus name calls a method as soon as it appears (the UI
     // fires GetStatus); if we yielded to the event loop before exporting the
     // object, that call would be dispatched against an unexported path and
     // dbus-next would answer UnknownMethod. Exporting in the same tick the name

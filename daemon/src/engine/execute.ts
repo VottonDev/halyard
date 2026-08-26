@@ -49,15 +49,14 @@ function mediaTypeFor(filePath: string): string {
 /**
  * Renames a path, falling back to copy-then-delete across device boundaries.
  *
- * `rename(2)` fails with EXDEV between filesystems — and on btrfs, between
- * *subvolumes* of the same filesystem, which is easy to hit without realising
+ * `rename(2)` fails with EXDEV between filesystems. On btrfs it also fails
+ * between *subvolumes* of the same filesystem, which is easy to hit because
  * since subvolumes look like ordinary directories. A synced folder containing
  * a subvolume (or a `@home`-style layout) would otherwise fail every move.
  *
- * The fallback copy requests COPYFILE_FICLONE, so on btrfs it becomes a
- * copy-on-write reflink — near-instant and costing no extra space — rather
- * than duplicating the data. The flag degrades to an ordinary copy on
- * filesystems that cannot clone, so it is always safe to ask for.
+ * The fallback copy requests COPYFILE_FICLONE. On btrfs this creates a
+ * copy-on-write reflink without duplicating the data. Filesystems that cannot
+ * clone perform an ordinary copy, so the flag is safe to request everywhere.
  */
 async function movePath(from: string, to: string): Promise<void> {
     try {
@@ -110,7 +109,7 @@ export type ExecuteResult = {
  *
  * Failures are collected per action rather than aborting the batch: one
  * unreadable file should not stop the other thousand from syncing. Anything
- * that fails simply stays un-based, so the next cycle retries it.
+ * that fails stays out of the base, so the next cycle retries it.
  */
 export class Executor {
     /** Maps a relative path to its remote node uid, updated as we create nodes. */
@@ -195,9 +194,9 @@ export class Executor {
      * null for the base-keeping actions that have no user-visible effect.
      *
      * The log is how someone finds out why a file vanished, so this leans on
-     * the distinctions that answer that question — whether a download replaced
-     * something, which side a deletion came from — rather than mirroring the
-     * executor's own action names.
+     * the distinctions that answer that question, including whether a download
+     * replaced something and which side a deletion came from. It does not
+     * mirror the executor's action names.
      */
     private describe(
         action: Action,
@@ -309,7 +308,7 @@ export class Executor {
                 const name = path.basename(action.path);
                 // A remote file may hold the name this folder is taking over (a
                 // type swap on the local side). Reconcile only plans that when
-                // the file is unchanged, so trashing it loses nothing — the
+                // the file is unchanged, so trashing it loses nothing. The
                 // same content stays recoverable from Proton's Trash.
                 const occupant = this.context.remote.get(action.path);
                 if (occupant && occupant.type === 'file') {
@@ -579,8 +578,8 @@ export class Executor {
                 const controller = await uploader.uploadFromStream(openStream(), [], onProgress);
                 uploaded = await controller.completion();
             } catch (error) {
-                // Our snapshot said this name was free but the server disagrees
-                // — someone else created it. Upload as a new revision of theirs
+                // Our snapshot said this name was free but someone else created it.
+                // Upload as a new revision of theirs
                 // instead of failing or silently duplicating.
                 if (error instanceof NodeWithSameNameExistsValidationError && error.existingNodeUid) {
                     logger.info(`${relative} already exists remotely; uploading as a new revision`);
@@ -622,22 +621,22 @@ export class Executor {
     /**
      * Deletes a path that has been removed on the Drive side.
      *
-     * This is genuinely destructive locally, and that is deliberate: Proton
-     * Drive keeps deleted items in its own Trash, so the file remains
+     * This removes the local path. Proton Drive keeps deleted items in its own
+     * Trash, so the file remains
      * recoverable there. Keeping a second local quarantine copy would just
      * accumulate duplicates of things the user already has a way to restore.
      *
      * The safety argument holds only because we get here exclusively when the
-     * local copy is *unchanged* from the base — its bytes are therefore
+     * local copy is *unchanged* from the base. Its bytes are therefore
      * exactly what Drive is holding. A file with unsynced local edits takes
      * the "edit beats deletion" path in the reconciler and is re-uploaded
      * instead, so local-only work is never destroyed.
      *
      * That "unchanged" judgement was made at scan time, and a write can land
-     * between the scan and this call — content Drive has never seen, which no
-     * Trash would hold. So the path is re-stat'd immediately before removal
-     * and the deletion deferred if anything drifted; returns false to signal
-     * "skipped, decide again next cycle".
+     * between the scan and this call. Drive has never seen that content, so its
+     * Trash would not hold it. The path is re-stat'd just before removal,
+     * and the deletion is deferred if anything drifted. The method returns
+     * false to signal "skipped, decide again next cycle".
      */
     private async deleteLocal(relative: string, type: 'file' | 'folder'): Promise<boolean> {
         const target = this.absolute(relative);
@@ -645,7 +644,7 @@ export class Executor {
         // Files only: a folder's mtime is bumped by our own child deletions
         // (which run first), so it cannot distinguish a raced-in write from
         // this very sync's work. Raced-in files inside a folder are still
-        // caught — each file has its own deleteLocal, ordered before the
+        // caught. Each file has its own deleteLocal, ordered before the
         // folder's, and defers individually.
         if (scanned && type === 'file') {
             try {

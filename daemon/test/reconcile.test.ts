@@ -193,8 +193,8 @@ describe('moves are detected, not re-transferred', () => {
     });
 
     test('does not mistake a btrfs inode collision for a rename', () => {
-        // Inode numbers are unique per filesystem — and on btrfs, only per
-        // *subvolume*. A synced folder spanning two subvolumes can hold two
+        // Inode numbers are unique per filesystem. On btrfs, uniqueness is only
+        // within each subvolume. A synced folder spanning two subvolumes can hold two
         // unrelated files sharing an inode number. Keying moves on the inode
         // alone would rename the wrong file on Drive and delete the other.
         const { actions } = run(
@@ -282,9 +282,8 @@ describe('a moved folder is carried by one directory rename', () => {
 
         const plan = reconcile({ base, local, remote, now: NOW });
 
-        // Exactly one move — the folder itself. The descendant is not moved
-        // separately: renaming the directory already relocated it, and a second
-        // move would only fail with ENOENT and log a bogus failure.
+        // Only the folder moves. Renaming the directory already relocated the
+        // descendant. A second move would fail with ENOENT and log a bogus failure.
         const moves = plan.actions.filter((a) => a.kind === 'moveLocal' || a.kind === 'moveRemote');
         expect(moves).toEqual([{ kind: 'moveLocal', from: 'A', to: 'B/A' }]);
 
@@ -376,7 +375,7 @@ describe('a path that changed kind on one side', () => {
             [localFile('x')],
             [remoteFolder('x')],
         );
-        // The local file matches the base, so it is simply cleared for the
+        // The local file matches the base, so it is cleared for the
         // folder; nothing is downloadable about a folder, and nothing recurs.
         expect(actions).toContainEqual({ kind: 'createLocalFolder', path: 'x' });
         expect(kinds).not.toContain('download');

@@ -1,4 +1,4 @@
-"""Halyard — an unofficial two-way sync client for Proton Drive.
+"""Halyard, an unofficial two-way sync client for Proton Drive.
 
 Halyard is an independent open-source project. It is not made, endorsed, or
 supported by Proton AG.
@@ -32,8 +32,8 @@ SETTINGS_DEFAULTS = {
 class _FallbackSettings:
     """In-memory stand-in used when the GSettings schema is not installed.
 
-    Keeps the app fully usable when it is run straight from a source
-    checkout without compiling schemas; preferences simply do not persist.
+    Lets the app run from a source checkout without compiled schemas. In that
+    case, preferences do not persist.
     """
 
     def __init__(self) -> None:
@@ -130,7 +130,7 @@ class HalyardApplication(Adw.Application):
         self._window = None
 
     def _quit_window(self) -> None:
-        """Close the UI. The sync service deliberately keeps running."""
+        """Close the UI without stopping the sync service."""
         if self._window is not None:
             self._window.close()
         else:

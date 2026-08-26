@@ -47,7 +47,7 @@ export const accountUrl = ((): string => {
 
 /**
  * Legacy trash folder from earlier versions that quarantined remotely-deleted
- * files locally. Deletions are now applied directly — Proton Drive keeps its
+ * files locally. Deletions are now applied directly. Proton Drive keeps its
  * own Trash, so the remote copy is already recoverable there. The name stays
  * ignored so any leftover folder is not uploaded as new content.
  */

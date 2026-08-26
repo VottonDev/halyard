@@ -122,8 +122,8 @@ async function main() {
     }
 
     // Empty the Drive folder too. The upload and download counts below are
-    // exact, so leftovers from a previous run merge in and make them wrong —
-    // a failure that looks like a product bug but is only stale state.
+    // exact. Leftovers from a previous run would make the counts wrong and look
+    // like a product bug.
     for (const line of listRemote()) {
         const name = line.slice(24).trim();
         if (name) {

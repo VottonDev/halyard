@@ -156,8 +156,8 @@ async function main() {
     await iface.SyncNow(pair.id);
     await settle(pair.id);
 
-    // Pause so neither change syncs before the other is made — this is what
-    // genuinely divergent edits look like.
+    // Pause so neither change syncs before the other is made. The two edits
+    // must diverge before sync resumes.
     await iface.SetPaused(true);
 
     await fs.writeFile(path.join(LOCAL_ROOT, 'both.txt'), 'LOCAL VERSION\n');

@@ -4,12 +4,12 @@ import type { Action, BaseEntry, Conflict, LocalItem, Plan, RemoteItem } from '.
  * Three-way merge between the local filesystem, the remote Drive folder, and
  * the base (the last state at which the two agreed).
  *
- * This module is deliberately pure: no filesystem, no network, no clock beyond
- * an injected `now`. Every sync decision the daemon makes is decided here, so
+ * This module is pure. It has no filesystem or network access, and receives the
+ * current time through an injected `now`. Every sync decision is made here, so
  * it needs to be exhaustively testable in isolation.
  *
- * The governing policy is **never lose data**. Where the two sides genuinely
- * disagree, both versions survive; where a deletion races an edit, the edit
+ * The governing policy is "never lose data." When the two sides have different
+ * content, both versions survive. When a deletion races an edit, the edit
  * wins. Halyard will happily resurrect a file you deleted rather than destroy
  * one you changed.
  */
@@ -23,7 +23,7 @@ export type ReconcileInput = {
     now: number;
     /**
      * Resolves content equality when mtime/size are inconclusive. Returning
-     * `null` means "unknown", which is treated as "differs" — the safe answer.
+     * `null` means "unknown" and is treated as "differs" to preserve both copies.
      */
     localHashOf?: (path: string) => string | null;
 };
@@ -105,7 +105,7 @@ function remoteChange(base: BaseEntry | undefined, remote: RemoteItem | undefine
     }
     // The revision uid is the authoritative identity of a file's content on the
     // server. A move or rename does not change it, which is exactly what we
-    // want — those are handled separately as moves, not as content changes.
+    // want. Moves and renames are handled separately from content changes.
     return remote.revisionUid === base.remoteRevisionUid ? 'unchanged' : 'modified';
 }
 
@@ -128,8 +128,7 @@ function sameContent(local: LocalItem | undefined, remote: RemoteItem | undefine
  *
  * Without this, a renamed 4 GB file looks like a delete plus an unrelated
  * create, and gets re-transferred in full. Remote moves are matched by node
- * uid, local moves by inode — both are stable identities that survive a
- * rename on their respective side.
+ * uid and local moves by inode. Both identities survive a rename on their side.
  *
  * The base map is rewritten in place so the matrix afterwards sees the world
  * as though the move had always been there.
@@ -173,8 +172,8 @@ function detectMoves(input: ReconcileInput, actions: Action[]): void {
     // --- Local moves: same file identity, different path.
     //
     // Identity is (device, inode), not inode alone. Inode numbers are unique
-    // only within a filesystem, and on btrfs only within a subvolume — so a
-    // synced folder spanning subvolumes can genuinely contain two files with
+    // only within a filesystem, and on btrfs only within a subvolume. A
+    // synced folder spanning subvolumes can contain two files with
     // the same inode number. Keying on the inode alone would then "detect" a
     // move between two unrelated files and rename the wrong one on Drive.
     const identity = (device: number | null, inode: number | null): string => `${device ?? '?'}:${inode ?? '?'}`;
@@ -217,7 +216,7 @@ function detectMoves(input: ReconcileInput, actions: Action[]): void {
     // folder move surfaces here as one move for the folder plus one for each
     // descendant. But a directory rename relocates the whole subtree in a
     // single syscall, so the executor would then try to move descendants their
-    // parent has already carried off — each failing with ENOENT and landing in
+    // parent has already carried off. Each would fail with ENOENT and land in
     // the activity log as a bogus failed move. Drop any move already implied by
     // an ancestor's move (same source subtree, same destination subtree); the
     // in-place base/local/remote rewrites above have already relocated it.
@@ -318,7 +317,7 @@ export function reconcile(input: ReconcileInput): Plan {
         //
         // A file replaced by a folder (or vice versa) cannot be expressed as a
         // content transfer, and the branches below assume both items are the
-        // same kind — routing a swap through them either does nothing (and
+        // same kind. Routing a swap through them either does nothing and
         // recurs forever) or targets a folder uid with a file operation. An
         // *unchanged* file is replaced outright: its bytes equal what the base
         // recorded, so the copy Drive holds (or trashes) preserves it. Anything
@@ -480,7 +479,7 @@ export function reconcile(input: ReconcileInput): Plan {
             }
 
             if (sameContent(localItem, remoteItem, localHashOf)) {
-                // Converged independently — record agreement, transfer nothing.
+                // Both sides reached the same content. Record agreement without a transfer.
                 actions.push({ kind: 'refreshBase', path });
                 continue;
             }

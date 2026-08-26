@@ -335,7 +335,7 @@ class HalyardWindow(Adw.ApplicationWindow):
             self.toast("Signed in to Proton Drive")
             self._refresh_everything()
         # A failure is already shown persistently in the login view's banner,
-        # so it deliberately does not also raise a toast.
+        # so raising a toast here would duplicate the error.
 
     # -- rendering -------------------------------------------------------
 
@@ -346,7 +346,7 @@ class HalyardWindow(Adw.ApplicationWindow):
             view = "disconnected"
             self._update_disconnected_page()
         elif self._account_logged_in is None:
-            # Account state not known yet — neither signed in nor signed out.
+            # Account state is not known yet.
             view = "loading"
         elif not self._account_logged_in:
             view = "login"
@@ -616,8 +616,8 @@ class HalyardWindow(Adw.ApplicationWindow):
             return True  # hold the window open until the user answers
 
         if self._tray_available:
-            # Hiding rather than destroying keeps the process — and so the
-            # tray icon — alive. The icon is the way back.
+            # Hiding instead of destroying keeps the process and tray icon
+            # alive. The icon reopens the window.
             self.set_visible(False)
             return True
         return False

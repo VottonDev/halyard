@@ -1,9 +1,9 @@
 /**
  * Environment check: `bun run doctor`.
  *
- * Verifies that every moving part the daemon depends on actually works here —
- * SQLite, OpenPGP through Proton's crypto proxy, the session bus, and the
- * keyring. Most install problems are one of these failing, and this pinpoints
+ * Checks each local dependency: SQLite, OpenPGP through Proton's crypto proxy,
+ * the session bus, and the keyring. Most install problems are one of these
+ * failing, and this pinpoints
  * which one instead of leaving a confusing failure deep inside a sync.
  *
  * Touches no account data and makes no network calls.

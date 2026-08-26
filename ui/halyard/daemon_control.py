@@ -8,11 +8,11 @@ sign the change is wrong, not that a password prompt is missing.
 
 Three ways to get it running, tried in order of how well they survive a reboot:
 
-1. ``systemctl --user start`` — a real unit, and the only option that can also
+1. ``systemctl --user start`` uses a real unit and is the only option that can
    be enabled to start at login.
-2. D-Bus activation — the session bus starts it on demand from its .service
+2. D-Bus activation lets the session bus start it on demand from its .service
    file. Works even with no systemd unit enabled.
-3. Spawning the bundle directly — the fallback when nothing is installed,
+3. Spawning the bundle directly is the fallback when nothing is installed,
    which is the normal case when running from a git checkout.
 """
 
@@ -205,7 +205,7 @@ def set_enabled_at_login(enabled: bool, done: Callable[[bool, str], None]) -> No
 
 #: Fallback for when no checkout provides packaging/halyard-daemon.service.in
 #: (an installed UI, for instance). Must stay byte-identical to that template:
-#: both write the same file, and whichever runs last wins — an earlier version
+#: both write the same file, and whichever runs last wins. An earlier version
 #: of this inline unit silently dropped the template's whole hardening block.
 _UNIT_TEMPLATE_FALLBACK = """\
 [Unit]

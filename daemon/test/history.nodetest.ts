@@ -92,7 +92,7 @@ describe('activity log', () => {
 
     test('treats wildcards in a search as literal characters', () => {
         // A filename really can contain % or _, and a user searching for one
-        // means it literally — otherwise "100%" would match every row.
+        // means it literally. Otherwise "100%" would match every row.
         db.recordEvents('p_1', [event({ path: 'reports/100%.txt' }), event({ path: 'reports/summary.txt' })]);
 
         assert.deepEqual(paths(db.listEvents({ search: '100%' })), ['reports/100%.txt']);

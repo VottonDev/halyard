@@ -1,13 +1,13 @@
-"""The activity screen — a plain-language record of what sync has done.
+"""The activity screen records sync work in plain language.
 
 Sync is otherwise invisible. Files appear, change and disappear on their own,
 and when a file goes missing there is no way for someone to work out whether
 Halyard removed it, why, or whether it is recoverable. The log file answers
 that, but nobody reads log files.
 
-So every row here is written as cause and effect: not "deleteLocal
-notes/todo.md", but "Deleted from this computer — it was removed from Proton
-Drive, so it was removed here to match", followed by where it went and how to
+Each row explains cause and effect. Instead of "deleteLocal notes/todo.md", it
+says "Deleted from this computer because it was removed from Proton Drive",
+followed by where it went and how to
 get it back.
 """
 
@@ -98,7 +98,7 @@ ACTION_TEXT: dict[str, tuple[str, str]] = {
 }
 
 #: Down means "arrived on this computer", up means "went to Proton Drive".
-#: Deliberately a symmetric arrow pair — `folder-upload-symbolic` does not
+#: Use a symmetric arrow pair because `folder-upload-symbolic` does not
 #: exist in Adwaita, so pairing it with `folder-download-symbolic` silently
 #: fell back to a generic icon and the two directions stopped being telling
 #: apart at a glance.
@@ -128,7 +128,7 @@ FILTERS: tuple[tuple[str, tuple[str, ...] | None, str | None], ...] = (
 
 
 def _day_heading(epoch_ms: int | None) -> str:
-    """"Today", "Yesterday", or a date — the way someone thinks about when."""
+    """Return "Today", "Yesterday", or a calendar date."""
     if not epoch_ms:
         return "Earlier"
     when = GLib.DateTime.new_from_unix_local(int(epoch_ms / 1000))
@@ -444,7 +444,7 @@ class HistoryPage(Adw.NavigationPage):
         )
 
         # Rebuilding the model resets the selection, which would otherwise
-        # fire a request that the caller's own reload immediately supersedes.
+        # fire a request that the caller's reload supersedes.
         self._suspend_reload = True
         try:
             self._pair_dropdown.set_model(model)
@@ -457,7 +457,7 @@ class HistoryPage(Adw.NavigationPage):
 
         Call after ``set_pairs``; the caller does not have to know the
         dropdown's index scheme. Callers follow this with ``reload``, so the
-        change deliberately does not fetch on its own.
+        change does not fetch on its own.
         """
         index = next(
             (i for i, p in enumerate(self._pairs) if p.id == pair_id), -1
@@ -564,7 +564,7 @@ class HistoryPage(Adw.NavigationPage):
 
         pairs_by_id = {p.id: p for p in self._pairs}
 
-        # Entries arrive newest-first, so days come out in order simply by
+        # Entries arrive newest-first, so days stay in order by
         # starting a new group whenever the heading changes.
         current_heading: str | None = None
         group: Adw.PreferencesGroup | None = None

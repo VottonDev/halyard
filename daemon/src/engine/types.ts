@@ -18,8 +18,8 @@ export type Pair = {
 };
 
 /**
- * The last state at which both sides were known to agree — the "base" of the
- * three-way merge. Without this you cannot tell a local edit from a remote
+ * The last state at which both sides were known to agree. This is the "base"
+ * of the three-way merge. Without it you cannot tell a local edit from a remote
  * deletion, so every sync decision ultimately rests on these rows.
  */
 export type BaseEntry = {
@@ -46,11 +46,11 @@ export type LocalItem = {
     inode: number;
     /**
      * Device id. Required alongside the inode because inode numbers are only
-     * unique within a filesystem — and on btrfs, only within a *subvolume*, so
-     * two files under one synced folder really can share an inode number.
+     * unique within a filesystem. On btrfs they are unique only within a
+     * *subvolume*, so two files under one synced folder can share an inode.
      */
     device: number;
-    /** Computed lazily — only when mtime/size suggest the content may differ. */
+    /** Computed only when mtime or size suggests the content may differ. */
     hash?: string | null;
 };
 
@@ -83,7 +83,7 @@ export type Conflict = {
  * What the user sees in the activity log, in their vocabulary rather than the
  * executor's.
  *
- * These are deliberately finer-grained than `Action`: "downloaded" and
+ * These are more specific than `Action`. "downloaded" and
  * "updatedLocal" are both a download, but one appeared out of nowhere and the
  * other overwrote something the user already had, and those read very
  * differently when you are trying to work out what happened to a file.
@@ -107,8 +107,8 @@ export type SyncEventOutcome = 'ok' | 'failed';
  *
  * This exists because sync is otherwise invisible: files appear and disappear
  * with no explanation, and "it was deleted here because it was removed from
- * Drive" is not something a user can deduce. Log files do not count — nobody
- * reads them.
+ * Drive" is not something a user can deduce. The activity view must explain it
+ * without requiring the user to read log files.
  */
 export type SyncEvent = {
     id: number;

@@ -8,7 +8,7 @@
  * pair from another device brings pre-existing descendants whose own events
  * arrived before we knew the parent, so the folder has to be listed once to
  * recover them. That entry can arrive as `NodeUpdated` (a move) just as much as
- * `NodeCreated` (a fresh folder) — the gate is "was this folder tracked before
+ * `NodeCreated` (a fresh folder). The gate is "was this folder tracked before
  * the event", not the event type.
  */
 import { describe, expect, test } from 'bun:test';
@@ -69,7 +69,7 @@ class MockClient {
     readonly nodes = new Map<string, NodeEntity>();
     readonly children = new Map<string, string[]>();
     events: DriveEvent[] = [];
-    /** Every folder we were asked to list — the signal that enumeration ran. */
+    /** Records each folder listed during enumeration. */
     readonly listCalls: string[] = [];
 
     async getNode(uid: string): Promise<NodeEntity> {
@@ -190,7 +190,7 @@ describe('RemoteTree.applyEvent catch-up enumeration', () => {
         // Folder F, holding file C, was outside the pair and moves under the
         // root. The move is a NodeUpdated (F already existed; only its parent
         // changed). C's own creation event predates F being known, so it is not
-        // replayed — only enumeration can recover it.
+        // replayed. Only enumeration can recover it.
         const db = new FakeDb();
         const client = new MockClient();
         const tree = makeTree(db, client);
@@ -213,7 +213,7 @@ describe('RemoteTree.applyEvent catch-up enumeration', () => {
 
     test('an ordinary update of an already-tracked folder does not re-enumerate', async () => {
         // F is already inside the pair. A plain metadata update must apply, but
-        // must not re-list F — gratuitous enumeration is both wasteful and, under
+        // must not re-list F. Extra enumeration is wasteful and, under
         // Proton's rules, treated as abuse.
         const db = new FakeDb();
         const client = new MockClient();

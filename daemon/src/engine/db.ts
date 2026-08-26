@@ -17,8 +17,8 @@ const HISTORY_MAX_ROWS = 20_000;
  * Persistent sync state.
  *
  * This database is the daemon's memory of what it has already reconciled. If
- * it is lost, sync still converges — but every pair has to be re-walked and
- * every file re-hashed, and deletions cannot be distinguished from
+ * it is lost, sync still converges. Every pair must be walked, every file must
+ * be re-hashed, and deletions cannot be distinguished from
  * never-having-seen-it, so it is treated as durable state, not a cache.
  */
 export class SyncDatabase {
@@ -123,8 +123,8 @@ export class SyncDatabase {
         this.ensureColumn('pairs', 'removed', 'INTEGER NOT NULL DEFAULT 0');
         // Inode numbers alone do not identify a file on btrfs, where they are
         // unique only within a subvolume. Databases written before this column
-        // existed get null devices, which simply means no move is detected for
-        // those rows until they are rewritten — correct, just not optimal.
+        // existed get null devices. Move detection skips those rows until they
+        // are rewritten. This is correct but may cause an extra transfer.
         this.ensureColumn('base_entries', 'local_device', 'INTEGER');
         this.ensureColumn('pairs', 'excludes', "TEXT NOT NULL DEFAULT '[]'");
         // Seeding a large remote tree takes thousands of API calls. Recording
@@ -137,7 +137,7 @@ export class SyncDatabase {
     /**
      * Prepares a statement once and reuses it. node:sqlite has no statement
      * cache of its own, so a bare `db.prepare` recompiles the SQL on every
-     * call — measurable when seeding writes thousands of rows in a loop.
+     * call. The cost is measurable when seeding thousands of rows in a loop.
      */
     private prepare(sql: string): StatementSync {
         let statement = this.statements.get(sql);
@@ -255,7 +255,7 @@ export class SyncDatabase {
         this.prepare('DELETE FROM base_entries WHERE pair_id = ?').run(id);
         this.prepare('DELETE FROM remote_nodes WHERE pair_id = ?').run(id);
         this.prepare('DELETE FROM conflicts WHERE pair_id = ?').run(id);
-        // "Forget this folder's sync history" means the activity log too — it
+        // "Forget this folder's sync history" includes the activity log. It
         // names files the user has asked us to stop remembering.
         this.prepare('DELETE FROM sync_events WHERE pair_id = ?').run(id);
         this.prepare('DELETE FROM pairs WHERE id = ?').run(id);
@@ -276,7 +276,7 @@ export class SyncDatabase {
         return map;
     }
 
-    /** One row by primary key — use instead of getBase() to pluck a single path. */
+    /** Gets one row by primary key without loading the full base. */
     getBaseEntry(pairId: string, entryPath: string): BaseEntry | undefined {
         const row = this.prepare('SELECT * FROM base_entries WHERE pair_id = ? AND path = ?').get(
             pairId,
@@ -361,7 +361,7 @@ export class SyncDatabase {
         this.prepare('DELETE FROM remote_nodes WHERE pair_id = ? AND uid = ?').run(pairId, uid);
     }
 
-    /** Folder uids whose children have not been listed yet — the seed frontier. */
+    /** Folder uids whose children have not been listed yet. */
     getUnlistedFolders(pairId: string): string[] {
         const rows = this.prepare("SELECT uid FROM remote_nodes WHERE pair_id = ? AND type = 'folder' AND children_listed = 0")
             .all(pairId) as { uid: string }[];
@@ -466,7 +466,7 @@ export class SyncDatabase {
     }
 
     private pruneEvents(): void {
-        // There is deliberately no index on `at` (it would tax every insert),
+        // There is no index on `at` because it would add work to every insert,
         // so the age prune is a full-table scan. Events are appended with
         // non-decreasing timestamps, which makes the lowest id the oldest row;
         // one primary-key lookup tells us whether the scan would find anything,
@@ -481,7 +481,7 @@ export class SyncDatabase {
 
         // Trim by id rather than by count so this stays a single statement:
         // anything below the id of the Nth-newest row is surplus. Gated on the
-        // id span — ids autoincrement, so hi - lo bounds the row count from
+        // id span. IDs autoincrement, so hi - lo bounds the row count from
         // above and a span under the cap proves there is nothing to trim.
         const span = this.prepare('SELECT MIN(id) AS lo, MAX(id) AS hi FROM sync_events').get() as
             | { lo: number | null; hi: number | null }

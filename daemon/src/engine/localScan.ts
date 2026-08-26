@@ -117,7 +117,7 @@ export async function scanLocal(
  * we hash exactly two cases:
  *
  *   - a file whose timestamp or size no longer matches the base, where the
- *     hash decides "genuinely edited" versus "merely touched"; and
+ *     hash distinguishes an edit from a timestamp-only change; and
  *   - a file that appeared on both sides at once, where the hash decides
  *     whether it is a conflict at all.
  */

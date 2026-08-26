@@ -1,7 +1,7 @@
 /**
  * Per-pair exclusion patterns.
  *
- * Lets a pair cover a broad folder while leaving parts of it alone — sync
+ * Lets a pair cover a broad folder while leaving parts of it alone. Sync
  * `~/Documents` but not the `GitHub` checkout inside it.
  *
  * The syntax is a deliberate subset of gitignore, because that is what people
@@ -15,7 +15,7 @@
  *   **\/node_modules  explicit any-depth match
  *   # comment         ignored
  *
- * Negation (`!pattern`) is deliberately NOT supported: re-including a subset of
+ * Negation (`!pattern`) is not supported. Re-including a subset of
  * an excluded tree makes the "is this path excluded" question order-dependent,
  * and order-dependent answers are how sync tools end up deleting things.
  */
@@ -29,8 +29,8 @@ function escapeLiteral(text: string): string {
 /**
  * Converts one pattern to a regular expression.
  *
- * `**` spans separators, `*` and `?` do not — the usual glob distinction, and
- * the reason the two cannot simply be replaced with `.*`.
+ * `**` spans separators, while `*` and `?` do not. Replacing all three with
+ * `.*` would erase that distinction.
  */
 function compilePattern(rawPattern: string): RegExp | null {
     let pattern = rawPattern.trim();
