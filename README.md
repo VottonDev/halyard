@@ -170,10 +170,12 @@ Drive session" in Passwords and Keys to drop the stored session.
 
 ## Verification status
 
-This is alpha software. Uploads, downloads, moves, deletions, conflicts, and
-session restore have been tested against a real account. Very large pairs,
-multi-day use, and transfer recovery after a network failure have not. Keep a
-backup and start with non-critical files.
+This is alpha software. It has more than a month of real-world use across
+multi-gigabyte pairs with thousands of documents, photos, videos, configuration
+files, and nested folders. Uploads, downloads, moves, deletions, conflicts, and
+session restore have all been exercised against a real account. Recovery from a
+network failure during a transfer is still unverified. Keep a backup and start
+with non-critical files.
 
 ## Licence
 
