@@ -1,10 +1,10 @@
 import '@protontech/crypto/polyfill';
 
 import { CryptoProxy } from '@protontech/crypto';
+import { computeKeyPassword, generateKeySalt, getRandomSrpVerifier, getSrp } from '@protontech/crypto/srp';
 import { Api as CryptoApi } from '@protontech/crypto/proxy/endpoint/api.ts';
 import {
     FeatureFlags,
-    NullFeatureFlagProvider,
     OpenPGPCryptoWithCryptoProxy,
     ProtonDriveClient,
     type ProtonDriveAccount,
@@ -152,6 +152,8 @@ export class DriveSession {
             apiClient,
             credentials: this.credentials,
             cryptoProxy: CryptoProxy,
+            // Share the initialized crypto endpoint with the account SRP layer.
+            srpApi: { computeKeyPassword, generateKeySalt, getRandomSrpVerifier, getSrp },
             logger: getLogger('account'),
             accountUrl,
         });
@@ -173,13 +175,10 @@ export class DriveSession {
                 baseUrl,
                 clientUid: await getClientUid(),
             },
-            // Matches the reference CLI. Both flags are on in Proton's own
-            // clients; the SDK's defaults are conservative because the flags
-            // normally arrive from a feature-flag service we do not have.
+            // Match the reference CLI's small-file upload setting. AEAD is
+            // now always enabled by the SDK and no longer has a feature flag.
             featureFlagProvider: {
-                isEnabled: async (flag: string) =>
-                    flag === FeatureFlags.DriveCryptoEncryptBlocksWithPgpAead ||
-                    flag === FeatureFlags.DriveSmallFileUpload,
+                isEnabled: async (flag: string) => flag === FeatureFlags.DriveSmallFileUpload,
             },
         });
     }
