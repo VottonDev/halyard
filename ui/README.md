@@ -131,3 +131,20 @@ scanning, disabled), three conflicts of all three kinds, a browsable remote
 folder tree that supports creating folders, an animated transfer that drives
 `StatusChanged` roughly four times a second, and a sign-in flow that completes
 a few seconds after `BeginLogin`.
+
+## Startup update check
+
+Once per UI process, after presenting the window, Halyard checks the version in
+`daemon/package.json` on GitHub's `VottonDev/halyard` main branch. A newer stable
+version shows a banner with a link to the installation instructions. This is a
+main-branch version check, not a GitHub Releases check; maintainers should update
+the daemon package version and `halyard.__version__` together when publishing.
+The check runs in a background thread with a five-second network timeout.
+Offline and invalid responses are ignored, with no retries or periodic polling.
+It sends no Proton credentials or sync metadata and does not install anything.
+
+Run the offline update-check tests without starting the UI or daemon:
+
+```sh
+PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_update_check.py'
+```

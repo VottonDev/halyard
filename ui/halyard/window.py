@@ -16,6 +16,7 @@ from .models import STATUS_ERROR, Pair, Status
 from .pair_dialog import PairDialog
 from .pairs_view import PairsView
 from .preferences import PreferencesDialog
+from .update_check import UPDATE_URL
 from .util import format_size, tilde_path
 
 
@@ -56,6 +57,21 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._render()
         if client.available:
             self._refresh_everything()
+
+    def show_update(self, version: str) -> None:
+        self._update_banner.set_title(f"Halyard {version} is available")
+        self._update_banner.set_revealed(True)
+
+    def _open_update(self, _banner) -> None:
+        launcher = Gtk.UriLauncher.new(UPDATE_URL)
+
+        def done(source, result):
+            try:
+                source.launch_finish(result)
+            except GLib.Error:
+                self.toast("Could not open the update page")
+
+        launcher.launch(self, None, done)
 
     # -- construction ----------------------------------------------------
 
@@ -126,6 +142,11 @@ class HalyardWindow(Adw.ApplicationWindow):
         header.pack_end(self._conflicts_button)
 
         toolbar.add_top_bar(header)
+        self._update_banner = Adw.Banner(
+            revealed=False, button_label="View Update",
+        )
+        self._update_banner.connect("button-clicked", self._open_update)
+        toolbar.add_top_bar(self._update_banner)
 
         self._stack = Gtk.Stack(
             transition_type=Gtk.StackTransitionType.CROSSFADE,

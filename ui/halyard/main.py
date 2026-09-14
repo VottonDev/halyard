@@ -15,6 +15,7 @@ from . import __version__  # noqa: E402
 from .dbus_client import DaemonClient  # noqa: E402
 from .models import Notification, Status  # noqa: E402
 from .tray import TrayIcon  # noqa: E402
+from .update_check import StartupUpdateCheck
 from .window import HalyardWindow  # noqa: E402
 
 APP_ID = "io.github.votton.Halyard"
@@ -76,6 +77,10 @@ class HalyardApplication(Adw.Application):
         self._tray: TrayIcon | None = None
         self._status = Status()
         self._logged_in = False
+        self._available_version: str | None = None
+        self._update_check = StartupUpdateCheck(
+            __version__, GLib.idle_add, self._on_update_available
+        )
 
         self.add_main_option(
             "version", ord("v"), GLib.OptionFlags.NONE,
@@ -111,8 +116,16 @@ class HalyardApplication(Adw.Application):
             self._window = HalyardWindow(self, self._client, self._settings)
             self._window.connect("destroy", self._on_window_destroyed)
             self._window.set_tray_available(self.tray_available)
+            if self._available_version is not None:
+                self._window.show_update(self._available_version)
         self._window.set_visible(True)
         self._window.present()
+        self._update_check.start()
+
+    def _on_update_available(self, version: str) -> None:
+        self._available_version = version
+        if self._window is not None:
+            self._window.show_update(version)
 
     def do_handle_local_options(self, options: GLib.VariantDict) -> int:
         if options.contains("version"):
@@ -121,6 +134,7 @@ class HalyardApplication(Adw.Application):
         return -1
 
     def do_shutdown(self) -> None:
+        self._update_check.stop()
         if self._tray is not None:
             self._tray.stop()
         self._client.stop()
