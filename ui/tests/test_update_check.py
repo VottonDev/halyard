@@ -15,9 +15,9 @@ class UpdateCheckTests(unittest.TestCase):
 
     def test_versions(self):
         for published, expected in [
-            ("0.1.4", None), ("0.1.3", None), ("0.1.5", "0.1.5"),
+            ("0.1.5", None), ("0.1.4", None), ("0.1.6", "0.1.6"),
             ("0.1.10", "0.1.10"), ("0.2.0", "0.2.0"),
-            ("0.1.5-beta", None), ("garbage", None), (None, None),
+            ("0.1.6-beta", None), ("garbage", None), (None, None),
         ]:
             with self.subTest(published=published), patch(
                 "halyard.update_check.urlopen",
@@ -25,7 +25,7 @@ class UpdateCheckTests(unittest.TestCase):
                     "name": "halyard-daemon", "version": published,
                 }).encode()),
             ) as opened:
-                self.assertEqual(fetch_newer_version("0.1.4"), expected)
+                self.assertEqual(fetch_newer_version("0.1.5"), expected)
                 self.assertEqual(opened.call_args.kwargs["timeout"], 5)
 
     def test_bad_responses_are_quiet(self):
@@ -34,9 +34,9 @@ class UpdateCheckTests(unittest.TestCase):
             with self.subTest(payload=payload[:40]), patch(
                 "halyard.update_check.urlopen", return_value=self.response(payload)
             ):
-                self.assertIsNone(fetch_newer_version("0.1.4"))
+                self.assertIsNone(fetch_newer_version("0.1.5"))
         with patch("halyard.update_check.urlopen", side_effect=TimeoutError):
-            self.assertIsNone(fetch_newer_version("0.1.4"))
+            self.assertIsNone(fetch_newer_version("0.1.5"))
 
     def test_once_async_main_loop_delivery_and_shutdown(self):
         entered, release, dispatched = (threading.Event() for _ in range(3))
@@ -44,13 +44,13 @@ class UpdateCheckTests(unittest.TestCase):
         def fetch(_current):
             entered.set()
             release.wait(2)
-            return "0.1.5"
+            return "0.1.6"
         def dispatch(callback, version):
             pending.append((callback, version))
             dispatched.set()
         callback = MagicMock()
         with patch("halyard.update_check.fetch_newer_version", side_effect=fetch) as fetcher:
-            check = StartupUpdateCheck("0.1.4", dispatch, callback)
+            check = StartupUpdateCheck("0.1.5", dispatch, callback)
             check.start()
             self.assertTrue(entered.wait(1))
             check.start()
@@ -61,7 +61,7 @@ class UpdateCheckTests(unittest.TestCase):
             callback.assert_not_called()
             deliver, version = pending[0]
             self.assertFalse(deliver(version))
-            callback.assert_called_once_with("0.1.5")
+            callback.assert_called_once_with("0.1.6")
             check.stop()
             callback.reset_mock()
             self.assertFalse(deliver(version))

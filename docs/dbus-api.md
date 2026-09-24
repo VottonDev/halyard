@@ -176,7 +176,7 @@ just tidies up and clears it from the list.
 ```jsonc
 // Status
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "loggedIn": true,
   "email": "you@proton.me",
   "paused": false,
