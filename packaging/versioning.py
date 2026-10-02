@@ -18,8 +18,27 @@ def application_version(root=ROOT):
     return version
 
 
-def prepare_metadata(root=ROOT, epoch=None):
+def source_revision(root):
+    if (root / ".git").exists():
+        result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                check=True, capture_output=True, text=True)
+        revision = result.stdout.strip()
+    else:
+        # Release archives carry the already generated source recipe. Keep its
+        # immutable revision when rebuilding without the checkout's Git data.
+        recipe = root / "packaging/arch/PKGBUILD"
+        match = re.search(r"^_commit=([0-9a-f]{40})$", recipe.read_text(), re.M) if recipe.is_file() else None
+        revision = match.group(1) if match else ""
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise SystemExit("Source packages require a Git checkout or a release archive with a pinned revision")
+    return revision
+
+
+def prepare_metadata(root=ROOT, epoch=None, revision=None):
     version = application_version(root)
+    revision = source_revision(root) if revision is None else revision
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise SystemExit("Source revision must be a full Git commit hash")
     if epoch is None:
         if "SOURCE_DATE_EPOCH" in os.environ:
             epoch = int(os.environ["SOURCE_DATE_EPOCH"])
@@ -30,7 +49,8 @@ def prepare_metadata(root=ROOT, epoch=None):
     date = format_datetime(datetime.fromtimestamp(epoch, timezone.utc))
     for name in ("debian/changelog", "packaging/arch/PKGBUILD"):
         template = (root / f"{name}.in").read_text()
-        (root / name).write_text(template.replace("@VERSION@", version).replace("@DATE@", date))
+        (root / name).write_text(template.replace("@VERSION@", version).replace("@DATE@", date)
+                                .replace("@COMMIT@", revision))
     return version
 
 

@@ -34,6 +34,9 @@ def create_release(output, epoch):
         sources[name] = ROOT / name
     for name in ("halyard-daemon.cjs", "halyard-daemon.cjs.map", "THIRD_PARTY_LICENSES.txt", "package-metafile.json"):
         sources[f"daemon/dist/{name}"] = ROOT / "daemon/dist" / name
+    for path in (ROOT / "daemon/dist/licenses").rglob("*"):
+        if path.is_file():
+            sources[path.relative_to(ROOT).as_posix()] = path
     # Include the exact published dependency inputs alongside the source map
     # and build scripts; recipients can inspect the code in the shipped bundle.
     for origin, (directory, package) in bundled_packages().items():

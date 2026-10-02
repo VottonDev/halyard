@@ -9,6 +9,7 @@ if [ "${HALYARD_TEST_SOURCE:-0}" = 1 ]; then
     # Exercise the ordinary Debian source build, including Bun and git apply.
     sha256sum daemon/dist/halyard-daemon.cjs daemon/dist/THIRD_PARTY_LICENSES.txt \
         > /build/release-bundle.sha256
+    find daemon/dist/licenses -type f -exec sha256sum '{}' + >> /build/release-bundle.sha256
     ./packaging/build-deb.sh
     # SDK dependencies are partly pinned rather than fully locked. Refuse to
     # publish a rebuild whose bytes or licences differ from archived inputs.
