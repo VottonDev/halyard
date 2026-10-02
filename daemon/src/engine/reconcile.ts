@@ -28,11 +28,6 @@ export type ReconcileInput = {
     localHashOf?: (path: string) => string | null;
 };
 
-function parentOf(path: string): string | null {
-    const index = path.lastIndexOf('/');
-    return index <= 0 ? null : path.slice(0, index);
-}
-
 function depth(path: string): number {
     return path.split('/').length;
 }
@@ -47,7 +42,7 @@ function isDescendantOf(path: string, ancestor: string): boolean {
  * names are handled by only treating a dot as an extension separator when it
  * is not the first character.
  */
-export function conflictName(path: string, now: number): string {
+function conflictName(path: string, now: number): string {
     const date = new Date(now).toISOString().slice(0, 10);
     const slash = path.lastIndexOf('/');
     const dir = slash === -1 ? '' : path.slice(0, slash + 1);
@@ -548,5 +543,3 @@ export function sortActions(actions: Action[]): Action[] {
         return descending ? -depthDiff : depthDiff;
     });
 }
-
-export const _internal = { localChange, remoteChange, detectMoves, parentOf, depth };

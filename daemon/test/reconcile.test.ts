@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { conflictName, reconcile } from '../src/engine/reconcile.js';
+import { reconcile } from '../src/engine/reconcile.js';
 import type { Action, BaseEntry, LocalItem, RemoteItem } from '../src/engine/types.js';
 
 const NOW = Date.parse('2026-07-19T12:00:00Z');
@@ -174,10 +174,21 @@ describe('conflicts — never lose data', () => {
     });
 
     test('conflict naming keeps the extension and handles dotfiles', () => {
-        expect(conflictName('dir/notes.md', NOW)).toBe('dir/notes (conflict 2026-07-19).md');
-        expect(conflictName('README', NOW)).toBe('README (conflict 2026-07-19)');
-        expect(conflictName('.bashrc', NOW)).toBe('.bashrc (conflict 2026-07-19)');
-        expect(conflictName('a.tar.gz', NOW)).toBe('a.tar (conflict 2026-07-19).gz');
+        for (const [path, kept] of [
+            ['dir/notes.md', 'dir/notes (conflict 2026-07-19).md'],
+            ['README', 'README (conflict 2026-07-19)'],
+            ['.bashrc', '.bashrc (conflict 2026-07-19)'],
+            ['a.tar.gz', 'a.tar (conflict 2026-07-19).gz'],
+        ]) {
+            const { actions, conflicts } = run(
+                [baseFile(path)],
+                [localFile(path, { size: 20, hash: 'local' })],
+                [remoteFile(path, { revisionUid: 'rev2', hash: 'remote' })],
+            );
+            expect(actions).toContainEqual({ kind: 'moveLocal', from: path, to: kept });
+            expect(actions).toContainEqual({ kind: 'upload', path: kept, existingRemoteUid: null });
+            expect(conflicts[0]?.keptCopyPath).toBe(kept);
+        }
     });
 });
 
@@ -209,21 +220,7 @@ describe('moves are detected, not re-transferred', () => {
         expect(actions).toContainEqual({ kind: 'trashRemote', path: 'gone.txt', remoteUid: 'vol~gone.txt' });
     });
 
-    test('still detects a real rename within one subvolume', () => {
-        const { actions } = run(
-            [baseFile('old.txt', { localInode: 42, localDevice: 100 })],
-            [localFile('new.txt', { inode: 42, device: 100 })],
-            [remoteFile('old.txt')],
-        );
-        expect(actions).toContainEqual({
-            kind: 'moveRemote',
-            from: 'old.txt',
-            to: 'new.txt',
-            remoteUid: 'vol~old.txt',
-        });
-    });
-
-    test('a local rename becomes a remote rename, matched by inode', () => {
+    test('a local rename becomes a remote rename, matched by device and inode', () => {
         const { actions } = run(
             [baseFile('old.txt', { localInode: 42 })],
             [localFile('new.txt', { inode: 42 })],
@@ -394,7 +391,7 @@ describe('a path that changed kind on one side', () => {
     });
 
     test('keeps both when a local file displaced a folder the remote still holds', () => {
-        const kept = conflictName('x', NOW);
+        const kept = 'x (conflict 2026-07-19)';
         const { actions, conflicts } = run(
             [baseFile('x', { type: 'folder', remoteUid: 'vol~x' })],
             [localFile('x', { mtime: 2000, hash: 'bbb' })],
@@ -408,7 +405,7 @@ describe('a path that changed kind on one side', () => {
     });
 
     test('keeps both when the remote side turned a locally unchanged folder into a file', () => {
-        const kept = conflictName('x', NOW);
+        const kept = 'x (conflict 2026-07-19)';
         const { actions, kinds, conflicts } = run(
             [baseFile('x', { type: 'folder', remoteUid: 'vol~x', remoteRevisionUid: null })],
             [folder('x')],
@@ -428,7 +425,7 @@ describe('a path that changed kind on one side', () => {
     });
 
     test('keeps both for independent creations of different kinds at one path', () => {
-        const kept = conflictName('x', NOW);
+        const kept = 'x (conflict 2026-07-19)';
         const { actions, conflicts } = run(
             [],
             [localFile('x')],

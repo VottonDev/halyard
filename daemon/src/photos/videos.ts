@@ -9,7 +9,7 @@ type Entry = { preview: VideoPreview; token: string; abort: AbortController; tou
 const VIDEO_CHUNK_BYTES = 1024 * 1024;
 const VIDEO_CACHE_CHUNKS = 16;
 
-export function videoRange(range: string | undefined, size: number): { start: number; end: number; partial: boolean } {
+function videoRange(range: string | undefined, size: number): { start: number; end: number; partial: boolean } {
     if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Video size is unavailable.');
     if (!range) return { start:0, end:size-1, partial:false };
     const match = /^bytes=(\d*)-(\d*)$/.exec(range);

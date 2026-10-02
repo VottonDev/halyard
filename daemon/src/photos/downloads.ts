@@ -21,13 +21,13 @@ export type PhotoDownload = {
 };
 
 /** The final component only. Names from Drive must never become local paths. */
-export function safePhotoName(name: string): string {
+function safePhotoName(name: string): string {
     const cleaned = name.replace(/[\/\\\x00-\x1f\x7f]/g, '_');
     if (!cleaned || cleaned === '.' || cleaned === '..') throw new Error('This photo does not have a valid file name.');
     return cleaned;
 }
 
-export async function downloadDestination(input: string, home = os.homedir()): Promise<string> {
+async function downloadDestination(input: string, home = os.homedir()): Promise<string> {
     if (!input || !path.isAbsolute(input) || input.includes('\0')) throw new Error('Choose a folder in your home directory.');
     const requested = path.resolve(input);
     const homePath = await fsp.realpath(home);

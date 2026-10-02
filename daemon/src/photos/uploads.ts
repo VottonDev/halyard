@@ -17,7 +17,7 @@ export type PhotoUpload = { id: string; destination: string; createdAt: number;
 type Source = { input: UploadInput; device: number; inode: number; mtime: number; mediaType: string };
 
 /** Supported still images. Inspect bytes rather than trusting the extension. */
-export function imageMediaType(bytes: Uint8Array): string {
+function imageMediaType(bytes: Uint8Array): string {
     const b = Buffer.from(bytes);
     if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
     if (b.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return 'image/png';

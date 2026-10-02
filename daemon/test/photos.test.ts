@@ -4,8 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { PhotoLibrary, type PhotosClient } from '../src/photos/library.js';
-import { PhotoDownloads, downloadDestination, safePhotoName } from '../src/photos/downloads.js';
-import { PhotoUploads, imageMediaType, type UploadClient } from '../src/photos/uploads.js';
+import { PhotoDownloads } from '../src/photos/downloads.js';
+import { PhotoUploads, type UploadClient } from '../src/photos/uploads.js';
 import { HttpClient } from '../src/drive/httpClient.js';
 
 function photo(i: number): any {
@@ -52,7 +52,9 @@ describe('photo library', () => {
             expect(first.photos.length).toBe(17);
             const second = await library.list({ limit: 17, cursor: first.nextCursor! });
             expect(second.photos[0].uid).toBe('photo-17'); expect(g.walks()).toBe(1);
-            expect((await library.list({ kind: 'favourites', search: 'image', limit: 6 })).photos.every(p => p.favourite)).toBe(true);
+            const favourites = (await library.list({ kind: 'favourites', search: 'image', limit: 6 })).photos;
+            expect(favourites).toHaveLength(6);
+            expect(favourites.every(p => p.favourite && p.name.includes('image'))).toBe(true);
             await library.list({ limit: 17 }); expect(g.walks()).toBe(1);
             expect((await library.getThumbnails(['photo-1']))[0].data).toBe('AQID');
         } finally { library.reset(); }
@@ -119,6 +121,7 @@ describe('photo downloads', () => {
         await fs.writeFile(path.join(destination, 'same.jpg'), 'original');
         await fs.symlink(path.join(destination, 'same.jpg'), path.join(destination, 'same (1).jpg'));
         const main = photo(1), related = photo(2); main.photo.relatedPhotoNodeUids = [related.uid];
+        related.name.value = '../name.jpg';
         const nodes = new Map([[main.uid, main], [related.uid, related]]), failed = new Set([related.uid]);
         const downloads = new PhotoDownloads(async () => downloaderClient(nodes, failed), undefined, undefined, home);
         try {
@@ -129,14 +132,24 @@ describe('photo downloads', () => {
             expect(downloads.list()[0].files[0].path).toEndWith('same (2).jpg');
             failed.clear(); downloads.control(job.id, 'retry'); await settle(() => downloads.list());
             expect(downloads.list()[0].status).toBe('completed');
+            expect(await fs.readFile(path.join(destination, '.._name.jpg'))).toEqual(Buffer.from([1,2,3,4]));
             expect((await fs.readdir(destination)).filter(n => n.includes('halyard-part'))).toEqual([]);
             expect((await fs.readdir(destination)).filter(n => n.startsWith('same'))).toHaveLength(3);
         } finally { await downloads.stop(); }
     }));
-    test('rejects home escapes before creating a destination', async () => temporary(async home => {
-        await fs.symlink(os.tmpdir(), path.join(home, 'escape'));
-        await expect(downloadDestination(path.join(home, 'escape', 'halyard-must-not-create'), home)).rejects.toThrow('home directory');
-        expect(safePhotoName('../name.jpg')).toBe('.._name.jpg'); expect(() => safePhotoName('..')).toThrow();
+    test('rejects home escapes before creating a destination and refuses invalid photo names', async () => temporary(async root => {
+        const home = path.join(root, 'home'), outside = path.join(root, 'outside');
+        await fs.mkdir(home); await fs.mkdir(outside);
+        await fs.symlink(outside, path.join(home, 'escape'));
+        const node = photo(1);
+        const downloads = new PhotoDownloads(async () => downloaderClient(new Map([[node.uid, node]])), undefined, undefined, home);
+        try {
+            await expect(downloads.start([node.uid], path.join(home, 'escape', 'must-not-create'))).rejects.toThrow('home directory');
+            await expect(fs.stat(path.join(outside, 'must-not-create'))).rejects.toMatchObject({ code: 'ENOENT' });
+            node.name.value = '..';
+            await expect(downloads.start([node.uid], home)).rejects.toThrow('valid file name');
+            expect(downloads.list()).toEqual([]);
+        } finally { await downloads.stop(); }
     }));
     test('cancels pending work without saving files', async () => temporary(async home => {
         let release: (c: PhotosClient) => void = () => {};
@@ -176,11 +189,15 @@ describe('photo uploads', () => {
             expect(queue.list()[0].files[0].status).toBe('skipped'); expect(uploads).toBe(1);
         } finally { await queue.stop(); }
     }));
-    test('rejects non-images and outside paths before accessing the SDK', async () => temporary(async home => {
+    test('rejects non-images and outside paths before accessing the SDK', async () => temporary(async root => {
+        const home = path.join(root, 'home'); await fs.mkdir(home);
         let calls = 0; const queue = new PhotoUploads(async () => { calls++; throw new Error('must not access SDK'); }, undefined, undefined, undefined, home);
-        const bad = path.join(home, 'not-an-image.jpg'); await fs.writeFile(bad, 'not an image');
-        await expect(queue.start([{ path: bad, thumbnails: previews }])).rejects.toThrow('JPEG');
-        await expect(queue.start([{ path: path.join(home, '..', 'outside.jpg'), thumbnails: previews }])).rejects.toThrow();
-        expect(calls).toBe(0); expect(() => imageMediaType(new Uint8Array([0,1,2]))).toThrow(); await queue.stop();
+        try {
+            const bad = path.join(home, 'not-an-image.jpg'); await fs.writeFile(bad, 'not an image');
+            const outside = path.join(root, 'outside.jpg'); await fs.writeFile(outside, jpeg);
+            await expect(queue.start([{ path: bad, thumbnails: previews }])).rejects.toThrow('JPEG');
+            await expect(queue.start([{ path: outside, thumbnails: previews }])).rejects.toThrow('home directory');
+            expect(calls).toBe(0); expect(queue.list()).toEqual([]);
+        } finally { await queue.stop(); }
     }));
 });
