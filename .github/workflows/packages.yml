@@ -46,7 +46,7 @@ jobs:
           python3 packaging/release.py --epoch "$(git log -1 --format=%ct)"
       - name: Check Arch's native source submodule preparation
         run: python3 packaging/tests/source_recipes.py
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: halyard-release-input
           path: dist/packages/*
@@ -91,7 +91,7 @@ jobs:
             -v "$PWD/dist/packages:/input:ro" -v "$PWD/dist/packages:/output" \
             -v "$PWD/packaging/tests/arch.sh:/test.sh:ro" \
             archlinux:base /test.sh
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: halyard-${{ matrix.format }}
           path: |
