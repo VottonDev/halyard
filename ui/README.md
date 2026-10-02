@@ -14,7 +14,7 @@ in [`../docs/dbus-api.md`](../docs/dbus-api.md).
 ## Requirements
 
 - Python 3.11+
-- GTK 4.12+ and libadwaita 1.5+ (developed against GTK 4.22 / libadwaita 1.9)
+- GTK 4.12+ and libadwaita 1.6+ (developed against GTK 4.22 / libadwaita 1.9)
 - PyGObject
 - A session D-Bus
 
@@ -78,6 +78,8 @@ halyard/
   window.py         main window, header bar, navigation, global state
   login_view.py     signed-out screen and the browser sign-in hand-off
   pairs_view.py     folder pair list, per-row status and actions
+  photos_view.py    lazy gallery, albums, previews and upload/download dialogs
+  photo_transfers_view.py background photo transfer progress and controls
   pair_dialog.py    add/edit a pair; lazy Proton Drive folder browser
   conflicts_view.py conflict list and resolution
   preferences.py    preferences dialog, autostart via the XDG portal
@@ -148,3 +150,40 @@ Run the offline update-check tests without starting the UI or daemon:
 ```sh
 PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_update_check.py'
 ```
+
+## Photos
+
+The app opens on Folders. Photos offers gallery and album browsing, previews,
+video playback, selected downloads, uploads and Trash. Activity shows photo
+transfers alongside folder sync history. For mock development use
+`dbus-run-session -- ./run-dev.sh --logged-in`; add `--no-photos` or `--offline`
+to test empty and error states.
+
+Run the GTK Photos integration checks from the repository root on a usable
+GTK display. Video checks require GTK's media backend with WebM/VP8 support:
+
+```sh
+dbus-run-session -- python3 ui/tests/integration_photos_mock.py
+```
+
+The real-account checks require a signed-in 0.2.0 daemon and Pillow. They are
+read-only by default; `--gtk` also checks gallery rendering and preview
+navigation:
+
+```sh
+python3 ui/tests/integration_photos_real_daemon.py --gtk
+```
+
+Add `--video` to check real GTK playback, pause/resume and seeking. It uses the
+first video in the gallery, or accepts a filename to search for:
+
+```sh
+python3 ui/tests/integration_photos_real_daemon.py --video example.mp4
+```
+
+With the account owner's authorization, add `--writes` to test generated
+JPEG/PNG/WebP uploads, duplicate detection, downloads and filename collisions.
+It moves only its own new uploads to recoverable Proton Trash and retains local
+originals and downloads in a unique `~/halyard-photos-test-*` folder. These
+checks do not install or restart the daemon; build and run the 0.2.0 bundle
+before testing.

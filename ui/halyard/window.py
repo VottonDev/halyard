@@ -15,6 +15,8 @@ from .login_view import LoginView
 from .models import STATUS_ERROR, Pair, Status
 from .pair_dialog import PairDialog
 from .pairs_view import PairsView
+from .photos_view import PhotosView, PhotoPreviewPage
+from .photo_transfers_view import PhotoTransfersView
 from .preferences import PreferencesDialog
 from .update_check import UPDATE_URL
 from .util import format_size, tilde_path
@@ -29,6 +31,8 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._account_logged_in: bool | None = None
         self._conflicts_page: ConflictsPage | None = None
         self._history_page: HistoryPage | None = None
+        self._preview_page = None
+        self._last_account_state = None
         self._last_conflict_count = -1
         self._closing = False
         self._tray_available = False
@@ -45,18 +49,28 @@ class HalyardWindow(Adw.ApplicationWindow):
 
         self._nav = Adw.NavigationView()
         self._toasts.set_child(self._nav)
+        self._nav.connect("popped", self._on_page_popped)
         self._nav.add(self._build_main_page())
 
         self._install_actions()
 
-        client.connect("availability-changed", self._on_availability)
-        client.connect("status-changed", self._on_status_changed)
-        client.connect("login-state-changed", self._on_login_state)
+        self._client_handlers = [
+            client.connect("availability-changed", self._on_availability),
+            client.connect("status-changed", self._on_status_changed),
+            client.connect("login-state-changed", self._on_login_state),
+        ]
+        self.connect("destroy", self._on_destroy)
 
         self.connect("close-request", self._on_close_request)
         self._render()
         if client.available:
             self._refresh_everything()
+
+    def _on_destroy(self, *_):
+        if self._preview_page: self._preview_page.reset()
+        self._photos_view.dispose()
+        self._transfers_view.dispose()
+        for handler in self._client_handlers: self._client.disconnect(handler)
 
     def show_update(self, version: str) -> None:
         self._update_banner.set_title(f"Halyard {version} is available")
@@ -120,17 +134,6 @@ class HalyardWindow(Adw.ApplicationWindow):
         )
         header.pack_end(self._menu_button)
 
-        # Always available, unlike the conflicts button: "what did it just do
-        # to my files?" is a routine question, not an exceptional one.
-        self._history_button = Gtk.Button(
-            icon_name="document-open-recent-symbolic",
-            tooltip_text="Recent activity",
-            visible=False,
-        )
-        self._history_button.connect("clicked",
-                                     lambda *_: self._show_history())
-        header.pack_end(self._history_button)
-
         self._conflicts_button = Gtk.Button(
             icon_name="dialog-warning-symbolic",
             tooltip_text="Files need your attention",
@@ -174,11 +177,45 @@ class HalyardWindow(Adw.ApplicationWindow):
         )
         self._pairs_view.connect("remove-requested", self._on_remove_pair)
         self._pairs_view.connect("enabled-toggled", self._on_toggle_pair)
-        self._stack.add_named(self._pairs_view, "pairs")
+        self._views = Adw.ViewStack(vexpand=True)
+        self._views.add_titled_with_icon(self._pairs_view, "folders", "Folders", "folder-symbolic")
+        self._photos_view = PhotosView(self._client, self, self._settings)
+        self._views.add_titled_with_icon(self._photos_view, "photos", "Photos", "image-x-generic-symbolic")
+        self._activity = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._activity_stack = Adw.ViewStack(vexpand=True)
+        self._history_page = HistoryPage(self._client, self, embedded=True)
+        self._activity_stack.add_titled(self._history_page, "sync", "Folder Sync")
+        self._transfers_view = PhotoTransfersView(self._client, self)
+        self._activity_stack.add_titled(self._transfers_view, "photos", "Photo Transfers")
+        self._activity.append(Adw.ViewSwitcher(stack=self._activity_stack, halign=Gtk.Align.CENTER))
+        self._activity.append(self._activity_stack)
+        self._views.add_titled_with_icon(self._activity, "activity", "Activity", "document-open-recent-symbolic")
+        self._views.set_visible_child_name("folders")
+        self._views.connect("notify::visible-child-name", self._on_main_tab)
+        self._activity_stack.connect("notify::visible-child-name", self._on_activity_tab)
+        self._switcher = Adw.ViewSwitcher(stack=self._views, policy=Adw.ViewSwitcherPolicy.WIDE)
+        self._switcher_bar = Adw.ViewSwitcherBar(stack=self._views)
+        toolbar.add_bottom_bar(self._switcher_bar)
+        self._transfer_bar = Gtk.ActionBar(revealed=False)
+        self._transfer_label = Gtk.Label(xalign=0)
+        self._transfer_bar.pack_start(self._transfer_label)
+        activity_button = Gtk.Button(label="View Activity")
+        activity_button.connect("clicked", lambda *_: self._show_photo_transfers())
+        self._transfer_bar.pack_end(activity_button)
+        toolbar.add_bottom_bar(self._transfer_bar)
+        self._stack.add_named(self._views, "pairs")
 
         self._stack.set_visible_child_name("disconnected")
         toolbar.set_content(self._stack)
-        page.set_child(toolbar)
+        adaptive = Adw.BreakpointBin(child=toolbar)
+        adaptive.set_size_request(360, 320)
+        self._narrow = False
+        breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 650sp"))
+        breakpoint.connect("apply", lambda *_: self._set_narrow(True))
+        breakpoint.connect("unapply", lambda *_: self._set_narrow(False))
+        adaptive.add_breakpoint(breakpoint)
+        self._header = header
+        page.set_child(adaptive)
         return page
 
     def _build_loading(self) -> Gtk.Widget:
@@ -382,7 +419,15 @@ class HalyardWindow(Adw.ApplicationWindow):
         show_controls = view == "pairs"
         self._pause_button.set_visible(show_controls)
         self._add_button.set_visible(show_controls)
-        self._history_button.set_visible(show_controls)
+        self._update_navigation(show_controls)
+        if self._last_account_state != self._account_logged_in:
+            self._last_account_state = self._account_logged_in
+            if not self._account_logged_in:
+                self._photos_view.reset()
+                self._transfers_view.reset()
+                self.present_home()
+            else:
+                self._transfers_view.activate()
 
         status = self._status
         conflicts = status.total_conflicts
@@ -578,14 +623,79 @@ class HalyardWindow(Adw.ApplicationWindow):
         if not self._client.available:
             self.toast("The sync service is not running.")
             return
-        if self._history_page is None:
-            self._history_page = HistoryPage(self._client, self)
-            self._nav.add(self._history_page)
+        self._nav.pop_to_tag("main")
+        self._views.set_visible_child_name("activity")
+        self._activity_stack.set_visible_child_name("sync")
         self._history_page.set_pairs(list(self._status.pairs))
         self._history_page.select_pair(pair_id)
-        if self._nav.get_visible_page() is not self._history_page:
-            self._nav.push(self._history_page)
         self._history_page.reload()
+
+    @property
+    def account_logged_in(self):
+        return bool(self._account_logged_in and self._client.available)
+
+    @property
+    def folder_pairs(self):
+        return self._status.pairs
+
+    def present_home(self):
+        self._nav.pop_to_tag("main")
+        self._views.set_visible_child_name("folders")
+
+    def _set_narrow(self, narrow):
+        self._narrow = narrow
+        self._update_navigation(self.account_logged_in)
+
+    def _update_navigation(self, signed_in):
+        self._header.set_title_widget(self._switcher if signed_in and not self._narrow else self._window_title)
+        self._switcher_bar.set_reveal(signed_in and self._narrow)
+        folders = signed_in and self._views.get_visible_child_name() == "folders"
+        self._add_button.set_visible(folders)
+        self._pause_button.set_visible(folders)
+
+    def _on_main_tab(self, *_):
+        self._update_navigation(self.account_logged_in)
+        name = self._views.get_visible_child_name()
+        if name == "photos": self._photos_view.activate()
+        elif name == "activity": self._on_activity_tab()
+
+    def _on_activity_tab(self, *_):
+        if not self.account_logged_in or self._views.get_visible_child_name() != "activity": return
+        if self._activity_stack.get_visible_child_name() == "photos": self._transfers_view.activate()
+        else:
+            self._history_page.set_pairs(list(self._status.pairs))
+            self._history_page.reload()
+
+    def _show_photo_transfers(self):
+        self._nav.pop_to_tag("main")
+        self._activity_stack.set_visible_child_name("photos")
+        self._views.set_visible_child_name("activity")
+
+    def update_photo_transfer_status(self, jobs):
+        active = [j for j in jobs if j.active]
+        self._transfer_bar.set_revealed(bool(active) and self.account_logged_in)
+        paused = all(j.status == "paused" for j in active)
+        self._transfer_label.set_text(f"{len(active)} photo transfers {'paused' if paused else 'in progress'}")
+
+    def open_photo(self, photo, photos):
+        self.close_photo()
+        self._preview_page = PhotoPreviewPage(self._client, self, photo, photos)
+        self._nav.push(self._preview_page)
+
+    def close_photo(self):
+        if self._preview_page and self._nav.get_visible_page() is self._preview_page:
+            self._nav.pop()
+
+    def _on_page_popped(self, _nav, page):
+        if page is self._preview_page:
+            page.reset()
+            self._preview_page = None
+
+    def trash_photos(self, photos):
+        self._photos_view.trash_items(photos)
+
+    def download_photos(self, photos):
+        self._photos_view.download_items(photos)
 
     def _show_preferences(self) -> None:
         PreferencesDialog(self._client, self, self._settings).present(self)

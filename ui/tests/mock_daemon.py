@@ -28,6 +28,13 @@ Options:
 from __future__ import annotations
 
 import argparse
+import base64
+import struct
+import zlib
+import uuid
+import threading
+from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import random
@@ -49,7 +56,7 @@ OBJECT_PATH = "/io/github/votton/Halyard/Daemon"
 INTERFACE = "io.github.votton.Halyard.Daemon"
 ERROR_FAILED = "io.github.votton.Halyard.Error.Failed"
 
-VERSION = "0.1.6-mock"
+VERSION = "0.2.0-mock"
 
 INTROSPECTION = f"""
 <node>
@@ -95,6 +102,51 @@ INTROSPECTION = f"""
       <arg type="s" name="name" direction="in"/>
       <arg type="s" name="folder" direction="out"/>
     </method>
+
+    <method name="TrashPhotos"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="StartVideoPreview"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="ReleaseVideoPreview"><arg type="s" direction="in"/></method>
+    <signal name="VideoPreviewChanged"><arg type="s"/></signal>
+    <method name="ListPhotos">
+      <arg type="s" name="input0" direction="in"/>
+      <arg type="s" name="output0" direction="out"/>
+    </method>
+    <method name="ListPhotoAlbums">
+      <arg type="s" name="output0" direction="out"/>
+    </method>
+    <method name="GetPhoto">
+      <arg type="s" name="input0" direction="in"/>
+      <arg type="s" name="output0" direction="out"/>
+    </method>
+    <method name="GetPhotoThumbnails">
+      <arg type="s" name="input0" direction="in"/>
+      <arg type="s" name="output0" direction="out"/>
+    </method>
+    <method name="StartPhotoDownload">
+      <arg type="s" name="input0" direction="in"/>
+      <arg type="s" name="output0" direction="out"/>
+    </method>
+    <method name="ListPhotoDownloads">
+      <arg type="s" name="output0" direction="out"/>
+    </method>
+    <method name="ControlPhotoDownload">
+      <arg type="s" name="input0" direction="in"/>
+      <arg type="s" name="input1" direction="in"/>
+    </method>
+    <method name="StartPhotoUpload">
+      <arg type="s" name="input0" direction="in"/>
+      <arg type="s" name="output0" direction="out"/>
+    </method>
+    <method name="ListPhotoUploads">
+      <arg type="s" name="output0" direction="out"/>
+    </method>
+    <method name="ControlPhotoUpload">
+      <arg type="s" name="input0" direction="in"/>
+      <arg type="s" name="input1" direction="in"/>
+    </method>
+    <signal name="PhotosChanged"><arg type="s" name="payload"/></signal>
+    <signal name="PhotoDownloadsChanged"><arg type="s" name="payload"/></signal>
+    <signal name="PhotoUploadsChanged"><arg type="s" name="payload"/></signal>
 
     <method name="GetStatus">
       <arg type="s" name="status" direction="out"/>
@@ -589,10 +641,32 @@ class MockState:
         return True
 
 
+def mock_photo(index):
+    month = 10 - index // 32
+    return {"uid": f"photo-{index}", "name": f"IMG_{index % 24:04d}.jpg", "captureTime": int(time.mktime((2026, month, 1 + index % 28, 12, 0, 0, 0, 0, -1)) * 1000),
+            "size": 3200000 + index * 7000, "mediaType": "video/webm" if index % 17 == 0 else "image/jpeg", "revisionUid": f"rev-{index}",
+            "favourite": index % 5 == 0, "relatedUids": ["photo-related"] if index == 1 else [], "error": None}
+
+
+def mock_preview(index):
+    width, height = 256, 192
+    raw = b"".join(b"\0" + bytes(v for x in range(width) for v in ((x + index * 37) % 256, (y + index * 23) % 256, 145)) for y in range(height))
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    return base64.b64encode(png).decode("ascii")
+
+
 class MockDaemon:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.bus_name = args.bus_name
+        self.photos = [] if args.no_photos else sorted([mock_photo(i) for i in range(96)], key=lambda p: p["captureTime"], reverse=True)
+        self.photo_revision = 0
+        self.downloads = []
+        self.uploads = []
+        self.video_server = None
+        self.video_sessions = {}
         self.state = MockState(args)
         self.loop = GLib.MainLoop()
         self.connection: Gio.DBusConnection | None = None
@@ -662,6 +736,7 @@ class MockDaemon:
         self.emit("StatusChanged", self.state.status())
 
     def _on_tick(self) -> bool:
+        self._tick_photos()
         if self.state.tick():
             self.emit_status()
         return True
@@ -681,7 +756,7 @@ class MockDaemon:
     def _on_method_call(self, connection, sender, object_path, interface_name,
                         method_name, parameters, invocation) -> None:
         args = list(parameters.unpack())
-        log(f"call {method_name}{tuple(args) if args else '()'}")
+        log(f"call {method_name}" if "Photo" in method_name else f"call {method_name}{tuple(args) if args else '()'}")
         handler = getattr(self, f"_do_{method_name}", None)
         if handler is None:
             invocation.return_dbus_error(
@@ -780,6 +855,8 @@ class MockDaemon:
 
     def _do_Logout(self, invocation) -> None:
         self.state.logged_in = False
+        self.downloads.clear(); self.uploads.clear(); self.video_sessions.clear()
+        self.emit("PhotoDownloadsChanged", []); self.emit("PhotoUploadsChanged", [])
         self.state.activity = None
         self._reply_void(invocation, delay_ms=300)
         GLib.timeout_add(350, lambda: (self.emit_status(), False)[1])
@@ -976,6 +1053,152 @@ class MockDaemon:
         self._reply_void(invocation, delay_ms=350)
         GLib.timeout_add(400, lambda: (self.emit_status(), False)[1])
 
+    # Photo fixture calls never read or write local or cloud files.
+    def _require_photos(self):
+        if not self.state.logged_in: raise ValueError("Sign in to Proton Drive first.")
+        if self.args.offline: raise ValueError("Could not connect to Proton Drive. Please try again.")
+
+    def _do_ListPhotos(self, invocation, raw):
+        self._require_photos()
+        query = json.loads(raw)
+        photos = self.photos
+        if query.get("albumUid"): photos = [p for i, p in enumerate(photos) if i % 3 == 0]
+        if query.get("kind") == "favourites": photos = [p for p in photos if p["favourite"]]
+        if query.get("kind") == "videos": photos = [p for p in photos if p["mediaType"].startswith("video/")]
+        if query.get("search"): photos = [p for p in photos if query["search"].lower() in p["name"].lower()]
+        cursor = query.get("cursor", f"{self.photo_revision}:0").split(":")
+        if int(cursor[0]) != self.photo_revision: raise ValueError("Your photo library changed. Reload to continue browsing.")
+        offset, limit = int(cursor[1]), min(100, query.get("limit", 60))
+        self._reply_json(invocation, {"photos": photos[offset:offset + limit], "revision": self.photo_revision,
+            "nextCursor": f"{self.photo_revision}:{offset + limit}" if offset + limit < len(photos) else None}, delay_ms=300)
+
+    def _do_ListPhotoAlbums(self, invocation):
+        self._require_photos()
+        self._reply_json(invocation, [{"uid": "album-1", "name": "Summer", "photoCount": len(self.photos) // 3, "coverPhotoUid": self.photos[0]["uid"]}] if self.photos else [], delay_ms=200)
+
+    def _do_GetPhoto(self, invocation, uid):
+        self._require_photos()
+        photo = next((p for p in self.photos if p["uid"] == uid), None)
+        if not photo: raise ValueError("This photo is no longer available.")
+        self._reply_json(invocation, photo)
+
+    def _do_GetPhotoThumbnails(self, invocation, raw):
+        self._require_photos()
+        request = json.loads(raw)
+        self._reply_json(invocation, [{"uid": uid, "data": mock_preview(sum(uid.encode()) % 20), "error": None} for uid in request["uids"][:12]], delay_ms=100)
+
+    def _start_photo_job(self, invocation, files, destination, upload=False):
+        self._require_photos()
+        job = {"id": str(uuid.uuid4()), "destination": destination, "createdAt": now_ms(), "status": "queued", "files": files}
+        (self.uploads if upload else self.downloads).insert(0, job)
+        self.emit("PhotoUploadsChanged" if upload else "PhotoDownloadsChanged", self.uploads if upload else self.downloads)
+        self._reply_json(invocation, job, delay_ms=150)
+
+    def _do_StartPhotoDownload(self, invocation, raw):
+        data = json.loads(raw)
+        files = []
+        for uid in data["uids"]:
+            photo = next((p for p in self.photos if p["uid"] == uid), None)
+            if not photo: raise ValueError("This photo is no longer available.")
+            for asset in [photo] + ([{"uid": "photo-related", "name": "IMG_0001.mov", "size": 1500000}] if photo["relatedUids"] else []):
+                files.append({"uid": asset["uid"], "name": asset["name"], "size": asset["size"], "bytesDone": 0, "status": "queued", "path": None, "error": None})
+        self._start_photo_job(invocation, files, data["destination"])
+
+    def _do_TrashPhotos(self, invocation, raw):
+        self._require_photos()
+        uids = json.loads(raw)["uids"]
+        results = []
+        for uid in dict.fromkeys(uids):
+            photo = next((p for p in self.photos if p["uid"] == uid), None)
+            if not photo: results.append({"uid": uid, "ok": False, "error": "Photo unavailable"}); continue
+            self.photos.remove(photo)
+            results.extend({"uid": item, "ok": True, "error": None} for item in [uid] + photo["relatedUids"])
+        self.photo_revision += 1; self.emit("PhotosChanged", {"revision": self.photo_revision})
+        self._reply_json(invocation, results, delay_ms=150)
+
+    def _do_StartVideoPreview(self, invocation, uid):
+        self._require_photos()
+        photo = next((p for p in self.photos if p["uid"] == uid), None)
+        if not photo or not photo["mediaType"].startswith("video/"): raise ValueError("Choose a video to play.")
+        if self.video_server is None:
+            sessions = self.video_sessions
+            data = (Path(__file__).parent / "fixtures/video.webm").read_bytes()
+            class VideoHandler(BaseHTTPRequestHandler):
+                def log_message(self, *_): pass
+                def do_HEAD(self): self.do_GET()
+                def do_GET(self):
+                    if self.path not in sessions.values(): self.send_error(404); return
+                    start, end = 0, len(data) - 1
+                    partial = self.headers.get("Range")
+                    if partial:
+                        try:
+                            bounds = partial.removeprefix("bytes=").split("-")
+                            start = int(bounds[0]) if bounds[0] else max(0, len(data) - int(bounds[1]))
+                            end = min(end, int(bounds[1])) if bounds[0] and bounds[1] else end
+                            if start < 0 or start >= len(data) or end < start: raise ValueError()
+                        except ValueError: self.send_error(416); return
+                    self.send_response(206 if partial else 200)
+                    self.send_header("Content-Type", "video/webm")
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(end - start + 1))
+                    if partial: self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        try: self.wfile.write(data[start:end + 1])
+                        except (BrokenPipeError, ConnectionResetError): pass
+            self.video_server = ThreadingHTTPServer(("127.0.0.1", 0), VideoHandler)
+            self.video_server.daemon_threads = True
+            threading.Thread(target=self.video_server.serve_forever, daemon=True).start()
+        preview_id = str(uuid.uuid4())
+        self.video_sessions[preview_id] = f"/video/{uuid.uuid4().hex}"
+        self._reply_json(invocation, {"id": preview_id, "uid": uid, "status": "ready", "uri": f"http://127.0.0.1:{self.video_server.server_port}{self.video_sessions[preview_id]}", "size": (Path(__file__).parent / "fixtures/video.webm").stat().st_size, "error": None})
+
+    def _do_ReleaseVideoPreview(self, invocation, preview_id):
+        self.video_sessions.pop(preview_id, None)
+        self._reply_void(invocation)
+
+    def _do_StartPhotoUpload(self, invocation, raw):
+        data = json.loads(raw)
+        if not 1 <= len(data["files"]) <= 20: raise ValueError("Choose between 1 and 20 images to upload.")
+        files = [{"uid": "", "name": os.path.basename(item["path"]), "path": item["path"], "size": 3000000, "bytesDone": 0, "status": "queued", "error": None} for item in data["files"]]
+        self._start_photo_job(invocation, files, "Proton Drive Photos", True)
+
+    def _do_ListPhotoDownloads(self, invocation): self._reply_json(invocation, self.downloads)
+    def _do_ListPhotoUploads(self, invocation): self._reply_json(invocation, self.uploads)
+    def _do_ControlPhotoDownload(self, invocation, uid, action): self._control_photo(invocation, self.downloads, uid, action)
+    def _do_ControlPhotoUpload(self, invocation, uid, action): self._control_photo(invocation, self.uploads, uid, action)
+
+    def _control_photo(self, invocation, jobs, uid, action):
+        job = next(j for j in jobs if j["id"] == uid)
+        job["status"] = {"pause": "paused", "resume": "queued", "cancel": "cancelled", "retry": "queued"}[action]
+        if action in ("cancel", "retry"):
+            for file in job["files"]:
+                if file["status"] != "completed": file.update(status="cancelled" if action == "cancel" else "queued", bytesDone=0)
+        self.emit("PhotoUploadsChanged" if jobs is self.uploads else "PhotoDownloadsChanged", jobs)
+        self._reply_void(invocation)
+
+    def _tick_photos(self):
+        for jobs, uploading in ((self.downloads, False), (self.uploads, True)):
+            verb = "uploading" if uploading else "downloading"
+            job = next((j for j in jobs if j["status"] in ("queued", verb)), None)
+            if not job: continue
+            job["status"] = verb
+            file = next((f for f in job["files"] if f["status"] != "completed"), None)
+            if file:
+                file["status"] = verb
+                file["bytesDone"] = min(file["size"], file["bytesDone"] + 700000)
+                if file["bytesDone"] == file["size"]:
+                    file["status"] = "completed"
+                    if uploading:
+                        photo = mock_photo(len(self.photos))
+                        photo.update(uid=f"uploaded-{uuid.uuid4()}", name=file["name"], captureTime=now_ms(), mediaType="image/jpeg")
+                        file["uid"] = photo["uid"]; self.photos.insert(0, photo)
+                        self.photo_revision += 1; self.emit("PhotosChanged", {"revision": self.photo_revision})
+                    else: file["path"] = os.path.join(job["destination"], file["name"])
+            if all(f["status"] == "completed" for f in job["files"]): job["status"] = "completed"
+            self.emit("PhotoUploadsChanged" if uploading else "PhotoDownloadsChanged", jobs)
+
     def _do_ListHistory(self, invocation, raw_filter: str) -> None:
         try:
             query = json.loads(raw_filter) if raw_filter else {}
@@ -1038,6 +1261,7 @@ def main() -> int:
                         help="do not animate a transfer")
     parser.add_argument("--quiet", action="store_true",
                         help="do not emit periodic Notify signals")
+    parser.add_argument("--no-photos", action="store_true", help="start with an empty photo gallery")
     parser.add_argument("--no-pairs", action="store_true",
                         help="start with no folder pairs (empty state)")
     parser.add_argument("--bus-name", default=DEFAULT_BUS_NAME,

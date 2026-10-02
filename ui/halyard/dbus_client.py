@@ -18,6 +18,7 @@ from typing import Any, Callable
 from gi.repository import Gio, GLib, GObject
 
 from .models import (
+    VideoPreview, PhotoTrashResult,
     Account,
     Conflict,
     HistoryEntry,
@@ -26,6 +27,7 @@ from .models import (
     Pair,
     RemoteFolder,
     Status,
+    Photo, PhotoPage, PhotoAlbum, PhotoThumbnail, PhotoDownload,
 )
 
 #: The production daemon's bus name, as fixed by docs/dbus-api.md.
@@ -83,6 +85,10 @@ class DaemonClient(GObject.Object):
         "status-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
         "login-state-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
         "notification": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
+        "photos-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
+        "video-preview-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
+        "photo-uploads-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
+        "photo-downloads-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
     }
 
     def __init__(self) -> None:
@@ -174,6 +180,14 @@ class DaemonClient(GObject.Object):
             self.emit("login-state-changed", LoginState.from_json(data))
         elif signal_name == "Notify":
             self.emit("notification", Notification.from_json(data))
+        elif signal_name == "PhotosChanged":
+            self.emit("photos-changed", data)
+        elif signal_name == "VideoPreviewChanged":
+            self.emit("video-preview-changed", VideoPreview.from_json(data))
+        elif signal_name == "PhotoUploadsChanged":
+            self.emit("photo-uploads-changed", tuple(PhotoDownload.from_json(j) for j in data) if isinstance(data, list) else ())
+        elif signal_name == "PhotoDownloadsChanged":
+            self.emit("photo-downloads-changed", tuple(PhotoDownload.from_json(j) for j in data) if isinstance(data, list) else ())
 
     # -- the async call plumbing -----------------------------------------
 
@@ -230,6 +244,57 @@ class DaemonClient(GObject.Object):
         )
 
     # -- account ---------------------------------------------------------
+
+    def list_photos(self, query: dict, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ListPhotos", GLib.Variant("(s)", [json.dumps(query)]),
+                   parse=PhotoPage.from_json, on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def list_photo_albums(self, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ListPhotoAlbums", parse=lambda data: tuple(PhotoAlbum.from_json(a) for a in data) if isinstance(data, list) else (),
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def get_photo(self, uid: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("GetPhoto", GLib.Variant("(s)", [uid]), parse=Photo.from_json,
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def get_photo_thumbnails(self, uids: list[str], on_ok: OkCallback, on_err: ErrCallback, preview: bool = False) -> None:
+        self._call("GetPhotoThumbnails", GLib.Variant("(s)", [json.dumps({"uids": uids, "preview": preview})]),
+                   parse=lambda data: tuple(PhotoThumbnail.from_json(t) for t in data) if isinstance(data, list) else (),
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def start_photo_download(self, uids: list[str], destination: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("StartPhotoDownload", GLib.Variant("(s)", [json.dumps({"uids": uids, "destination": destination})]),
+                   parse=PhotoDownload.from_json, on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def trash_photos(self, uids, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("TrashPhotos", GLib.Variant("(s)", [json.dumps({"uids": uids})]),
+                   parse=lambda data: tuple(PhotoTrashResult.from_json(r) for r in data) if isinstance(data, list) else (),
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def start_video_preview(self, uid, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("StartVideoPreview", GLib.Variant("(s)", [uid]), parse=VideoPreview.from_json,
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def release_video_preview(self, preview_id) -> None:
+        self._call("ReleaseVideoPreview", GLib.Variant("(s)", [preview_id]))
+
+    def start_photo_upload(self, files: list[dict], on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("StartPhotoUpload", GLib.Variant("(s)", [json.dumps({"files": files})]),
+                   parse=PhotoDownload.from_json, on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def list_photo_uploads(self, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ListPhotoUploads", parse=lambda data: tuple(PhotoDownload.from_json(j) for j in data) if isinstance(data, list) else (),
+                   on_ok=on_ok, on_err=on_err)
+
+    def control_photo_upload(self, job_id: str, action: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ControlPhotoUpload", GLib.Variant("(ss)", [job_id, action]), on_ok=on_ok, on_err=on_err)
+
+    def list_photo_downloads(self, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ListPhotoDownloads", parse=lambda data: tuple(PhotoDownload.from_json(j) for j in data) if isinstance(data, list) else (),
+                   on_ok=on_ok, on_err=on_err)
+
+    def control_photo_download(self, job_id: str, action: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ControlPhotoDownload", GLib.Variant("(ss)", [job_id, action]), on_ok=on_ok, on_err=on_err)
 
     def get_account(self, on_ok: OkCallback, on_err: ErrCallback) -> None:
         self._call("GetAccount", parse=Account.from_json,

@@ -22,6 +22,7 @@ APP_ID = "io.github.votton.Halyard"
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 SETTINGS_DEFAULTS = {
+    "photo-download-folder": "",
     "window-width": 900,
     "window-height": 640,
     "window-maximized": False,
@@ -51,6 +52,12 @@ class _FallbackSettings:
 
     def set_boolean(self, key: str, value: bool) -> None:
         self._values[key] = bool(value)
+
+    def get_string(self, key: str) -> str:
+        return str(self._values.get(key, ""))
+
+    def set_string(self, key: str, value: str) -> None:
+        self._values[key] = value
 
 
 def load_settings():
@@ -118,6 +125,8 @@ class HalyardApplication(Adw.Application):
             self._window.set_tray_available(self.tray_available)
             if self._available_version is not None:
                 self._window.show_update(self._available_version)
+        if not self._window.get_visible():
+            self._window.present_home()
         self._window.set_visible(True)
         self._window.present()
         self._update_check.start()

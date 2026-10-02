@@ -18,6 +18,13 @@ touched.
 
 ![Halyard showing folder pairs in several sync states](docs/screenshots/halyard.png)
 
+## Photos
+
+Browse your Proton Drive gallery and albums, preview photos, play videos,
+download originals, upload JPEG, PNG or WebP images, and move items to Trash.
+Halyard opens on Folders. Photo transfers appear in Activity and are separate
+from folder sync.
+
 ## How sync behaves
 
 | Situation | What Halyard does |

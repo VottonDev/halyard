@@ -6,6 +6,10 @@ import type { DriveSession } from '../drive/session.js';
 import type { SyncManager } from '../engine/manager.js';
 import type { HistoryFilter, SyncEventAction } from '../engine/types.js';
 import { getLogger } from '../log.js';
+import type { PhotoLibrary, PhotoQuery } from '../photos/library.js';
+import type { PhotoVideos } from '../photos/videos.js';
+import type { PhotoUploads, UploadInput } from '../photos/uploads.js';
+import type { PhotoDownloads } from '../photos/downloads.js';
 
 const logger = getLogger('dbus');
 
@@ -52,10 +56,20 @@ function fail(error: unknown): never {
  * buying any real type safety.
  */
 export class HalyardInterface extends Interface {
+    private signingOut = false;
+
+    private requirePhotoAccess(): void {
+        if (this.signingOut) throw new Error('Wait for sign-out to finish before starting a photo transfer.');
+        this.session.getClient();
+    }
     constructor(
         private readonly manager: SyncManager,
         private readonly session: DriveSession,
         private readonly onQuit: () => void,
+        private readonly photos: PhotoLibrary,
+        private readonly downloads: PhotoDownloads,
+        private readonly uploads: PhotoUploads,
+        private readonly videos: PhotoVideos,
     ) {
         super(INTERFACE_NAME);
     }
@@ -84,14 +98,20 @@ export class HalyardInterface extends Interface {
     }
 
     async Logout(): Promise<void> {
+        if (this.signingOut) fail(new Error('Sign-out is already in progress.'));
+        this.signingOut = true;
         try {
+            await this.downloads.stop(true);
+            await this.uploads.stop(true);
+            await this.videos.stop();
+            this.photos.reset();
             await this.session.logout();
             // Tear down sync as well: the syncers hold a Drive client bound to
             // a session that no longer exists.
             this.manager.onSignedOut();
         } catch (error) {
             fail(error);
-        }
+        } finally { this.signingOut = false; }
     }
 
     // ---- Pairs
@@ -266,6 +286,93 @@ export class HalyardInterface extends Interface {
 
     // ---- Status and conflicts
 
+    async ListPhotos(filter: string): Promise<string> {
+        try {
+            const input = JSON.parse(filter || '{}') as Record<string, unknown>;
+            if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('The photo filter is invalid.');
+            const query: PhotoQuery = {};
+            for (const field of ['albumUid', 'cursor', 'search', 'month'] as const) {
+                if (typeof input[field] === 'string') query[field] = input[field].slice(0, 512);
+            }
+            if (query.month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(query.month)) throw new Error('Choose a valid month.');
+            if (typeof input.limit === 'number' && Number.isFinite(input.limit)) query.limit = input.limit;
+            if (input.kind === 'favourites' || input.kind === 'videos') query.kind = input.kind;
+            return JSON.stringify(await this.photos.list(query));
+        } catch (error) { return fail(error); }
+    }
+
+    async ListPhotoAlbums(): Promise<string> {
+        try { return JSON.stringify(await this.photos.listAlbums()); }
+        catch (error) { return fail(error); }
+    }
+
+    async GetPhoto(uid: string): Promise<string> {
+        try { return JSON.stringify(await this.photos.getPhoto(uid)); }
+        catch (error) { return fail(error); }
+    }
+
+    async GetPhotoThumbnails(request: string): Promise<string> {
+        try {
+            const input = JSON.parse(request) as { uids?: unknown; preview?: unknown };
+            if (!Array.isArray(input.uids) || input.uids.some(uid => typeof uid !== 'string' || !uid)) {
+                throw new Error('Choose the photos to preview.');
+            }
+            return JSON.stringify(await this.photos.getThumbnails(input.uids, input.preview === true));
+        } catch (error) { return fail(error); }
+    }
+
+    async StartPhotoDownload(request: string): Promise<string> {
+        try {
+            this.requirePhotoAccess();
+            const input = JSON.parse(request) as { uids?: unknown; destination?: unknown };
+            if (!Array.isArray(input.uids) || typeof input.destination !== 'string') throw new Error('Choose photos and a download folder.');
+            return JSON.stringify(await this.downloads.start(input.uids, input.destination));
+        } catch (error) { return fail(error); }
+    }
+
+    ListPhotoDownloads(): string {
+        try { this.session.getClient(); return JSON.stringify(this.downloads.list()); }
+        catch (error) { return fail(error); }
+    }
+
+    ControlPhotoDownload(id: string, action: string): void {
+        try { this.session.getClient(); this.downloads.control(id, action); }
+        catch (error) { fail(error); }
+    }
+
+    async TrashPhotos(request: string): Promise<string> {
+        try {
+            this.requirePhotoAccess();
+            const input = JSON.parse(request) as {uids?: unknown};
+            if (!Array.isArray(input.uids)) throw new Error('Choose photos to move to Trash.');
+            const results = await this.photos.trash(input.uids);
+            for (const result of results) if (result.ok) this.videos.releasePhoto(result.uid);
+            return JSON.stringify(results);
+        } catch (error) {return fail(error);}
+    }
+    async StartVideoPreview(uid: string): Promise<string> {
+        try {this.requirePhotoAccess();return JSON.stringify(await this.videos.start(uid));}
+        catch (error) {return fail(error);}
+    }
+    ReleaseVideoPreview(id: string): void {this.videos.release(id);}
+
+    async StartPhotoUpload(request: string): Promise<string> {
+        try {
+            this.requirePhotoAccess();
+            if (request.length > 34 * 1024 * 1024) throw new Error('Choose fewer images to upload at once.');
+            const input = JSON.parse(request) as { files?: UploadInput[] };
+            return JSON.stringify(await this.uploads.start(input.files!));
+        } catch (error) { return fail(error); }
+    }
+    ListPhotoUploads(): string {
+        try { this.session.getClient(); return JSON.stringify(this.uploads.list()); }
+        catch (error) { return fail(error); }
+    }
+    ControlPhotoUpload(id: string, action: string): void {
+        try { this.session.getClient(); this.uploads.control(id, action); }
+        catch (error) { fail(error); }
+    }
+
     GetStatus(): string {
         try {
             return JSON.stringify(this.manager.getStatus());
@@ -359,6 +466,11 @@ export class HalyardInterface extends Interface {
     Notify(notification: string): string {
         return notification;
     }
+
+    PhotosChanged(change: string): string { return change; }
+    PhotoDownloadsChanged(downloads: string): string { return downloads; }
+    PhotoUploadsChanged(uploads: string): string { return uploads; }
+    VideoPreviewChanged(preview: string): string { return preview; }
 }
 
 HalyardInterface.configureMembers({
@@ -377,6 +489,19 @@ HalyardInterface.configureMembers({
 
         ListRemoteFolders: { inSignature: 's', outSignature: 's' },
         CreateRemoteFolder: { inSignature: 'ss', outSignature: 's' },
+        ListPhotos: { inSignature: 's', outSignature: 's' },
+        ListPhotoAlbums: { inSignature: '', outSignature: 's' },
+        GetPhoto: { inSignature: 's', outSignature: 's' },
+        GetPhotoThumbnails: { inSignature: 's', outSignature: 's' },
+        StartPhotoDownload: { inSignature: 's', outSignature: 's' },
+        TrashPhotos: { inSignature: 's', outSignature: 's' },
+        StartVideoPreview: { inSignature: 's', outSignature: 's' },
+        ReleaseVideoPreview: { inSignature: 's', outSignature: '' },
+        StartPhotoUpload: { inSignature: 's', outSignature: 's' },
+        ListPhotoUploads: { inSignature: '', outSignature: 's' },
+        ControlPhotoUpload: { inSignature: 'ss', outSignature: '' },
+        ListPhotoDownloads: { inSignature: '', outSignature: 's' },
+        ControlPhotoDownload: { inSignature: 'ss', outSignature: '' },
 
         GetStatus: { inSignature: '', outSignature: 's' },
         ListConflicts: { inSignature: 's', outSignature: 's' },
@@ -390,5 +515,9 @@ HalyardInterface.configureMembers({
         StatusChanged: { signature: 's' },
         LoginStateChanged: { signature: 's' },
         Notify: { signature: 's' },
+        PhotosChanged: { signature: 's' },
+        PhotoDownloadsChanged: { signature: 's' },
+        PhotoUploadsChanged: { signature: 's' },
+        VideoPreviewChanged: { signature: 's' },
     },
 });

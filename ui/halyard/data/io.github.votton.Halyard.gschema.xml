@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
   <schema id="io.github.votton.Halyard" path="/io/github/votton/Halyard/">
+    <key name="photo-download-folder" type="s">
+      <default>''</default>
+      <summary>Last photo download folder</summary>
+      <description>The folder the user chose for copies of their photos.</description>
+    </key>
     <key name="window-width" type="i">
       <default>900</default>
       <summary>Window width</summary>
