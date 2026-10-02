@@ -16,7 +16,7 @@ touched.
 ~/notes            ↔  /Notes
 ```
 
-![Halyard showing folder pairs in several sync states](docs/screenshots/halyard.png)
+![Halyard's Folders view with Photos and Activity tabs and folder sync progress](docs/screenshots/halyard.png)
 
 ## Photos
 
