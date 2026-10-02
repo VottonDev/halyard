@@ -3,7 +3,11 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { PhotosClient } from './library.js';
 
 export type VideoPreview = { id: string; uid: string; status: 'ready' | 'failed'; uri: string | null; size: number; error: string | null };
-type Entry = { preview: VideoPreview; token: string; abort: AbortController; touched: number; requests: number; mediaType: string; client: PhotosClient };
+type VideoStream = ReturnType<Awaited<ReturnType<PhotosClient['getFileDownloader']>>['getSeekableStream']>;
+type Entry = { preview: VideoPreview; token: string; abort: AbortController; touched: number; requests: number; mediaType: string; client: PhotosClient;
+    stream?: VideoStream; reading: Promise<void>; cache: Map<number, Uint8Array> };
+const VIDEO_CHUNK_BYTES = 1024 * 1024;
+const VIDEO_CACHE_CHUNKS = 16;
 
 export function videoRange(range: string | undefined, size: number): { start: number; end: number; partial: boolean } {
     if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Video size is unavailable.');
@@ -41,7 +45,8 @@ export class PhotoVideos {
         if (this.entries.size >= 4) throw new Error('Close an existing video preview before opening another.');
         const token=randomBytes(32).toString('base64url');
         const preview:VideoPreview={id:randomUUID(),uid,status:'ready',uri:`http://127.0.0.1:${port}/video/${token}`,size,error:null};
-        const entry:Entry={preview,token,abort:new AbortController(),touched:Date.now(),requests:0,mediaType:node.mediaType,client};
+        const entry:Entry={preview,token,abort:new AbortController(),touched:Date.now(),requests:0,mediaType:node.mediaType,client,
+            reading:Promise.resolve(),cache:new Map()};
         this.entries.set(preview.id,entry);
         return structuredClone(preview);
     }
@@ -81,23 +86,26 @@ export class PhotoVideos {
         const connection=new AbortController();
         const signal=AbortSignal.any([connection.signal,entry.abort.signal]);
         const abort=()=>response.destroy();
-        const close=()=>connection.abort();
+        let counted=true;
+        const finished=()=>{if(counted){entry.requests--;counted=false;}};
+        // Players abandon open-ended requests while probing MP4 metadata.
+        // Count live connections, even if a disconnected request's shared
+        // SDK read is still finishing in the background.
+        const close=()=>{connection.abort();finished();};
         signal.addEventListener('abort',abort,{once:true});response.once('close',close);
-        let stream:ReturnType<Awaited<ReturnType<PhotosClient['getFileDownloader']>>['getSeekableStream']>|undefined;
         try {
             const headers:Record<string,string|number>={'Content-Type':entry.mediaType,'Accept-Ranges':'bytes',
                 'Content-Length':range.end-range.start+1,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
             if(range.partial)headers['Content-Range']=`bytes ${range.start}-${range.end}/${entry.preview.size}`;
             if(request.method==='HEAD'){response.writeHead(range.partial?206:200,headers);response.end();return;}
-            const downloader=await entry.client.getFileDownloader(entry.preview.uid,signal);signal.throwIfAborted();
-            try {stream=downloader.getSeekableStream();} catch {throw new Error('This video cannot be streamed. Download the original to play it.');}
-            await stream.seek(range.start);signal.throwIfAborted();
             response.writeHead(range.partial?206:200,headers);
-            let remaining=range.end-range.start+1;
-            while(remaining>0){
-                signal.throwIfAborted();const chunk=await stream.read(Math.min(remaining,256*1024));signal.throwIfAborted();
-                if(!chunk.value?.byteLength)throw new Error('The video stream ended before the requested range.');
-                const bytes=chunk.value.subarray(0,remaining);remaining-=bytes.length;entry.touched=Date.now();
+            let position=range.start;
+            while(position<=range.end){
+                const offset=Math.floor(position/VIDEO_CHUNK_BYTES)*VIDEO_CHUNK_BYTES;
+                signal.throwIfAborted();const chunk=await this.readChunk(entry,offset,signal);signal.throwIfAborted();
+                const within=position-offset;
+                const bytes=chunk.subarray(within,Math.min(chunk.length,within+range.end-position+1));
+                position+=bytes.length;entry.touched=Date.now();
                 if(!response.write(bytes))await new Promise<void>((resolve,reject)=>{
                     const done=()=>{cleanup();resolve();};const closed=()=>{cleanup();reject(new Error('Video player disconnected.'));};
                     const cleanup=()=>{response.removeListener('drain',done);response.removeListener('close',closed);};
@@ -112,15 +120,50 @@ export class PhotoVideos {
                 if(!response.headersSent){response.writeHead(502);response.end();}else response.destroy();
             }
         } finally {
-            entry.requests--;entry.touched=Date.now();signal.removeEventListener('abort',abort);response.removeListener('close',close);
-            // The SDK's buffered stream owns its reader, so cancel() is
-            // locked. Its downloader abort signal releases the scheduler slot.
+            finished();entry.touched=Date.now();signal.removeEventListener('abort',abort);response.removeListener('close',close);
             connection.abort();
         }
     }
+    private readChunk(entry:Entry,offset:number,signal:AbortSignal):Promise<Uint8Array> {
+        // MP4 probing revisits tiny ranges in the header and tail. Reopening
+        // an SDK stream for each HTTP request downloads the same encrypted
+        // block again. Keep at most 16 MiB of decrypted chunks per preview,
+        // and serialize cache misses because the SDK reader has one cursor.
+        const fromCache=()=>{
+            const cached=entry.cache.get(offset);
+            if(cached){entry.cache.delete(offset);entry.cache.set(offset,cached);}
+            return cached;
+        };
+        // A seek to cached metadata must not wait for an unrelated block that
+        // the previous HTTP request was already fetching when it disconnected.
+        signal.throwIfAborted();
+        const ready=fromCache();if(ready)return Promise.resolve(ready);
+        const read=entry.reading.then(async()=>{
+            signal.throwIfAborted();
+            const cached=fromCache();if(cached)return cached;
+            if(!entry.stream){
+                const downloader=await entry.client.getFileDownloader(entry.preview.uid,entry.abort.signal);
+                try {entry.stream=downloader.getSeekableStream();}
+                catch {throw new Error('This video cannot be streamed. Download the original to play it.');}
+            }
+            entry.abort.signal.throwIfAborted();
+            await entry.stream.seek(offset);
+            const length=Math.min(VIDEO_CHUNK_BYTES,entry.preview.size-offset);
+            const chunk=await entry.stream.read(length);
+            entry.abort.signal.throwIfAborted();
+            if(chunk.value?.byteLength!==length)throw new Error('The video stream ended before the requested range.');
+            // Own the allocation so a short view cannot retain a larger block.
+            const bytes=new Uint8Array(chunk.value);
+            entry.cache.set(offset,bytes);
+            while(entry.cache.size>VIDEO_CACHE_CHUNKS)entry.cache.delete(entry.cache.keys().next().value!);
+            return bytes;
+        });
+        entry.reading=read.then(()=>{},()=>{});
+        return read;
+    }
     release(id:string):void {
         const entry=this.entries.get(id);if(!entry)return;
-        this.entries.delete(id);entry.abort.abort();
+        this.entries.delete(id);entry.abort.abort();entry.cache.clear();entry.stream=undefined;
     }
     releasePhoto(uid:string):void {for(const [id,entry]of this.entries)if(entry.preview.uid===uid)this.release(id);}
     async stop():Promise<void>{

@@ -174,6 +174,13 @@ navigation:
 python3 ui/tests/integration_photos_real_daemon.py --gtk
 ```
 
+Add `--video` to check real GTK playback, pause/resume and seeking. It uses the
+first video in the gallery, or accepts a filename to search for:
+
+```sh
+python3 ui/tests/integration_photos_real_daemon.py --video example.mp4
+```
+
 With the account owner's authorization, add `--writes` to test generated
 JPEG/PNG/WebP uploads, duplicate detection, downloads and filename collisions.
 It moves only its own new uploads to recoverable Proton Trash and retains local

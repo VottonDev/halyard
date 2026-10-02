@@ -156,7 +156,7 @@ def generated_inputs(folder):
     return paths, inputs, expected
 
 
-def gtk_checks():
+def gtk_checks(video_name=None):
     os.environ["HALYARD_BUS_NAME"] = BUS
     from gi.repository import Adw, Gtk
     from halyard.dbus_client import DaemonClient
@@ -208,6 +208,47 @@ def gtk_checks():
         window.close_photo()
         window.open_photo(still, tuple(view._photos))
         check("real preview can immediately reopen", window._nav.get_visible_page() is window._preview_page)
+        if video_name is None:
+            return
+        window.close_photo()
+        pages, errors = [], []
+        client.list_photos({"kind": "videos", "search": video_name, "limit": 1}, pages.append, errors.append)
+        wait(lambda: pages or errors)
+        if errors:
+            raise RuntimeError(errors[0])
+        if not pages[0].photos:
+            check("real video found for GTK playback", False)
+            return
+        window.open_photo(pages[0].photos[0], pages[0].photos)
+        preview = window._preview_page
+        wait(lambda: preview._texture is not None or preview._stack.get_visible_child_name() == "error")
+        started = time.monotonic()
+        preview._play_button.emit("clicked")
+        wait(lambda: (preview._media is not None and preview._media.is_prepared()) or preview._stack.get_visible_child_name() == "error")
+        media = preview._media
+        check("real video prepares in GTK", media is not None and media.is_prepared(), f"{time.monotonic() - started:.2f}s")
+        if media is None:
+            return
+        media.set_muted(True)
+        wait(lambda: media.get_timestamp() > 1_000_000 or media.get_error() is not None)
+        check("real video plays decoded frames in GTK", media.get_error() is None and media.get_intrinsic_width() > 0 and media.get_intrinsic_height() > 0, f"{time.monotonic() - started:.2f}s")
+        media.pause()
+        check("real video pauses in GTK", not media.get_playing())
+        check("real video is seekable in GTK", media.is_seekable())
+        if media.is_seekable():
+            middle = media.get_duration() // 2
+            started = time.monotonic()
+            media.seek(middle)
+            wait(lambda: not media.is_seeking() and abs(media.get_timestamp() - middle) < 500_000)
+            check("real video seeks forward in GTK", media.get_error() is None, f"{time.monotonic() - started:.2f}s")
+            media.seek(0)
+            wait(lambda: not media.is_seeking() and media.get_timestamp() < 500_000)
+            check("real video seeks backward in GTK", media.get_error() is None)
+        media.play()
+        wait(lambda: media.get_timestamp() > 500_000)
+        check("real video resumes in GTK", media.get_playing() and media.get_error() is None)
+        window.close_photo()
+        check("leaving real video clears GTK playback", preview._media is None and preview._video_session is None)
     finally:
         if window:
             window.destroy()
@@ -265,6 +306,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--writes", action="store_true")
     parser.add_argument("--gtk", action="store_true", help="also check GTK rendering on the available display")
+    parser.add_argument("--video", nargs="?", const="", help="also test GTK video playback and seeking, optionally searching by filename")
     args = parser.parse_args()
     proxy = Gio.DBusProxy.new_for_bus_sync(Gio.BusType.SESSION, Gio.DBusProxyFlags.DO_NOT_AUTO_START, None, BUS, OBJECT, BUS, None)
     if proxy.get_name_owner() is None:
@@ -275,8 +317,8 @@ def main():
         raise SystemExit("The real daemon is not signed in")
     try:
         read_checks(proxy)
-        if args.gtk:
-            gtk_checks()
+        if args.gtk or args.video is not None:
+            gtk_checks(args.video)
         if args.writes:
             write_checks(proxy)
     except Exception as error:
