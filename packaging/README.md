@@ -18,7 +18,7 @@ sudo apt install ./halyard_*_all.deb
 Arch Linux:
 
 ```sh
-sudo pacman -U ./halyard-*-any.pkg.tar.zst
+sudo pacman -U ./halyard-bin-*-any.pkg.tar.zst
 ```
 
 Run these commands in a directory containing the one package you downloaded.
@@ -113,7 +113,7 @@ not a claim that the source is ready for admission to Debian's official archive.
 
 ### Arch source build
 
-Once the source tag matching the application version is published:
+From a committed checkout available on the upstream Git remote:
 
 ```sh
 python3 packaging/versioning.py
@@ -121,9 +121,11 @@ cd packaging/arch
 makepkg -s
 ```
 
-The source recipe pins the Halyard release tag and Proton SDK commit, fetches
-only that submodule, and runs the shared build and tests. Bun is a build
-dependency. No live-account tests run.
+The `halyard` source recipe pins both the checkout's Halyard commit and the
+Proton SDK commit, fetches only that submodule, and runs the shared build and
+tests. The generated pin is preserved in release archives, which have no Git
+metadata. Bun is a build dependency; its dependency cache stays inside
+`$srcdir`. No live-account tests run.
 
 ### Build both downloadable packages
 
@@ -136,14 +138,18 @@ notices, and creates a checksummed release archive:
 python3 packaging/release.py --epoch "$(git log -1 --format=%ct)"
 ```
 
-`dist/packages/PKGBUILD` packages the prebuilt release bundle using makepkg;
-it embeds the archive's SHA-256 and has no Bun dependency. This is the recipe
+`dist/packages/PKGBUILD` packages the prebuilt release bundle as `halyard-bin`
+using makepkg. It embeds the archive's SHA-256 and has no Bun dependency. This is the recipe
 used for the downloadable Arch binary. To build it locally on Arch:
 
 ```sh
 cd dist/packages
 makepkg -s
 ```
+
+The prebuilt package provides `halyard` at the application version and conflicts
+with the source package, so pacman can replace either variant without installing
+duplicate program files. It retains the `halyard` command and application paths.
 
 On Debian/Ubuntu, extract the same archive and build it with
 `HALYARD_PREBUILT=1 dpkg-buildpackage --build=binary --no-sign`. This still
@@ -153,8 +159,9 @@ desktop integration and package metadata.
 The package workflow runs on pull requests, main pushes, version tags and
 manual dispatch. It builds and installs/removes both formats in disposable
 containers. A matching `v<version>` tag attaches the packages, source archive,
-PKGBUILD and checksums to a GitHub release and **publishes it automatically**
-after the daemon tests and both native package checks pass. Assets are attached
+PKGBUILD, both recipe export archives and checksums to a GitHub release and
+**publishes it automatically** after the daemon tests and both native package
+checks pass. Assets are attached
 while the release is still a draft so a failure cannot expose a partial release.
 Reruns never replace assets of an already published release.
 For each release, edit **only `version` in `daemon/package.json`**, commit the
@@ -171,6 +178,41 @@ The Debian job uses the ordinary source build with a pinned Bun binary in its
 build environment and verifies its rebuilt daemon and licence inventory match
 the release archive. The Arch Git/submodule `prepare()` hook is also exercised
 offline against the real pinned SDK before the binary recipe is tested.
+The Arch job checks both exported recipes and the installed package with
+`namcap`; errors fail CI. Advisory dependency warnings are printed for review:
+namcap cannot infer the daemon's dynamically loaded Node modules, session-bus
+services, keyring or portal use, or optional media decoders. The source recipe's
+stronger Node build requirement also intentionally overlaps its runtime dependency.
+
+### AUR-compatible recipe exports
+
+Releases remain on GitHub; CI does not submit packages to the AUR. It produces
+separate `halyard-aur-<version>-<pkgrel>.tar.gz` and
+`halyard-bin-aur-<version>-<pkgrel>.tar.gz` exports. Each contains a root
+`PKGBUILD`, a freshly generated `.SRCINFO` and the recipe's MIT `LICENSE`, with
+no application binaries or local build output. The MIT licence covers these
+packaging sources; the packages separately declare and install their bundled
+dependencies' licences.
+
+To regenerate these reviewable files locally on Arch after building the release
+input:
+
+```sh
+python3 packaging/arch/export.py --pkgbuild packaging/arch/PKGBUILD \
+  --output dist/aur/halyard
+python3 packaging/arch/export.py --pkgbuild dist/packages/PKGBUILD \
+  --output dist/aur/halyard-bin
+namcap dist/aur/halyard/PKGBUILD dist/aur/halyard-bin/PKGBUILD
+```
+
+These follow the [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines)
+and [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines):
+stable source packages use the unsuffixed name, prebuilt variants use `-bin`,
+sources have an immutable commit or archive checksum, and metadata is generated
+from the recipe rather than maintained separately. Review the exports before
+any future submission. Package names, dependency licences, commit pins and
+archive checksums update automatically; the application version still has one
+source of truth in `daemon/package.json`.
 
 ## Installed layout
 
@@ -182,7 +224,7 @@ offline against the real pinned SDK before the binary recipe is tested.
 | `/usr/share/dbus-1/services/` | Session-bus activation |
 | `/usr/share/applications/` and `/usr/share/icons/` | Desktop integration |
 | `/usr/share/glib-2.0/schemas/` | Persistent UI preferences |
-| `/usr/share/doc/halyard/` and `/usr/share/licenses/halyard/` | Licence notices |
+| `/usr/share/doc/halyard/` and `/usr/share/licenses/<pkgname>/` | Licence notices and each bundled dependency's full licence text |
 
 There is no system daemon, global autostart, root sync process, or package hook
 that edits user credentials or sync state.

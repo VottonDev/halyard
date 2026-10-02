@@ -53,7 +53,7 @@ your package manager:
 # Debian/Ubuntu
 sudo apt install ./halyard_*_all.deb
 # Arch Linux
-sudo pacman -U ./halyard-*-any.pkg.tar.zst
+sudo pacman -U ./halyard-bin-*-any.pkg.tar.zst
 ```
 
 Run these commands in a directory containing the one package you downloaded.
@@ -190,7 +190,7 @@ Remove the package with your package manager:
 # Debian/Ubuntu
 sudo apt remove halyard
 # Arch Linux
-sudo pacman -R halyard
+sudo pacman -R halyard-bin
 ```
 
 Your files, saved sync state and credentials stay in place.

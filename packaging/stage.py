@@ -35,6 +35,9 @@ def bundled_packages():
 
 def write_licenses():
     sections = ["Licences for dependencies included in halyard-daemon.cjs\n"]
+    license_root = ROOT / "daemon/dist/licenses"
+    if license_root.exists():
+        shutil.rmtree(license_root)
     for origin, (directory, package) in sorted(bundled_packages().items()):
         name = package["name"]
         sections.append(f"\n{'=' * 72}\n{name} {package.get('version', '')}\n"
@@ -48,11 +51,23 @@ def write_licenses():
             raise SystemExit(f"Missing licence text for bundled dependency: {name} ({directory})")
         for notice in notices:
             sections.append(f"\n--- {notice.name} ---\n{notice.read_text()}\n")
+            # Preserve each origin, including differently patched installations
+            # of the same dependency. Arch requires these texts in its licence
+            # directory, independently of the human-readable aggregate notice.
+            target = license_root / origin / notice.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(notice, target)
     (ROOT / "daemon/dist/THIRD_PARTY_LICENSES.txt").write_text("".join(sections))
 
 
-def stage(destination):
+def stage(destination, package_name="halyard"):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9@._+-]*", package_name):
+        raise SystemExit("Invalid distribution package name")
+    license_root = ROOT / "daemon/dist/licenses"
+    if not license_root.is_dir() or not any(path.is_file() for path in license_root.rglob("*")):
+        raise SystemExit("Missing bundled dependency licence files; run packaging/build.sh first")
     destination = Path(destination).resolve()
+    license_target = Path("usr/share/licenses") / package_name
 
     def install(source, target, mode=0o644):
         target = destination / target
@@ -88,21 +103,25 @@ def stage(destination):
         ("ui/halyard/data/io.github.votton.Halyard.desktop", "usr/share/applications/io.github.votton.Halyard.desktop"),
         ("ui/halyard/data/io.github.votton.Halyard.gschema.xml", "usr/share/glib-2.0/schemas/io.github.votton.Halyard.gschema.xml"),
         ("ui/halyard/data/icons/hicolor/scalable/apps/io.github.votton.Halyard.svg", "usr/share/icons/hicolor/scalable/apps/io.github.votton.Halyard.svg"),
-        ("LICENSE", "usr/share/licenses/halyard/LICENSE"),
         ("THIRD_PARTY_NOTICES.md", "usr/share/doc/halyard/THIRD_PARTY_NOTICES.md"),
         ("daemon/dist/THIRD_PARTY_LICENSES.txt", "usr/share/doc/halyard/THIRD_PARTY_LICENSES.txt"),
     ):
         install(ROOT / source, target)
+    install(ROOT / "LICENSE", license_target / "LICENSE")
+    for notice in sorted(license_root.rglob("*")):
+        if notice.is_file():
+            install(notice, license_target / "bundled" / notice.relative_to(license_root))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--destdir")
+    parser.add_argument("--package-name", default="halyard", help="Name used for the distribution licence directory")
     parser.add_argument("--licenses-only", action="store_true")
     args = parser.parse_args()
     if args.licenses_only:
         write_licenses()
     elif args.destdir:
-        stage(args.destdir)
+        stage(args.destdir, args.package_name)
     else:
         parser.error("--destdir or --licenses-only is required")

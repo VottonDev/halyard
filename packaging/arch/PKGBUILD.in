@@ -7,13 +7,16 @@ arch=('any')
 url='https://github.com/VottonDev/halyard'
 license=('MIT' 'GPL-3.0-only' 'LGPL-3.0-or-later' 'Apache-2.0' 'BSD-3-Clause' 'ISC' 'BlueOak-1.0.0')
 depends=('nodejs>=22.13' 'python' 'python-gobject' 'gtk4>=4.10' 'libadwaita>=1.6'
+         'bash' 'glib2' 'gdk-pixbuf2' 'hicolor-icon-theme' 'dconf'
          'dbus' 'gnome-keyring' 'xdg-desktop-portal' 'ca-certificates' 'gst-plugins-base' 'gst-plugins-good')
 makedepends=('git' 'bun' 'nodejs>=22.15')
 optdepends=('xdg-desktop-portal-gnome: GNOME background and file chooser portals'
             'gst-libav: additional video codecs, including H.264 and HEVC')
 # Do not byte-compile Python for the builder's interpreter or strip JS assets.
 options=('!strip' '!debug')
-source=("git+$url.git#tag=v$pkgver"
+# Generated from the release checkout; commits cannot be retargeted like tags.
+_commit=@COMMIT@
+source=("git+$url.git#commit=$_commit"
         'proton-sdk::git+https://github.com/ProtonDriveApps/sdk.git#commit=28ac9cdc258737375692d1751dd9c7edcfb96708')
 sha256sums=('SKIP' 'SKIP')
 
@@ -26,7 +29,7 @@ prepare() {
 
 build() {
     cd "$srcdir/halyard"
-    ./packaging/build.sh
+    BUN_INSTALL_CACHE_DIR="$srcdir/bun-cache" ./packaging/build.sh
 }
 
 check() {
@@ -38,5 +41,5 @@ check() {
 
 package() {
     cd "$srcdir/halyard"
-    python packaging/stage.py --destdir "$pkgdir"
+    python packaging/stage.py --destdir "$pkgdir" --package-name "$pkgname"
 }

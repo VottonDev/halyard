@@ -78,7 +78,7 @@ jobs:
         if: matrix.format == 'debian'
         run: |
           docker build -t halyard-packaging-debian -f packaging/tests/Dockerfile.debian packaging/tests
-          archive="$(find "$PWD/dist/packages" -name 'halyard-*.tar.gz' -print -quit)"
+          archive="$(find "$PWD/dist/packages" -name 'halyard-[0-9]*.tar.gz' -print -quit)"
           docker run --rm -e HALYARD_TEST_SOURCE=1 \
             -v "$(command -v bun):/usr/local/bin/bun:ro" \
             -v "$PWD/dist/packages:/input:ro" -v "$PWD/dist/packages:/output" \
@@ -98,6 +98,7 @@ jobs:
             dist/packages/*.deb
             dist/packages/*.pkg.tar.zst
             dist/packages/.SRCINFO
+            dist/packages/*-aur-*.tar.gz
           include-hidden-files: true
           if-no-files-found: error
 
