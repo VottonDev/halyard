@@ -1,11 +1,10 @@
 """Offline checks for the photo D-Bus boundary and disposable transfer models."""
-import json
 import re
 import unittest
 from pathlib import Path
 from xml.etree import ElementTree
 from halyard.models import Photo, PhotoPage, PhotoDownload, PhotoThumbnail, VideoPreview
-from mock_daemon import INTROSPECTION, mock_photo, mock_preview
+from mock_daemon import INTROSPECTION, mock_photo
 
 
 class PhotoModelTests(unittest.TestCase):
@@ -29,9 +28,9 @@ class PhotoModelTests(unittest.TestCase):
         self.assertIsNone(VideoPreview.from_json({"uri": "https://example.com/movie"}).uri)
         self.assertEqual(VideoPreview.from_json({"uri": "http://127.0.0.1:8000/video/token"}).uri, "http://127.0.0.1:8000/video/token")
 
-    def test_thumbnail_fixture_and_size_bound(self):
-        import base64
-        self.assertTrue(base64.b64decode(mock_preview(1)).startswith(b"\x89PNG"))
+    def test_thumbnail_size_bound(self):
+        content = "x" * (4 * 1024 * 1024)
+        self.assertEqual(PhotoThumbnail.from_json({"data": content}).data, content)
         self.assertIsNone(PhotoThumbnail.from_json({"data": "x" * (4 * 1024 * 1024 + 1)}).data)
 
     def test_mock_matches_daemon_photo_signatures(self):

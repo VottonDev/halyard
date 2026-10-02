@@ -87,7 +87,7 @@ test('a signature failure removes the temporary download without publishing byte
 });
 
 test('video bridge serves seek ranges without full downloads, rejects unknown capabilities and releases sessions', async()=>{
-    const {PhotoVideos,videoRange}=await import('../src/photos/videos.js');
+    const {PhotoVideos}=await import('../src/photos/videos.js');
     const data=Buffer.concat([Buffer.from('0123456789abcdefghijklmnopqrstuvwxyz'),Buffer.alloc(3*1024*1024),Buffer.from('xyz')]);
     let readBytes=0, fullDownloads=0;
     const client={async getNode(){return {uid:'video',type:'photo',mediaType:'video/mp4',activeRevision:{claimedSize:data.length}};},
@@ -103,7 +103,9 @@ test('video bridge serves seek ranges without full downloads, rejects unknown ca
         assert.equal((await fetch(preview.uri!,{headers:{Range:`bytes=${data.length}-`}})).status,416);
         assert.equal((await fetch(preview.uri!,{headers:{Origin:'https://example.test'}})).status,403);
         const head=await fetch(preview.uri!,{method:'HEAD'});assert.equal(head.headers.get('content-length'),String(data.length));
-        assert.throws(()=>videoRange('bytes=1-2,5-6',data.length));
+        assert.equal((await fetch(preview.uri!,{headers:{Range:'bytes=1-2,5-6'}})).status,416);
+        const unknown=new URL(preview.uri!);unknown.pathname='/video/unknown-token';
+        assert.equal((await fetch(unknown)).status,404);
         videos.release(preview.id);assert.equal((await fetch(preview.uri!)).status,404);
     } finally {await videos.stop();}
 });

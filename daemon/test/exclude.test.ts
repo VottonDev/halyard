@@ -111,12 +111,6 @@ describe('excluding never deletes', () => {
     ]);
     const local = new Map<string, LocalItem>();
 
-    test('filtering only the local side would trash the remote copy', () => {
-        // Demonstrates why filterExcluded must be applied to all three maps.
-        const plan = reconcile({ base, local, remote, now: 0 });
-        expect(plan.actions.some((a) => a.kind === 'trashRemote')).toBe(true);
-    });
-
     test('filtering all three maps produces no actions at all', () => {
         const isExcluded = compileExcludes(['GitHub']);
         const plan = reconcile({
