@@ -117,7 +117,6 @@ class HalyardWindow(Adw.ApplicationWindow):
 
         sync_section = Gio.Menu()
         sync_section.append("Sync All Now", "win.sync-all")
-        sync_section.append("Activity", "win.activity")
         sync_section.append("Conflicts", "win.conflicts")
         menu.append_section(None, sync_section)
 
