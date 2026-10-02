@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photos integration checks against a signed-in 0.2.0 daemon.
+"""Photos integration checks against a signed-in daemon built from this checkout.
 
 Read-only by default. --writes uploads four generated test images, downloads
 them, tests duplicates and filename collisions, and moves only its new images
@@ -24,6 +24,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gi.repository import Gio, GLib  # noqa: E402
+from halyard import __version__  # noqa: E402
 from halyard.models import Photo, PhotoAlbum, PhotoPage, PhotoThumbnail, PhotoDownload, VideoPreview  # noqa: E402
 
 BUS = "io.github.votton.Halyard.Daemon"
@@ -311,8 +312,8 @@ def main():
     proxy = Gio.DBusProxy.new_for_bus_sync(Gio.BusType.SESSION, Gio.DBusProxyFlags.DO_NOT_AUTO_START, None, BUS, OBJECT, BUS, None)
     if proxy.get_name_owner() is None:
         raise SystemExit("The real daemon is not running")
-    if call(proxy, "GetVersion") != "0.2.0":
-        raise SystemExit("This test requires the 0.2.0 daemon")
+    if call(proxy, "GetVersion") != __version__:
+        raise SystemExit(f"This test requires the {__version__} daemon")
     if not call(proxy, "GetAccount")["loggedIn"]:
         raise SystemExit("The real daemon is not signed in")
     try:
