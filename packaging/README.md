@@ -121,9 +121,9 @@ cd packaging/arch
 makepkg -s
 ```
 
-The `halyard` source recipe pins both the checkout's Halyard commit and the
-Proton SDK commit, fetches only that submodule, and runs the shared build and
-tests. The generated pin is preserved in release archives, which have no Git
+The `halyard` recipe builds Halyard and the Proton SDK from specific Git commits.
+It fetches only the SDK submodule, then builds and tests Halyard.
+The selected commits are preserved in release archives, which have no Git
 metadata. Bun is a build dependency; its dependency cache stays inside
 `$srcdir`. No live-account tests run.
 
@@ -147,9 +147,9 @@ cd dist/packages
 makepkg -s
 ```
 
-The prebuilt package provides `halyard` at the application version and conflicts
-with the source package, so pacman can replace either variant without installing
-duplicate program files. It retains the `halyard` command and application paths.
+You can switch between `halyard` (built from source) and `halyard-bin` (prebuilt).
+Pacman removes the installed variant before installing the other.
+Both use the same `halyard` command and application paths.
 
 On Debian/Ubuntu, extract the same archive and build it with
 `HALYARD_PREBUILT=1 dpkg-buildpackage --build=binary --no-sign`. This still
@@ -158,11 +158,15 @@ desktop integration and package metadata.
 
 The package workflow runs on pull requests, main pushes, version tags and
 manual dispatch. It builds and installs/removes both formats in disposable
-containers. A matching `v<version>` tag attaches the packages, source archive,
-PKGBUILD, both recipe export archives and checksums to a GitHub release and
-**publishes it automatically** after the daemon tests and both native package
-checks pass. Assets are attached
-while the release is still a draft so a failure cannot expose a partial release.
+containers.
+
+Push a tag matching the application version, such as `v0.2.2`, to start the
+release workflow. After the daemon and package checks pass, it uploads the
+packages, source archive, `PKGBUILD`, recipe archives and checksums.
+It then publishes the GitHub release.
+
+Assets are attached while the release is still a draft so a failure cannot
+expose a partial release.
 Reruns never replace assets of an already published release.
 For each release, edit **only `version` in `daemon/package.json`**, commit the
 change and push a matching `v<version>` tag. The daemon, UI, archive and package
@@ -179,23 +183,26 @@ build environment and verifies its rebuilt daemon and licence inventory match
 the release archive. The Arch Git/submodule `prepare()` hook is also exercised
 offline against the real pinned SDK before the binary recipe is tested.
 The Arch job checks both exported recipes and the installed package with
-`namcap`; errors fail CI. Advisory dependency warnings are printed for review:
-namcap cannot infer the daemon's dynamically loaded Node modules, session-bus
-services, keyring or portal use, or optional media decoders. The source recipe's
+`namcap`; errors fail CI. Review the dependency warnings from `namcap`, Arch's
+package checker. Some warnings occur because it cannot detect how Halyard uses
+a dependency. Examples include Node modules, session-bus services, the keyring,
+portals and optional media decoders. The source recipe's
 stronger Node build requirement also intentionally overlaps its runtime dependency.
 
-### AUR-compatible recipe exports
+### Export recipes for the Arch User Repository (AUR)
 
 Releases remain on GitHub; CI does not submit packages to the AUR. It produces
 separate `halyard-aur-<version>-<pkgrel>.tar.gz` and
-`halyard-bin-aur-<version>-<pkgrel>.tar.gz` exports. Each contains a root
-`PKGBUILD`, a freshly generated `.SRCINFO` and the recipe's MIT `LICENSE`, with
-no application binaries or local build output. The MIT licence covers these
+`halyard-bin-aur-<version>-<pkgrel>.tar.gz` exports. Each archive contains a folder
+with the build recipe (`PKGBUILD`), package metadata (`.SRCINFO`) and the recipe's
+MIT licence (`LICENSE`). Application binaries and local build output are excluded.
+The MIT licence covers these
 packaging sources; the packages separately declare and install their bundled
 dependencies' licences.
 
-To regenerate these reviewable files locally on Arch after building the release
-input:
+On Arch, first create the release archive using the commands in
+[Build both downloadable packages](#build-both-downloadable-packages).
+Then run these commands to generate the AUR recipes:
 
 ```sh
 python3 packaging/arch/export.py --pkgbuild packaging/arch/PKGBUILD \
