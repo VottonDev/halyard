@@ -238,9 +238,11 @@ export class PhotoDownloads {
             await controller.completion();
             signal.throwIfAborted();
             if (controller.isDownloadCompleteWithSignatureIssues()) throw new Error('The downloaded photo could not be verified.');
-            // completion() closes the web stream, but wait for the underlying
-            // descriptor to close before publishing or removing its inode.
+            // The SDK releases its writer on success without closing the
+            // caller-owned stream. Flush and close it before publishing.
+            if (!stream.writableEnded) stream.end();
             await this.closeStream(stream);
+            if (stream.errored) throw stream.errored;
             file.path = await publish(temporary, destination, file.name);
             file.bytesDone = (await fsp.stat(file.path)).size;
             file.status = 'completed'; file.error = null;

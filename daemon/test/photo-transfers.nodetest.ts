@@ -56,6 +56,22 @@ test('a file modified during preparation fails before opening an uploader',async
     } finally {release(client);await queue.stop();await fs.rm(home,{recursive:true,force:true});}
 });
 
+test('downloads finish when the SDK releases its writer without closing the stream',async()=>{
+    const home=await fs.mkdtemp(path.join(os.tmpdir(),'halyard-node-photos-'));
+    const bytes=new Uint8Array([1,2,3,4]);
+    const client={async getNode(){return {uid:'photo',type:'photo',name:{ok:true,value:'original.jpg'},creationTime:new Date(),photo:{relatedPhotoNodeUids:[],tags:[]}};},
+        async getFileDownloader(){return {getClaimedSizeInBytes:()=>bytes.length,downloadToStream(stream:WritableStream){
+            const done=(async()=>{const writer=stream.getWriter();await writer.write(bytes);writer.releaseLock();})();
+            return {pause(){},resume(){},completion:()=>done,isDownloadCompleteWithSignatureIssues:()=>false};
+        }};}} as unknown as PhotosClient;
+    const queue=new PhotoDownloads(async()=>client,undefined,undefined,home);
+    try {
+        await queue.start(['photo'],home);await until(()=>queue.list()[0].status==='completed');
+        assert.deepEqual(await fs.readFile(path.join(home,'original.jpg')),Buffer.from(bytes));
+        assert.deepEqual(await fs.readdir(home),['original.jpg']);
+    } finally {await queue.stop();await fs.rm(home,{recursive:true,force:true});}
+});
+
 test('a signature failure removes the temporary download without publishing bytes',async()=>{
     const home=await fs.mkdtemp(path.join(os.tmpdir(),'halyard-node-photos-'));
     const client={async getNode(){return {uid:'photo',type:'photo',name:{ok:true,value:'original.jpg'},creationTime:new Date(),photo:{relatedPhotoNodeUids:[],tags:[]}};},

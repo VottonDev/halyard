@@ -158,3 +158,25 @@ video playback, selected downloads, uploads and Trash. Activity shows photo
 transfers alongside folder sync history. For mock development use
 `dbus-run-session -- ./run-dev.sh --logged-in`; add `--no-photos` or `--offline`
 to test empty and error states.
+
+Run the GTK Photos integration checks from the repository root on a usable
+GTK display. Video checks require GTK's media backend with WebM/VP8 support:
+
+```sh
+dbus-run-session -- python3 ui/tests/integration_photos_mock.py
+```
+
+The real-account checks require a signed-in 0.2.0 daemon and Pillow. They are
+read-only by default; `--gtk` also checks gallery rendering and preview
+navigation:
+
+```sh
+python3 ui/tests/integration_photos_real_daemon.py --gtk
+```
+
+With the account owner's authorization, add `--writes` to test generated
+JPEG/PNG/WebP uploads, duplicate detection, downloads and filename collisions.
+It moves only its own new uploads to recoverable Proton Trash and retains local
+originals and downloads in a unique `~/halyard-photos-test-*` folder. These
+checks do not install or restart the daemon; build and run the 0.2.0 bundle
+before testing.

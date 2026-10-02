@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import os
-import weakref
 import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -494,14 +493,14 @@ class PhotosView(Gtk.Box):
             self._textures.move_to_end(photo.uid)
             picture.set_paintable(cached)
             return
-        reference = weakref.ref(picture)
         request = self._request
         def paint(texture: Gdk.Texture | None) -> None:
-            target = reference()
-            if target is not None and request == self._request:
-                target.set_paintable(texture)
+            # GTK owns the widget, but not necessarily its Python wrapper.
+            # Keep that wrapper alive until the asynchronous reply arrives.
+            if request == self._request:
+                picture.set_paintable(texture)
                 if texture is None:
-                    target.set_tooltip_text(f"{photo.name}\nNo preview available. You can still download the original.")
+                    picture.set_tooltip_text(f"{photo.name}\nNo preview available. You can still download the original.")
         self._thumb_waiters.setdefault(photo.uid, []).append(paint)
         if not self._thumb_idle:
             self._thumb_idle = GLib.idle_add(self._request_thumbnails)
@@ -672,7 +671,9 @@ class PhotosView(Gtk.Box):
 
 class PhotoPreviewPage(Adw.NavigationPage):
     def __init__(self, client, window, photo: Photo, photos: tuple[Photo, ...]) -> None:
-        super().__init__(title=photo.name, tag="photo-preview")
+        # A popped page can remain parented during its closing animation.
+        # Previews are addressed by object, so they do not need a shared tag.
+        super().__init__(title=photo.name)
         self._client = client
         self._window = window
         self._photos = photos
