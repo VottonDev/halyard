@@ -3,7 +3,7 @@ Section: net
 Priority: optional
 Maintainer: Otto Hooper <votton@users.noreply.github.com>
 Build-Depends: debhelper-compat (= 13), git, nodejs (>= 22.15), python3,
- python3-gi, gir1.2-gtk-4.0 (>= 4.10), gir1.2-adw-1 (>= 1.5)
+ python3-gi, gir1.2-gtk-4.0 (>= 4.10), gir1.2-adw-1 (>= 1.6)
 Standards-Version: 4.7.3
 Homepage: https://github.com/VottonDev/halyard
 Rules-Requires-Root: no
@@ -11,7 +11,7 @@ Rules-Requires-Root: no
 Package: halyard
 Architecture: all
 Depends: ${misc:Depends}, nodejs (>= 22.13), python3, python3-gi,
- gir1.2-gtk-4.0 (>= 4.10), gir1.2-adw-1 (>= 1.5),
+ gir1.2-gtk-4.0 (>= 4.10), gir1.2-adw-1 (>= 1.6),
  dbus-user-session, gnome-keyring, xdg-desktop-portal, ca-certificates,
  libgtk-4-1 (>= 4.19.2) | libgtk-4-media-gstreamer,
  gstreamer1.0-plugins-base, gstreamer1.0-plugins-good

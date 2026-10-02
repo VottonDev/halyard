@@ -116,7 +116,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
 
         sync_section = Gio.Menu()
-        sync_section.append("Sync All Now", "win.sync-all")
+        sync_section.append("Sync all now", "win.sync-all")
         sync_section.append("Conflicts", "win.conflicts")
         menu.append_section(None, sync_section)
 
@@ -145,7 +145,7 @@ class HalyardWindow(Adw.ApplicationWindow):
 
         toolbar.add_top_bar(header)
         self._update_banner = Adw.Banner(
-            revealed=False, button_label="View Update",
+            revealed=False, button_label="View update",
         )
         self._update_banner.connect("button-clicked", self._open_update)
         toolbar.add_top_bar(self._update_banner)
@@ -183,9 +183,9 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._activity = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._activity_stack = Adw.ViewStack(vexpand=True)
         self._history_page = HistoryPage(self._client, self, embedded=True)
-        self._activity_stack.add_titled(self._history_page, "sync", "Folder Sync")
+        self._activity_stack.add_titled(self._history_page, "sync", "Folder sync")
         self._transfers_view = PhotoTransfersView(self._client, self)
-        self._activity_stack.add_titled(self._transfers_view, "photos", "Photo Transfers")
+        self._activity_stack.add_titled(self._transfers_view, "photos", "Photo transfers")
         self._activity.append(Adw.ViewSwitcher(stack=self._activity_stack, halign=Gtk.Align.CENTER))
         self._activity.append(self._activity_stack)
         self._views.add_titled_with_icon(self._activity, "activity", "Activity", "document-open-recent-symbolic")
@@ -198,7 +198,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._transfer_bar = Gtk.ActionBar(revealed=False)
         self._transfer_label = Gtk.Label(xalign=0)
         self._transfer_bar.pack_start(self._transfer_label)
-        activity_button = Gtk.Button(label="View Activity")
+        activity_button = Gtk.Button(label="View activity")
         activity_button.connect("clicked", lambda *_: self._show_photo_transfers())
         self._transfer_bar.pack_end(activity_button)
         toolbar.add_bottom_bar(self._transfer_bar)
@@ -240,7 +240,7 @@ class HalyardWindow(Adw.ApplicationWindow):
     def _build_disconnected(self) -> Gtk.Widget:
         self._disconnected_status = Adw.StatusPage(
             icon_name="network-offline-symbolic",
-            title="Sync Service Not Running",
+            title="Sync service not running",
         )
         box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
@@ -254,7 +254,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._start_button.connect("clicked", self._on_start_daemon)
         box.append(self._start_button)
 
-        retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER)
+        retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
         retry.add_css_class("pill")
         retry.add_css_class("flat")
         retry.connect("clicked", lambda *_: self._refresh_everything())
@@ -263,7 +263,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         # Users are right to be wary of anything that wants a password. Say
         # up front that this one does not, rather than leaving them guessing.
         note = Gtk.Label(
-            label="No administrator access is required — the service runs as you.",
+            label="No administrator access is required. The service runs as you.",
             wrap=True,
             justify=Gtk.Justification.CENTER,
         )
@@ -278,20 +278,20 @@ class HalyardWindow(Adw.ApplicationWindow):
     def _update_disconnected_page(self) -> None:
         """Offers whichever action actually applies to this machine."""
         if daemon_control.service_files_installed() or daemon_control.unit_installed():
-            self._start_button.set_label("Start Sync Service")
+            self._start_button.set_label("Start sync service")
             self._disconnected_status.set_description(
                 "Halyard’s background service does the syncing. It is not "
                 "running at the moment."
             )
         elif daemon_control.find_bundle() is not None:
-            self._start_button.set_label("Set Up Background Service")
+            self._start_button.set_label("Set up background service")
             self._disconnected_status.set_description(
                 "The background service has not been set up yet. Halyard can "
-                "do that now — it only writes to your own configuration, and "
-                "it will then start automatically whenever you need it."
+                "do that now. It only writes to your own configuration and "
+                "will start automatically whenever you need it."
             )
         else:
-            self._start_button.set_label("Start Sync Service")
+            self._start_button.set_label("Start sync service")
             self._start_button.set_sensitive(False)
             self._disconnected_status.set_description(
                 "The background service has not been built yet. Build it with:\n"
@@ -554,21 +554,21 @@ class HalyardWindow(Adw.ApplicationWindow):
         name = os.path.basename(pair.local_path) or pair.local_path
 
         dialog = Adw.AlertDialog(
-            heading=f"Stop Syncing “{name}”?",
+            heading=f"Stop syncing “{name}”",
             body=(f"{tilde_path(pair.local_path)} and {pair.remote_path} will "
                   "stop syncing with each other.\n\nYour files are not "
-                  "deleted — both folders are left exactly as they are now."),
+                  "deleted. Both folders are left exactly as they are now."),
         )
         check = Gtk.CheckButton(
-            label="Also forget this folder’s sync history",
+            label="Also delete saved sync state and activity",
         )
         check.set_tooltip_text(
-            "Discards Halyard's own record of what has been synced. "
-            "Your files are untouched."
+            "Adding these folders again will start a fresh sync. "
+            "Your files stay in place."
         )
         dialog.set_extra_child(check)
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("remove", "Stop Syncing")
+        dialog.add_response("remove", "Stop syncing")
         dialog.set_response_appearance(
             "remove", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -756,8 +756,8 @@ class HalyardWindow(Adw.ApplicationWindow):
         if self._tray_available:
             body = ("Closing this window leaves Halyard running in the "
                     "background, so your folders stay in sync.\n\nIts icon "
-                    "stays in the top bar — click it to open this window "
-                    "again, or to quit.")
+                    "stays in the top bar. Select it to open this window "
+                    "again or quit the window. Syncing continues.")
         else:
             body = ("Closing this window leaves the background service "
                     "running, so your folders stay in sync.\n\nHalyard will "
@@ -765,9 +765,9 @@ class HalyardWindow(Adw.ApplicationWindow):
                     "notifications. Open Halyard again any time to see "
                     "progress.")
 
-        dialog = Adw.AlertDialog(heading="Halyard Keeps Syncing", body=body)
-        dialog.add_response("stop", "Stop Syncing Too")
-        dialog.add_response("close", "Close Window")
+        dialog = Adw.AlertDialog(heading="Halyard keeps syncing", body=body)
+        dialog.add_response("stop", "Stop syncing too")
+        dialog.add_response("close", "Close window")
         dialog.set_response_appearance(
             "close", Adw.ResponseAppearance.SUGGESTED
         )

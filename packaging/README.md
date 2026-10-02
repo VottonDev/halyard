@@ -30,7 +30,7 @@ app's Preferences.
 
 ### Supported dependencies
 
-The UI requires GTK **4.10+** and libadwaita **1.5+**. The daemon requires
+The UI requires GTK **4.10+** and libadwaita **1.6+**. The daemon requires
 system Node **22.13+**, including `node:sqlite` without a command-line flag.
 The package declares these versions so apt/pacman resolves them automatically
 and rejects an installation whose repositories cannot provide them.
@@ -38,8 +38,8 @@ and rejects an installation whose repositories cannot provide them.
 | Distribution | Standard repositories |
 | --- | --- |
 | Ubuntu 26.04 | Satisfy the runtime requirements. |
-| Ubuntu 24.04 | GTK is sufficient; Node 18 is too old. Enable a trusted Node 22+ apt repository first. |
-| Debian 13 | GTK is sufficient; Node 20 is too old. Enable a trusted Node 22+ apt repository first. |
+| Ubuntu 24.04 | libadwaita 1.5 and Node 18 are too old. The standard repositories do not satisfy the runtime requirements. |
+| Debian 13 | GTK and libadwaita are sufficient. Node 20 is too old. Enable a trusted Node 22.13 or newer apt repository first. |
 | Ubuntu 22.04 / Debian 12 | GTK/libadwaita are too old; these releases are unsupported. |
 | Current Arch Linux | Satisfies the runtime requirements. |
 

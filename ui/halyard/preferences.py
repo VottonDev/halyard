@@ -32,8 +32,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
                          "running."),
         )
         self._autostart_row = Adw.SwitchRow(
-            title="Start on Login",
-            subtitle="Keep folders in sync as soon as you log in",
+            title="Open Halyard when you sign in",
+            subtitle="Show the window after you sign in to your computer",
         )
         self._updating = True
         self._autostart_row.set_active(settings.get_boolean("autostart"))
@@ -44,8 +44,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
         # The window and the service start independently: syncing should keep
         # working whether or not the user wants the window opening at login.
         self._service_row = Adw.SwitchRow(
-            title="Start Sync Service on Login",
-            subtitle="Sync in the background without opening Halyard",
+            title="Start syncing when you sign in",
+            subtitle="Sync in the background after you sign in to your computer",
         )
         # The switch starts off and flips once systemctl answers; querying it
         # synchronously here would stall the main loop while the dialog builds.
@@ -62,22 +62,23 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(startup)
 
         background = Adw.PreferencesGroup(
-            title="Running in the Background",
+            title="Running in the background",
             description=("Closing the Halyard window does not stop syncing. "
-                         "Halyard reports progress through the status icon "
-                         "and notifications."),
+                         "Check progress in the Halyard window. Notifications "
+                         "report background events. A status icon appears if "
+                         "your desktop supports it."),
         )
         self._version_row = Adw.ActionRow(
-            title="Sync Service",
+            title="Sync service",
             subtitle="Checking…",
         )
         background.add(self._version_row)
 
         quit_row = Adw.ActionRow(
-            title="Stop Syncing Until Next Login",
+            title="Stop syncing",
             subtitle="Shuts down the background service",
         )
-        quit_button = Gtk.Button(label="Stop Service", valign=Gtk.Align.CENTER)
+        quit_button = Gtk.Button(label="Stop service", valign=Gtk.Align.CENTER)
         quit_button.add_css_class("destructive-action")
         quit_button.connect("clicked", self._on_quit_daemon)
         quit_row.add_suffix(quit_button)
@@ -86,10 +87,10 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
         account = Adw.PreferencesGroup(title="Account")
         self._account_row = Adw.ActionRow(
-            title="Signed In As",
+            title="Signed in as",
             subtitle="Not signed in",
         )
-        sign_out = Gtk.Button(label="Sign Out", valign=Gtk.Align.CENTER)
+        sign_out = Gtk.Button(label="Sign out", valign=Gtk.Align.CENTER)
         sign_out.connect("clicked", self._on_sign_out)
         self._sign_out_button = sign_out
         self._account_row.add_suffix(sign_out)
@@ -145,8 +146,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
             row.set_sensitive(True)
             if ok:
                 self._window.toast(
-                    "Syncing will start automatically at login"
-                    if wanted else "Syncing will no longer start at login"
+                    "Background syncing will start when you sign in to your computer"
+                    if wanted else "Background service startup turned off"
                 )
                 return
             # Put the switch back rather than showing a state that is not real.
@@ -171,8 +172,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
             self._settings.set_boolean("autostart", granted)
             if granted != wanted:
                 self._window.toast(
-                    "Start on login was not permitted."
-                    if wanted else "Start on login is still enabled."
+                    "Opening Halyard at sign-in was not permitted."
+                    if wanted else "Opening Halyard at sign-in is still enabled."
                 )
 
         def on_error(message: str) -> None:
@@ -188,12 +189,13 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
     def _on_quit_daemon(self, _button) -> None:
         dialog = Adw.AlertDialog(
-            heading="Stop the Sync Service?",
-            body=("Your folders will stop syncing until you start Halyard "
-                  "again or log back in. Nothing is deleted."),
+            heading="Stop the sync service",
+            body=("Your folders will stop syncing. Open Halyard to start "
+                  "syncing again, or sign in to your computer if background "
+                  "startup is enabled. Nothing is deleted."),
         )
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("stop", "Stop Service")
+        dialog.add_response("stop", "Stop service")
         dialog.set_response_appearance(
             "stop", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -211,12 +213,12 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
     def _on_sign_out(self, _button) -> None:
         dialog = Adw.AlertDialog(
-            heading="Sign Out of Proton Drive?",
+            heading="Sign out of Proton Drive",
             body=("Syncing stops until you sign in again. The files already "
                   "on this computer are left exactly as they are."),
         )
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("signout", "Sign Out")
+        dialog.add_response("signout", "Sign out")
         dialog.set_response_appearance(
             "signout", Adw.ResponseAppearance.DESTRUCTIVE
         )

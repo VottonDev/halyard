@@ -15,13 +15,13 @@ class PhotoTransfersView(Gtk.Box):
                           client.connect("photo-uploads-changed", self._uploads_changed)]
         scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         self._page = Adw.PreferencesPage()
-        self._group = Adw.PreferencesGroup(title="Photo Transfers", description=(
-            "Transfers continue while the window is closed. Unfinished jobs stop when the service quits; "
-            "choose those files again after restarting it."))
+        self._group = Adw.PreferencesGroup(title="Photo transfers", description=(
+            "Transfers continue while the window is closed. Unfinished transfers stop when the sync service stops. "
+            "After restarting the service, select those files again to upload or download them."))
         self._page.add(self._group)
         scroll.set_child(self._page)
         self.append(scroll)
-        self._empty = Adw.StatusPage(title="No Photo Transfers", icon_name="folder-download-symbolic",
+        self._empty = Adw.StatusPage(title="No photo transfers", icon_name="folder-download-symbolic",
                                     description="Photos you upload or download will appear here.")
         self.append(self._empty)
 

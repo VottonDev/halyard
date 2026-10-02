@@ -61,7 +61,7 @@ describe('exclusion matching', () => {
     });
 
     test('validation rejects what it cannot honour', () => {
-        expect(validatePattern('!keep-me')).toMatch(/Negated/);
+        expect(validatePattern('!keep-me')).toMatch(/starting with !/);
         expect(validatePattern('..\\/escape')).toBeTruthy();
         expect(validatePattern('../outside')).toMatch(/cannot escape/);
         expect(validatePattern('GitHub')).toBeNull();

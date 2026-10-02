@@ -58,7 +58,7 @@ class RemoteFolderPage(Adw.NavigationPage):
 
         empty = Adw.StatusPage(
             icon_name="folder-symbolic",
-            title="No Folders Here",
+            title="No folders here",
             description="Create a folder, or sync with this one.",
         )
         self._stack.add_named(empty, "empty")
@@ -74,10 +74,10 @@ class RemoteFolderPage(Adw.NavigationPage):
 
         error = Adw.StatusPage(
             icon_name="dialog-warning-symbolic",
-            title="Could Not Load Folders",
+            title="Could not load folders",
         )
         self._error_page = error
-        retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER)
+        retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
         retry.add_css_class("pill")
         retry.connect("clicked", lambda *_: self.load(force=True))
         error.set_child(retry)
@@ -93,7 +93,7 @@ class RemoteFolderPage(Adw.NavigationPage):
         bottom.set_margin_bottom(12)
         bottom.set_margin_start(12)
         bottom.set_margin_end(12)
-        select = Gtk.Button(label=f"Sync With “{title}”", hexpand=True)
+        select = Gtk.Button(label=f"Sync with “{title}”", hexpand=True)
         select.add_css_class("suggested-action")
         select.add_css_class("pill")
         select.connect("clicked", self._on_select)
@@ -160,7 +160,7 @@ class RemoteFolderPage(Adw.NavigationPage):
 
     def _on_new_folder(self, _button) -> None:
         dialog = Adw.AlertDialog(
-            heading="New Folder",
+            heading="New folder",
             body=f"Create a folder inside “{self.get_title()}”.",
         )
         entry = Adw.EntryRow(title="Folder name")
@@ -225,7 +225,7 @@ class PairDialog(Adw.Dialog):
         self._suggestion_rows: list[Adw.ActionRow] = []
 
         editing = pair is not None
-        self.set_title("Edit Folder Pair" if editing else "Add Folder Pair")
+        self.set_title("Edit folder pair" if editing else "Add folder pair")
         self.set_content_width(500)
         self.set_content_height(640)
 
@@ -238,7 +238,7 @@ class PairDialog(Adw.Dialog):
 
     def _build_root_page(self, editing: bool) -> Adw.NavigationPage:
         page = Adw.NavigationPage(
-            title="Edit Folder Pair" if editing else "Add Folder Pair"
+            title="Edit folder pair" if editing else "Add folder pair"
         )
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar(show_end_title_buttons=False,
@@ -260,7 +260,7 @@ class PairDialog(Adw.Dialog):
         content = Adw.PreferencesPage()
 
         local_group = Adw.PreferencesGroup(
-            title="On This Computer",
+            title="On this computer",
             description="The folder to keep in sync.",
         )
         self._local_row = Adw.ActionRow(
@@ -335,9 +335,9 @@ class PairDialog(Adw.Dialog):
         group = Adw.PreferencesGroup(
             title="Exclusions",
             description=(
-                "Leave parts of this folder out of the sync. Patterns are "
-                "relative to the folder — for example GitHub, *.iso, "
-                "/build, or Archive/old."
+                "Use names or patterns to choose what Halyard skips. "
+                "Write paths relative to the folder you are syncing. "
+                "For example: GitHub, *.iso, /build or Archive/old."
             ),
         )
         self._excludes_group = group
@@ -537,7 +537,7 @@ class PairDialog(Adw.Dialog):
 
     def _on_choose_local(self, *_args) -> None:
         dialog = Gtk.FileDialog(
-            title="Select a Folder to Sync",
+            title="Select a folder to sync",
             modal=True,
         )
         if self._local_path and os.path.isdir(self._local_path):
@@ -594,7 +594,7 @@ class PairDialog(Adw.Dialog):
         default = (os.path.basename(self._local_path.rstrip("/"))
                    if self._local_path else "")
         dialog = Adw.AlertDialog(
-            heading="New Folder in Proton Drive",
+            heading="New folder in Proton Drive",
             body="Create a folder at the top of My Files and sync with it. "
                  "It is created when you add the pair.",
         )
@@ -604,7 +604,7 @@ class PairDialog(Adw.Dialog):
         group.add(entry)
         dialog.set_extra_child(group)
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("use", "Use This Folder")
+        dialog.add_response("use", "Use this folder")
         dialog.set_response_appearance("use", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("use")
         dialog.set_close_response("cancel")

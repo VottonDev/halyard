@@ -35,8 +35,8 @@ class LoginView(Gtk.Box):
             icon_name="folder-remote-symbolic",
             title="Sync with Proton Drive",
             description=(
-                "Halyard keeps folders on this computer in step with your "
-                "Proton Drive."
+                "Halyard syncs additions, edits and deletions between your "
+                "chosen folders on this computer and in Proton Drive."
             ),
             vexpand=True,
         )
@@ -67,7 +67,7 @@ class LoginView(Gtk.Box):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 
         self._sign_in_button = Gtk.Button(
-            label="Sign In with Proton",
+            label="Sign in with Proton",
             halign=Gtk.Align.CENTER,
         )
         self._sign_in_button.add_css_class("suggested-action")
@@ -125,7 +125,7 @@ class LoginView(Gtk.Box):
         cancel.connect("clicked", self._on_cancel_clicked)
         buttons.append(cancel)
 
-        reopen = Gtk.Button(label="Open Page Again")
+        reopen = Gtk.Button(label="Open page again")
         reopen.add_css_class("pill")
         reopen.connect("clicked", self._on_reopen_clicked)
         buttons.append(reopen)
@@ -229,7 +229,7 @@ class LoginView(Gtk.Box):
     def _show_error(self, message: str, copy_url: str = "") -> None:
         self._banner.set_title(message)
         if copy_url:
-            self._banner.set_button_label("Copy Link")
+            self._banner.set_button_label("Copy link")
 
             def on_clicked(_banner) -> None:
                 clipboard = self.get_clipboard()

@@ -385,17 +385,17 @@ class TrayIcon(GObject.Object):
     def _menu_items(self) -> list[dict]:
         return [
             {"id": ID_OPEN, "label": "Open Halyard", "enabled": True},
-            {"id": ID_SYNC, "label": "Sync Now", "enabled": self._can_sync},
+            {"id": ID_SYNC, "label": "Sync now", "enabled": self._can_sync},
             {"id": ID_SEP1, "separator": True},
             {
                 "id": ID_PAUSE,
-                "label": "Resume Syncing" if self._paused else "Pause Syncing",
+                "label": "Resume syncing" if self._paused else "Pause syncing",
                 "enabled": True,
             },
             {"id": ID_SEP2, "separator": True},
             # Says plainly that the daemon lives on; otherwise "Quit" reads as
             # "stop syncing", which is not what it does.
-            {"id": ID_QUIT, "label": "Quit Halyard (Syncing Continues)",
+            {"id": ID_QUIT, "label": "Quit Halyard (syncing continues)",
              "enabled": True},
         ]
 

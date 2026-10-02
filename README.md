@@ -6,9 +6,9 @@ Two-way folder sync for Proton Drive on GNOME.
 > It is not affiliated with, endorsed by, or produced by Proton AG. It is built
 > on Proton's open-source Drive SDK, but Proton provides no support for it.
 
-Pick a local folder, pick a Drive folder, and Halyard keeps them in step in both
-directions. Add as many pairs as you like; folders you have not paired are never
-touched.
+Choose a folder on this computer and one in Proton Drive. Halyard syncs
+additions, edits and deletions between them. These two folders form a folder
+pair. Add as many pairs as you like. Halyard leaves unpaired folders alone.
 
 ```
 ~/Documents/Work   ↔  /Work
@@ -40,7 +40,7 @@ When the safe answer is unclear, Halyard keeps both copies.
 
 - GNOME on Wayland or X11, with a Secret Service provider such as `gnome-keyring`
 - Node 22.13+
-- Python 3 with PyGObject, GTK 4.10+ and libadwaita 1.5+
+- Python 3 with PyGObject, GTK 4.10 or newer and libadwaita 1.6 or newer
 - Bun for source builds, which applies the required patch for `@protontech/crypto`
 
 ## Install
@@ -57,10 +57,11 @@ sudo pacman -U ./halyard-*-any.pkg.tar.zst
 ```
 
 Run these commands in a directory containing the one package you downloaded.
-Open Halyard from the application menu. Dependencies install automatically;
-no SDK build or Bun installation is needed. Ubuntu 26.04 and current Arch
-provide the required runtime versions. Ubuntu 24.04 and Debian 13 need a
-Node 22+ apt repository enabled first. See the [packaging guide](packaging/README.md)
+Open Halyard from the application menu. Dependencies install automatically.
+No SDK build or Bun installation is needed. Ubuntu 26.04 and current Arch
+provide the required runtime versions. Debian 13 needs a Node 22.13 or newer
+apt repository enabled first. Ubuntu 24.04's standard repositories do not
+provide the required libadwaita version. See the [packaging guide](packaging/README.md)
 for compatibility, building packages, and replacing a manual installation.
 
 To install from source for your user:
@@ -79,31 +80,39 @@ metadata cache.
 
 ## Using it
 
-Add a pair with the + button. Choose a local folder, then select or create its
-Drive folder. Sync starts at once.
+Select the + button to add a folder pair. Choose a folder on this computer,
+then select or create its Proton Drive folder. Sync starts at once.
 
-Closing the window does not stop syncing. Choose Quit from the app menu or run
-`systemctl --user stop halyard-daemon` to stop the service. Halyard runs entirely
-as your user; only installation of a distribution package uses administrator access.
+Closing the window does not stop syncing. Open Preferences and select
+**Stop service**, or run `systemctl --user stop halyard-daemon`.
+Halyard runs as your user. Only installation of a distribution package uses
+administrator access.
 
-Conflicts appear in their own view. Both copies already exist on disk by the
-time you see one. Keep local restores your copy to the original name. Keep
-remote discards the preserved copy. Dismiss leaves both files and clears the
-entry.
+Select **Conflicts** from the app menu to review files that changed in both
+places, or were edited in one place and deleted in the other.
+
+For files edited in both places, Halyard keeps both versions under different
+names. Select **Use this computer’s version** to restore your version to the
+original name. Select **Use Proton Drive’s version** to remove the preserved
+local copy. Select **Keep both** to leave both files and clear the entry.
+
+If a file was edited in one place and deleted in the other, Halyard keeps the
+edited version. Select **Keep edited file** to clear the entry. Check Activity
+for any transfers that could not finish.
 
 ### Excluding folders
 
 A pair can cover a broad folder while leaving parts of it alone. For example,
-sync `~/Documents` but not the `GitHub` checkout inside it. Patterns are
-gitignore-style and relative to the pair root:
+sync `~/Documents` but not the `GitHub` folder inside it. Use names or patterns
+to choose what Halyard skips. Write paths relative to the folder you are syncing:
 
 | Pattern | Matches |
 |---|---|
 | `GitHub` | a folder named `GitHub` at any depth, and everything under it |
 | `/GitHub` | only at the top level of the pair |
-| `Archive/old` | an anchored path (any interior slash anchors) |
-| `*.iso` | a glob within one path segment |
-| `**/cache` | an explicit any-depth match |
+| `Archive/old` | the `Archive/old` path starting from the synced folder, and anything inside it |
+| `*.iso` | names ending in `.iso` at any folder level, and anything inside matching folders |
+| `**/cache` | a file or folder named `cache` at any depth, and anything inside it |
 
 Excluding a path never deletes it. Existing content stays in place locally and
 on Drive but is no longer tracked. Removing an exclusion later merges both
@@ -161,15 +170,32 @@ journalctl --user -u halyard-daemon -f
 |---|---|
 | "No usable secret service found" at startup | `gnome-keyring` is not running, or the login keyring is locked. Unlock it and restart the daemon. |
 | The app sits on "connecting" | Start the daemon with `systemctl --user start halyard-daemon`. |
-| A pair shows an error and stalls | The message is verbatim from the daemon. Failed items are retried on the next cycle; sync does not stop for one bad file. |
+| A pair shows an error and stalls | Read the error for details. Halyard retries failed items on the next sync cycle. One failed file does not stop the others. |
 | Notifications never appear | GNOME only shows them once the `.desktop` file is installed in `XDG_DATA_DIRS`, which `install.sh` does. |
-| Nothing syncs after sign-in | Check the pair is enabled and not globally paused (`GetStatus` shows both). |
+| Nothing syncs after sign-in | Check that the folder pair is switched on and syncing is not paused. |
 
 You can safely delete `~/.cache/halyard/`. Do not delete
 `~/.local/share/halyard/sync.sqlite` as routine troubleshooting. It records the
 last state shared by both sides.
 
 ## Uninstall
+
+Stop syncing in Preferences before uninstalling Halyard.
+
+### Uninstall a distribution package
+
+Remove the package with your package manager:
+
+```bash
+# Debian/Ubuntu
+sudo apt remove halyard
+# Arch Linux
+sudo pacman -R halyard
+```
+
+Your files, saved sync state and credentials stay in place.
+
+### Uninstall a manual installation
 
 ```bash
 systemctl --user disable --now halyard-daemon.service
@@ -194,15 +220,6 @@ Drive session" in Passwords and Keys to drop the stored session.
 - No resumable transfers; interrupted uploads restart
 - Symlinks are skipped
 - Shared-with-me folders are untested
-
-## Verification status
-
-This is alpha software. It has more than a month of real-world use across
-multi-gigabyte pairs with thousands of documents, photos, videos, configuration
-files, and nested folders. Uploads, downloads, moves, deletions, conflicts, and
-session restore have all been exercised against a real account. Recovery from a
-network failure during a transfer is still unverified. Keep a backup and start
-with non-critical files.
 
 ## Licence
 

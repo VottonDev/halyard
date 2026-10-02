@@ -97,8 +97,8 @@ class PairRow(Adw.ActionRow):
         suffix.append(self._switch)
 
         menu = Gio.Menu()
-        menu.append("Sync Now", "row.sync")
-        menu.append("Recent Activity", "row.history")
+        menu.append("Sync now", "row.sync")
+        menu.append("Recent activity", "row.history")
         menu.append("Edit…", "row.edit")
         menu.append("Remove…", "row.remove")
 
@@ -275,12 +275,12 @@ class PairsView(Gtk.Box):
         # Empty state
         empty = Adw.StatusPage(
             icon_name="folder-symbolic",
-            title="No Folders Synced Yet",
+            title="No folders synced yet",
             description=("Choose a folder on this computer and a folder in "
-                         "Proton Drive. Halyard keeps them in step, in both "
-                         "directions."),
+                         "Proton Drive. Halyard syncs additions, edits and "
+                         "deletions between them."),
         )
-        add_button = Gtk.Button(label="Add Folder Pair", halign=Gtk.Align.CENTER)
+        add_button = Gtk.Button(label="Add folder pair", halign=Gtk.Align.CENTER)
         add_button.add_css_class("suggested-action")
         add_button.add_css_class("pill")
         add_button.connect("clicked", lambda *_: self.emit("add-requested"))
@@ -290,7 +290,7 @@ class PairsView(Gtk.Box):
         # Populated state
         page = Adw.PreferencesPage()
         self._group = Adw.PreferencesGroup(
-            title="Folder Pairs",
+            title="Folder pairs",
             description="Each pair syncs in both directions.",
         )
         add_icon_button = Gtk.Button(
@@ -328,7 +328,7 @@ class PairsView(Gtk.Box):
         if conflicts:
             noun = "file needs" if conflicts == 1 else "files need"
             self._conflict_banner.set_title(
-                f"{conflicts} {noun} your attention. Both copies were kept."
+                f"{conflicts} {noun} your attention. Review the conflicts for details."
             )
         self._conflict_banner.set_revealed(bool(conflicts))
 

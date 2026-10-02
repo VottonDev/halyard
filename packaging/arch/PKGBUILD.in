@@ -6,7 +6,7 @@ pkgdesc='Unofficial two-way Proton Drive sync client for GNOME'
 arch=('any')
 url='https://github.com/VottonDev/halyard'
 license=('MIT' 'GPL-3.0-only' 'LGPL-3.0-or-later' 'Apache-2.0' 'BSD-3-Clause' 'ISC' 'BlueOak-1.0.0')
-depends=('nodejs>=22.13' 'python' 'python-gobject' 'gtk4>=4.10' 'libadwaita>=1.5'
+depends=('nodejs>=22.13' 'python' 'python-gobject' 'gtk4>=4.10' 'libadwaita>=1.6'
          'dbus' 'gnome-keyring' 'xdg-desktop-portal' 'ca-certificates' 'gst-plugins-base' 'gst-plugins-good')
 makedepends=('git' 'bun' 'nodejs>=22.15')
 optdepends=('xdg-desktop-portal-gnome: GNOME background and file chooser portals'

@@ -136,7 +136,7 @@ def run_scenario(app, flags, scenario):
             check("empty gallery", view._stack.get_visible_child_name() == "empty" and not view._photos)
             view.show_albums()
             loaded(view)
-            check("empty albums", view._empty.get_title() == "No Albums Yet")
+            check("empty albums", view._empty.get_title() == "No albums yet")
             return
         if scenario == "offline":
             check("offline error screen", view._stack.get_visible_child_name() == "error" and "connect" in view._error.get_description())
@@ -190,7 +190,7 @@ def run_scenario(app, flags, scenario):
         check("filename search", all("IMG_0001" in p.name for p in view._photos))
         view._search_entry.set_text("no-such-photo")
         wait(lambda: view._stack.get_visible_child_name() == "empty")
-        check("no matching photos screen", view._empty.get_title() == "No Matching Photos")
+        check("no matching photos screen", view._empty.get_title() == "No matching photos")
         view._search_entry.set_text("")
         wait(lambda: not view._loading and len(view._photos) == 60)
         view.show_albums()
@@ -296,7 +296,7 @@ def run_scenario(app, flags, scenario):
         view.download_items([linked])
         download_dialog = dialog(window)
         labels = [w.get_label() for w in descendants(download_dialog.get_extra_child()) if isinstance(w, Gtk.Label)]
-        check("download warns about synced destination", any("overlaps a synced folder" in label for label in labels))
+        check("download warns about synced destination", any("will also sync to Proton Drive, unless excluded" in label for label in labels))
         respond(download_dialog, "download")
         wait(lambda: len(window._transfers_view.downloads) == 1)
         job = window._transfers_view.downloads[0]
@@ -331,7 +331,7 @@ def run_scenario(app, flags, scenario):
             with patch("halyard.photos_view.Gtk.FileDialog", FixtureChooser):
                 view._choose_upload()
                 upload_dialog = dialog(window)
-                check("upload preparation and confirmation", upload_dialog.get_heading() == "Upload 1 Photos?")
+                check("upload preparation and confirmation", upload_dialog.get_heading() == "Upload photo")
                 respond(upload_dialog, "upload")
                 wait(lambda: len(window._transfers_view.uploads) == 1)
             check("upload keeps local original", image.read_bytes() == base64.b64decode(mock_preview(1)))

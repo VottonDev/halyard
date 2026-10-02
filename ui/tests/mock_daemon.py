@@ -209,7 +209,8 @@ def validate_excludes(patterns) -> list[str]:
             continue
         if pattern.startswith("!"):
             raise ValueError(
-                f'Exclusion "{pattern}": Negated patterns (!) are not supported'
+                f'Exclusion "{pattern}": Patterns starting with ! are not supported. '
+                'Choose the folders to exclude without using !.'
             )
         if ".." in pattern.split("/"):
             raise ValueError(
@@ -369,7 +370,7 @@ class MockState:
                 "detectedAt": minutes_ago(140),
                 "keptCopyPath": "budget/2026-forecast.ods",
                 "localModifiedAt": minutes_ago(150),
-                "remoteModifiedAt": minutes_ago(600),
+                "remoteModifiedAt": None,
             },
             {
                 "id": "c_88c2",
@@ -377,8 +378,8 @@ class MockState:
                 "path": "daily/2026-07-14.md",
                 "kind": "localDeletedRemoteModified",
                 "detectedAt": minutes_ago(300),
-                "keptCopyPath": "daily/2026-07-14 (restored from Proton Drive).md",
-                "localModifiedAt": minutes_ago(320),
+                "keptCopyPath": "daily/2026-07-14.md",
+                "localModifiedAt": None,
                 "remoteModifiedAt": minutes_ago(310),
             },
         ]

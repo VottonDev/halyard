@@ -14,7 +14,7 @@ in [`../docs/dbus-api.md`](../docs/dbus-api.md).
 ## Requirements
 
 - Python 3.11+
-- GTK 4.12+ and libadwaita 1.6+ (developed against GTK 4.22 / libadwaita 1.9)
+- GTK 4.10 or newer and libadwaita 1.6 or newer
 - PyGObject
 - A session D-Bus
 
@@ -65,7 +65,7 @@ python3 -m halyard.main
 PYTHONPATH=. python3 -m halyard.main
 ```
 
-With no daemon on the bus the UI shows a "Sync Service Not Running" state and
+With no daemon on the bus the UI shows a "Sync service not running" state and
 recovers when one appears. It watches the bus name instead of polling.
 
 ## Layout
@@ -150,6 +150,16 @@ Run the offline update-check tests without starting the UI or daemon:
 
 ```sh
 PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_update_check.py'
+```
+
+## Conflict choices
+
+From the repository root, run the GTK conflict checks on a usable display.
+They check the controls for separate versions and deletion conflicts without
+starting a daemon or using a Proton account:
+
+```sh
+python3 ui/tests/integration_conflicts.py
 ```
 
 ## Photos

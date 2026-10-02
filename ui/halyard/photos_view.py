@@ -75,7 +75,7 @@ class PhotosView(Gtk.Box):
         search = Gtk.ToggleButton(icon_name="system-search-symbolic", tooltip_text="Search by file name")
         search.connect("toggled", lambda button: self._search_bar.set_search_mode(button.get_active()))
         heading.append(search)
-        self._upload_button = Gtk.Button(icon_name="document-send-symbolic", tooltip_text="Upload Photos…")
+        self._upload_button = Gtk.Button(icon_name="document-send-symbolic", tooltip_text="Upload photos…")
         self._upload_button.connect("clicked", self._choose_upload)
         heading.append(self._upload_button)
         self._select_button = Gtk.Button(label="Select")
@@ -95,7 +95,7 @@ class PhotosView(Gtk.Box):
         self._back = Gtk.Button(icon_name="go-previous-symbolic", tooltip_text="Back to albums", visible=False)
         self._back.connect("clicked", lambda *_: self.show_albums())
         controls.append(self._back)
-        self._all_button = Gtk.ToggleButton(label="All Photos", active=True)
+        self._all_button = Gtk.ToggleButton(label="All photos", active=True)
         self._all_button.connect("clicked", lambda *_: self.show_timeline())
         controls.append(self._all_button)
         self._albums_button = Gtk.ToggleButton(label="Albums")
@@ -110,16 +110,16 @@ class PhotosView(Gtk.Box):
         self.append(controls)
 
         self._stack = Gtk.Stack(vexpand=True)
-        self._loading_page = Adw.StatusPage(title="Loading Photos…")
+        self._loading_page = Adw.StatusPage(title="Loading photos…")
         spinner = Adw.Spinner()
         spinner.set_size_request(32, 32)
         self._loading_page.set_child(spinner)
         self._stack.add_named(self._loading_page, "loading")
-        self._empty = Adw.StatusPage(icon_name="image-x-generic-symbolic", title="No Photos Yet",
+        self._empty = Adw.StatusPage(icon_name="image-x-generic-symbolic", title="No photos yet",
                                     description="Photos added to your Proton Drive gallery will appear here.")
         self._stack.add_named(self._empty, "empty")
-        self._error = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Could Not Load Photos")
-        retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER)
+        self._error = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Could not load photos")
+        retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
         retry.connect("clicked", lambda *_: self.reload())
         self._error.set_child(retry)
         self._stack.add_named(self._error, "error")
@@ -150,7 +150,7 @@ class PhotosView(Gtk.Box):
         self._stack.add_named(albums_scroll, "albums")
         self.append(self._stack)
 
-        self._more = Gtk.Button(label="Load More Photos", halign=Gtk.Align.CENTER, visible=False)
+        self._more = Gtk.Button(label="Load more photos", halign=Gtk.Align.CENTER, visible=False)
         self._more.connect("clicked", lambda *_: self._load(more=True))
         self._more.set_margin_top(8)
         self._more.set_margin_bottom(8)
@@ -216,7 +216,7 @@ class PhotosView(Gtk.Box):
         self._update_selection()
 
     def _choose_upload(self, *_):
-        chooser = Gtk.FileDialog(title="Upload Photos", modal=True)
+        chooser = Gtk.FileDialog(title="Upload photos", modal=True)
         image_filter = Gtk.FileFilter(name="JPEG, PNG and WebP images")
         for mime in ("image/jpeg", "image/png", "image/webp"): image_filter.add_mime_type(mime)
         filters = Gio.ListStore.new(Gtk.FileFilter)
@@ -259,10 +259,11 @@ class PhotosView(Gtk.Box):
                 if request != self._request or not self.window.account_logged_in: return False
                 if error:
                     self.window.toast(error); return False
-                dialog = Adw.AlertDialog(heading=f"Upload {len(files)} Photos?", body=(
+                heading = "Upload photo" if len(files) == 1 else f"Upload {len(files)} photos"
+                dialog = Adw.AlertDialog(heading=heading, body=(
                     "These images will be added to your Proton Drive gallery. Local originals stay in place. "
-                    "Copies with the same name and content are skipped. Capture dates are kept where available; "
-                    "otherwise the file modification date is used."))
+                    "Copies with the same name and content are skipped. Halyard keeps the date each photo was taken. "
+                    "If that date is missing, it uses the file’s last modified date."))
                 dialog.add_response("cancel", "Cancel"); dialog.add_response("upload", "Upload")
                 dialog.set_response_appearance("upload", Adw.ResponseAppearance.SUGGESTED)
                 dialog.set_default_response("upload"); dialog.set_close_response("cancel")
@@ -378,7 +379,7 @@ class PhotosView(Gtk.Box):
                     self._album_group.add(row)
                     self._album_rows.append(row)
                 self._more.set_visible(False)
-                self._empty.set_title("No Albums Yet")
+                self._empty.set_title("No albums yet")
                 self._empty.set_description("Albums created in Proton Drive will appear here.")
                 self._stack.set_visible_child_name("albums" if albums else "empty")
             self.client.list_photo_albums(albums_ok, error)
@@ -402,7 +403,7 @@ class PhotosView(Gtk.Box):
             self._more.set_sensitive(self._latest_revision <= page.revision)
             if self._latest_revision > page.revision:
                 self._changed_banner.set_revealed(True)
-            self._empty.set_title("No Matching Photos" if query["search"] or query["kind"] != "all" else "No Photos Yet")
+            self._empty.set_title("No matching photos" if query["search"] or query["kind"] != "all" else "No photos yet")
             self._empty.set_description("Try another filter." if query["search"] or query["kind"] != "all" else
                                         "Photos added to your Proton Drive gallery will appear here.")
             self._stack.set_visible_child_name("photos" if self._photos else "empty")
@@ -585,7 +586,7 @@ class PhotosView(Gtk.Box):
         if len(items) > 100:
             self.window.toast("Select at most 100 photos to move to Trash at once."); return
         request = self._request
-        dialog = Adw.AlertDialog(heading="Move to Trash?", body=(
+        dialog = Adw.AlertDialog(heading="Move to Trash", body=(
             f"{len(items)} selected photos will be removed from your gallery and albums. "
             "Linked live-photo files are included. You can restore them from Trash in Proton Drive. "
             "Downloaded copies on this computer stay in place."))
@@ -619,10 +620,10 @@ class PhotosView(Gtk.Box):
             return
         pictures = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) or os.path.join(os.path.expanduser("~"), "Pictures")
         destination = [self.settings.get_string("photo-download-folder") or os.path.join(pictures, "Proton Photos")]
-        dialog = Adw.AlertDialog(heading="Download Photo" if len(items) == 1 else f"Download {len(items)} Photos")
+        dialog = Adw.AlertDialog(heading="Download photo" if len(items) == 1 else f"Download {len(items)} photos")
         dialog.set_body("Save original files to this computer. Existing files are kept, and linked live-photo images and videos are included.")
         extra = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        folder_row = Adw.ActionRow(title="Download Folder")
+        folder_row = Adw.ActionRow(title="Download folder")
         change = Gtk.Button(label="Change…", valign=Gtk.Align.CENTER)
         folder_row.add_suffix(change)
         extra.append(folder_row)
@@ -632,9 +633,9 @@ class PhotosView(Gtk.Box):
         def describe() -> None:
             folder_row.set_subtitle(GLib.markup_escape_text(tilde_path(destination[0])))
             paired = [p for p in self.window.folder_pairs if paths_overlap(destination[0], p.local_path)]
-            notice.set_label("This folder overlaps a synced folder. Saved photos will follow its existing sync rules." if paired else "Downloaded copies do not create a folder pair.")
+            notice.set_label("Photos saved inside a synced folder will also sync to Proton Drive, unless excluded." if paired else "Downloaded copies do not create a folder pair.")
         def choose(*_args) -> None:
-            chooser = Gtk.FileDialog(title="Choose a Photo Download Folder", modal=True)
+            chooser = Gtk.FileDialog(title="Choose a photo download folder", modal=True)
             initial = destination[0] if os.path.isdir(destination[0]) else pictures if os.path.isdir(pictures) else os.path.expanduser("~")
             chooser.set_initial_folder(Gio.File.new_for_path(initial))
             def chosen(source, result) -> None:
@@ -709,7 +710,7 @@ class PhotoPreviewPage(Adw.NavigationPage):
         header.pack_end(download)
         toolbar.add_top_bar(header)
         self._stack = Gtk.Stack(vexpand=True)
-        loading = Adw.StatusPage(title="Loading Preview…")
+        loading = Adw.StatusPage(title="Loading preview…")
         spinner = Adw.Spinner()
         spinner.set_size_request(32, 32)
         loading.set_child(spinner)
@@ -724,9 +725,9 @@ class PhotoPreviewPage(Adw.NavigationPage):
         self._stack.add_named(scroll, "preview")
         self._video = Gtk.Video(autoplay=True, hexpand=True, vexpand=True)
         self._stack.add_named(self._video, "video")
-        self._error = Adw.StatusPage(icon_name="image-missing-symbolic", title="Preview Unavailable",
+        self._error = Adw.StatusPage(icon_name="image-missing-symbolic", title="Preview unavailable",
                                     description="You can download the original and open it in another application.")
-        retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER)
+        retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
         retry.connect("clicked", lambda *_: self._load())
         self._error.set_child(retry)
         self._stack.add_named(self._error, "error")
@@ -738,7 +739,7 @@ class PhotoPreviewPage(Adw.NavigationPage):
         self._caption = Gtk.Label(hexpand=True, wrap=True)
         self._caption.add_css_class("dim-label")
         footer.append(self._caption)
-        self._play_button = Gtk.Button(label="Play Video", visible=False)
+        self._play_button = Gtk.Button(label="Play video", visible=False)
         self._play_button.connect("clicked", self._play_video)
         footer.append(self._play_button)
         self._next = Gtk.Button(icon_name="go-next-symbolic", tooltip_text="Next photo")
@@ -842,7 +843,7 @@ class PhotoPreviewPage(Adw.NavigationPage):
         self._previous.set_sensitive(self._index > 0)
         self._next.set_sensitive(self._index < len(self._photos) - 1)
         self._caption.set_label(f"{self._index + 1} of {len(self._photos)} · " +
-                                ("Video. Streamed preview; Download verifies the original." if photo.is_video else "Preview. Download saves the original photo."))
+                                ("Video. Streamed preview. Download verifies the original." if photo.is_video else "Preview. Download saves the original photo."))
         self._detail_label.set_label(f"{photo.name}\n\nTaken: {format_absolute_time(photo.capture_time)}\n"
                                      f"Size: {format_size(photo.size) if photo.size is not None else 'Unknown'}\n"
                                      f"Type: {photo.media_type or 'Unknown'}\n"

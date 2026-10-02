@@ -107,7 +107,7 @@ export function validatePattern(rawPattern: string): string | null {
         return null;
     }
     if (pattern.startsWith('!')) {
-        return 'Negated patterns (!) are not supported';
+        return 'Patterns starting with ! are not supported. Choose the folders to exclude without using !.';
     }
     if (pattern.includes('\\')) {
         return 'Use forward slashes';

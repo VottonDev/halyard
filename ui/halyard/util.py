@@ -112,7 +112,8 @@ def check_exclude_pattern(pattern: str, existing: list[str]) -> str:
     if not pattern:
         return "Enter a pattern first."
     if pattern.startswith("!"):
-        return "Negated patterns (!) are not supported."
+        return ("Patterns starting with ! are not supported. "
+                "Choose the folders to exclude without using !.")
     if pattern in existing:
         return f"“{pattern}” is already excluded."
     return ""
@@ -121,8 +122,8 @@ def check_exclude_pattern(pattern: str, existing: list[str]) -> str:
 def offending_exclude(message: str, patterns: list[str]) -> str | None:
     """Find which pattern a daemon error message is complaining about.
 
-    The daemon names it in quotes, e.g.
-    ``Exclusion "!keep": Negated patterns (!) are not supported``.
+    The daemon names it in quotes, for example:
+    ``Exclusion "!keep": Patterns starting with ! are not supported.``
     Matching lets the UI mark the row instead of showing a bare toast.
     """
     if not message:

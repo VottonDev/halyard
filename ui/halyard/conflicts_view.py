@@ -1,9 +1,4 @@
-"""The conflicts screen.
-
-A conflict is never data loss in Halyard: the daemon has already kept both
-copies on disk. Resolving one just tidies up. The screen is written to say
-that plainly, because "conflict" reads as "something broke" otherwise.
-"""
+"""Explain conflicts and offer actions that match the versions available."""
 
 from __future__ import annotations
 
@@ -31,8 +26,8 @@ KIND_TITLES = {
 
 KIND_EXPLANATIONS = {
     KIND_BOTH_MODIFIED: (
-        "This file was edited on this computer and in Proton Drive before "
-        "the two could be matched up. Both versions were kept."
+        "This file changed in both places before Halyard could sync it. "
+        "Halyard keeps both versions under different names."
     ),
     KIND_LOCAL_DELETED: (
         "This file was deleted on this computer, but changed in Proton Drive. "
@@ -51,6 +46,11 @@ class ConflictRow(Adw.ExpanderRow):
         super().__init__()
         self._conflict = conflict
         self._on_resolve = on_resolve
+        has_preserved_copy = bool(
+            conflict.kind == KIND_BOTH_MODIFIED
+            and conflict.kept_copy_path
+            and conflict.kept_copy_path != conflict.path
+        )
 
         name = os.path.basename(conflict.path) or conflict.path
         self.set_title(GLib.markup_escape_text(name))
@@ -70,7 +70,7 @@ class ConflictRow(Adw.ExpanderRow):
             subtitle=GLib.markup_escape_text(
                 KIND_EXPLANATIONS.get(
                     conflict.kind,
-                    "Both copies of this file were kept.",
+                    "Review this file and its Activity entries before choosing an option.",
                 )
             ),
         )
@@ -81,20 +81,20 @@ class ConflictRow(Adw.ExpanderRow):
         if pair is not None:
             full_path = os.path.join(pair.local_path, conflict.path)
         location = Adw.ActionRow(
-            title="Original file",
+            title="Proton Drive version" if has_preserved_copy else "Edited file",
             subtitle=GLib.markup_escape_text(tilde_path(full_path)),
         )
         location.set_subtitle_lines(0)
         location.add_suffix(self._copy_button(full_path))
         self.add_row(location)
 
-        if conflict.kept_copy_path:
+        if has_preserved_copy:
             kept_full = conflict.kept_copy_path
             if pair is not None and not os.path.isabs(kept_full):
                 kept_full = os.path.join(pair.local_path,
                                          conflict.kept_copy_path)
             kept = Adw.ActionRow(
-                title="Copy that was kept",
+                title="Version from this computer",
                 subtitle=GLib.markup_escape_text(tilde_path(kept_full)),
             )
             kept.set_subtitle_lines(0)
@@ -115,36 +115,42 @@ class ConflictRow(Adw.ExpanderRow):
 
         actions_row = Adw.ActionRow()
         buttons = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL,
+            orientation=Gtk.Orientation.VERTICAL,
             spacing=8,
-            halign=Gtk.Align.END,
+            halign=Gtk.Align.FILL,
             hexpand=True,
         )
         buttons.set_margin_top(8)
         buttons.set_margin_bottom(8)
 
-        dismiss = Gtk.Button(label="Keep Both")
+        dismiss = Gtk.Button(
+            label="Keep both" if has_preserved_copy else "Keep edited file"
+        )
         dismiss.set_tooltip_text(
             "Leave both files alone and clear this from the list"
+            if has_preserved_copy
+            else "Keep the edited file and clear this from the list"
         )
         dismiss.connect("clicked", lambda *_: self._resolve(RESOLVE_DISMISS))
         buttons.append(dismiss)
 
-        keep_local = Gtk.Button(label="Keep This Computer’s")
+        keep_local = Gtk.Button(label="Use this computer’s version")
         keep_local.set_tooltip_text(
-            "Use the version on this computer everywhere"
+            "Replace the original file with the preserved copy from this computer"
         )
         keep_local.connect("clicked",
                            lambda *_: self._resolve(RESOLVE_KEEP_LOCAL))
         buttons.append(keep_local)
 
-        keep_remote = Gtk.Button(label="Keep Proton Drive’s")
+        keep_remote = Gtk.Button(label="Use Proton Drive’s version")
         keep_remote.set_tooltip_text(
-            "Use the version from Proton Drive everywhere"
+            "Keep the original file and remove the preserved local copy"
         )
         keep_remote.connect("clicked",
                             lambda *_: self._resolve(RESOLVE_KEEP_REMOTE))
         buttons.append(keep_remote)
+        keep_local.set_visible(has_preserved_copy)
+        keep_remote.set_visible(has_preserved_copy)
 
         actions_row.set_child(buttons)
         self._buttons = [dismiss, keep_local, keep_remote]
@@ -210,18 +216,18 @@ class ConflictsPage(Adw.NavigationPage):
 
         empty = Adw.StatusPage(
             icon_name="object-select-symbolic",
-            title="Nothing Needs Attention",
-            description=("When the same file changes in two places at once, "
-                         "Halyard keeps both copies and lists them here."),
+            title="Nothing needs attention",
+            description=("Files edited in both places, or edited in one place "
+                         "and deleted in the other, appear here."),
         )
         self._stack.add_named(empty, "empty")
 
         error = Adw.StatusPage(
             icon_name="dialog-warning-symbolic",
-            title="Could Not Load Conflicts",
+            title="Could not load conflicts",
         )
         self._error_page = error
-        retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER)
+        retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
         retry.add_css_class("pill")
         retry.connect("clicked", lambda *_: self.reload())
         error.set_child(retry)
@@ -232,10 +238,10 @@ class ConflictsPage(Adw.NavigationPage):
         )
         page = Adw.PreferencesPage()
         self._group = Adw.PreferencesGroup(
-            title="Files That Need a Decision",
-            description=("Nothing has been lost — both copies are already on "
-                         "this computer. Choosing an option below just tidies "
-                         "up."),
+            title="Files that need a decision",
+            description=("Review each conflict before choosing which version "
+                         "to use. Your choice can replace or remove a copy. "
+                         "Check Activity for any transfers that could not finish."),
         )
         page.add(self._group)
         scrolled.set_child(page)
@@ -297,7 +303,7 @@ class ConflictsPage(Adw.NavigationPage):
         labels = {
             RESOLVE_KEEP_LOCAL: "Kept the version from this computer",
             RESOLVE_KEEP_REMOTE: "Kept the version from Proton Drive",
-            RESOLVE_DISMISS: "Both copies kept",
+            RESOLVE_DISMISS: "Conflict cleared. Files left in place.",
         }
 
         def on_ok(_result) -> None:

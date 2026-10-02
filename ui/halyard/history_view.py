@@ -123,7 +123,7 @@ FILTERS: tuple[tuple[str, tuple[str, ...] | None, str | None], ...] = (
     ("Added", ACTIONS_ADDED, None),
     ("Updated", ACTIONS_UPDATED, None),
     ("Moved or renamed", ACTIONS_MOVED, None),
-    ("Didn’t work", None, OUTCOME_FAILED),
+    ("Did not work", None, OUTCOME_FAILED),
 )
 
 
@@ -326,7 +326,7 @@ class HistoryPage(Adw.NavigationPage):
         header.pack_end(refresh)
 
         menu = Gio.Menu()
-        menu.append("Clear Activity", "activity.clear")
+        menu.append("Clear activity", "activity.clear")
         header.pack_end(Gtk.MenuButton(
             icon_name="view-more-symbolic",
             menu_model=menu,
@@ -388,7 +388,7 @@ class HistoryPage(Adw.NavigationPage):
 
         self._empty_page = Adw.StatusPage(
             icon_name="document-open-recent-symbolic",
-            title="Nothing Here Yet",
+            title="Nothing here yet",
             description=("Once Halyard starts syncing, every file it adds, "
                          "updates or removes is listed here."),
         )
@@ -396,9 +396,9 @@ class HistoryPage(Adw.NavigationPage):
 
         self._error_page = Adw.StatusPage(
             icon_name="dialog-warning-symbolic",
-            title="Could Not Load Activity",
+            title="Could not load activity",
         )
-        retry = Gtk.Button(label="Try Again", halign=Gtk.Align.CENTER)
+        retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
         retry.add_css_class("pill")
         retry.connect("clicked", lambda *_: self.reload())
         self._error_page.set_child(retry)
@@ -411,7 +411,7 @@ class HistoryPage(Adw.NavigationPage):
 
         self._more_group = Adw.PreferencesGroup()
         self._more_button = Gtk.Button(
-            label="Load Older Activity", halign=Gtk.Align.CENTER
+            label="Load older activity", halign=Gtk.Align.CENTER
         )
         self._more_button.add_css_class("pill")
         self._more_button.connect("clicked", lambda *_: self._load(more=True))
@@ -517,7 +517,7 @@ class HistoryPage(Adw.NavigationPage):
                 return
             self._loading = False
             self._more_button.set_sensitive(True)
-            self._more_button.set_label("Load Older Activity")
+            self._more_button.set_label("Load older activity")
             # A short page means the daemon has nothing older to give.
             self._exhausted = len(entries) < PAGE_SIZE
             if more:
@@ -531,7 +531,7 @@ class HistoryPage(Adw.NavigationPage):
                 return
             self._loading = False
             self._more_button.set_sensitive(True)
-            self._more_button.set_label("Load Older Activity")
+            self._more_button.set_label("Load older activity")
             if self._entries:
                 self._window.toast(message)
                 return
@@ -622,10 +622,10 @@ class HistoryPage(Adw.NavigationPage):
 
     def _confirm_clear(self) -> None:
         dialog = Adw.AlertDialog(
-            heading="Clear Activity?",
+            heading="Clear activity",
             body=("Halyard will forget its record of what it has synced so "
-                  "far.\n\nYour files are not touched — this only clears this "
-                  "list."),
+                  "far.\n\nThis clears the activity list. Your files are not "
+                  "changed."),
         )
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("clear", "Clear")
