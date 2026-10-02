@@ -1,7 +1,7 @@
 # Continuous integration
 
-Halyard has two account-free GitHub Actions workflows. Neither workflow signs
-in to Proton or makes Drive API calls.
+Halyard has three account-free GitHub Actions workflows. None signs in to
+Proton or makes Drive API calls.
 
 ## Pull-request checks
 
