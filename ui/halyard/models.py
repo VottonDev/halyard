@@ -342,3 +342,167 @@ class LoginState:
             state=str(data.get("state") or "pending"),
             error=data.get("error") or None,
         )
+
+
+@dataclass(frozen=True)
+class Photo:
+    uid: str = ""
+    name: str = ""
+    capture_time: int = 0
+    size: int | None = None
+    media_type: str = ""
+    revision_uid: str = ""
+    favourite: bool = False
+    related_uids: tuple[str, ...] = ()
+    error: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Photo":
+        data = _as_dict(data)
+        size = data.get("size")
+        related = data.get("relatedUids")
+        return cls(
+            uid=str(data.get("uid") or ""), name=str(data.get("name") or ""),
+            capture_time=int(_as_int(data.get("captureTime"))),
+            size=int(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else None,
+            media_type=str(data.get("mediaType") or ""),
+            revision_uid=str(data.get("revisionUid") or ""),
+            favourite=bool(data.get("favourite", False)),
+            related_uids=tuple(x for x in related if isinstance(x, str)) if isinstance(related, list) else (),
+            error=str(data["error"]) if data.get("error") else None,
+        )
+
+    @property
+    def is_video(self) -> bool:
+        return self.media_type.startswith("video/")
+
+
+@dataclass(frozen=True)
+class PhotoPage:
+    photos: tuple[Photo, ...] = ()
+    next_cursor: str | None = None
+    revision: int = 0
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PhotoPage":
+        data = _as_dict(data)
+        items = data.get("photos")
+        return cls(
+            photos=tuple(Photo.from_json(p) for p in items if isinstance(p, dict)) if isinstance(items, list) else (),
+            next_cursor=data.get("nextCursor") if isinstance(data.get("nextCursor"), str) else None,
+            revision=int(_as_int(data.get("revision"))),
+        )
+
+
+@dataclass(frozen=True)
+class PhotoAlbum:
+    uid: str = ""
+    name: str = ""
+    photo_count: int = 0
+    cover_photo_uid: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PhotoAlbum":
+        data = _as_dict(data)
+        return cls(uid=str(data.get("uid") or ""), name=str(data.get("name") or ""),
+                   photo_count=int(_as_int(data.get("photoCount"))),
+                   cover_photo_uid=data.get("coverPhotoUid") or None)
+
+
+@dataclass(frozen=True)
+class PhotoThumbnail:
+    uid: str = ""
+    data: str | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PhotoThumbnail":
+        data = _as_dict(data)
+        content = data.get("data")
+        return cls(uid=str(data.get("uid") or ""),
+                   data=content if isinstance(content, str) and len(content) <= 4 * 1024 * 1024 else None,
+                   error=str(data["error"]) if data.get("error") else None)
+
+
+@dataclass(frozen=True)
+class PhotoDownloadFile:
+    uid: str = ""
+    name: str = ""
+    size: int | None = None
+    bytes_done: int = 0
+    status: str = "queued"
+    path: str | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PhotoDownloadFile":
+        data = _as_dict(data)
+        size = data.get("size")
+        return cls(uid=str(data.get("uid") or ""), name=str(data.get("name") or ""),
+                   size=int(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else None,
+                   bytes_done=int(_as_int(data.get("bytesDone"))),
+                   status=str(data.get("status") or "queued"),
+                   path=data.get("path") or None, error=data.get("error") or None)
+
+
+@dataclass(frozen=True)
+class PhotoDownload:
+    id: str = ""
+    destination: str = ""
+    created_at: int = 0
+    status: str = "queued"
+    files: tuple[PhotoDownloadFile, ...] = ()
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PhotoDownload":
+        data = _as_dict(data)
+        files = data.get("files")
+        return cls(id=str(data.get("id") or ""), destination=str(data.get("destination") or ""),
+                   created_at=int(_as_int(data.get("createdAt"))), status=str(data.get("status") or "queued"),
+                   files=tuple(PhotoDownloadFile.from_json(f) for f in files if isinstance(f, dict)) if isinstance(files, list) else ())
+
+    @property
+    def active(self) -> bool:
+        return self.status in ("queued", "downloading", "uploading", "paused")
+
+    @property
+    def fraction(self) -> float:
+        total = sum(f.size or 0 for f in self.files)
+        return min(1.0, sum(f.bytes_done for f in self.files) / total) if total else 0.0
+
+
+@dataclass(frozen=True)
+class PhotoTrashResult:
+    uid: str = ""
+    ok: bool = False
+    error: str | None = None
+
+    @classmethod
+    def from_json(cls, data):
+        data = _as_dict(data)
+        return cls(uid=str(data.get("uid") or ""), ok=data.get("ok") is True, error=data.get("error") or None)
+
+
+@dataclass(frozen=True)
+class VideoPreview:
+    id: str = ""
+    uid: str = ""
+    status: str = "failed"
+    uri: str | None = None
+    size: int = 0
+    error: str | None = None
+
+    @classmethod
+    def from_json(cls, data):
+        from urllib.parse import urlparse
+        data = _as_dict(data)
+        uri = data.get("uri")
+        # Media URIs are capabilities generated by the local daemon. Refuse
+        # external or file URIs at the parser boundary.
+        if isinstance(uri, str):
+            parsed = urlparse(uri)
+            if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.path.startswith("/video/"):
+                uri = None
+        else: uri = None
+        return cls(id=str(data.get("id") or ""), uid=str(data.get("uid") or ""), status=str(data.get("status") or "failed"),
+                   uri=uri, size=int(_as_int(data.get("size"))), error=data.get("error") or None)

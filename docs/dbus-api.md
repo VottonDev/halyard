@@ -176,7 +176,7 @@ just tidies up and clears it from the list.
 ```jsonc
 // Status
 {
-  "version": "0.1.6",
+  "version": "0.2.0",
   "loggedIn": true,
   "email": "you@proton.me",
   "paused": false,
@@ -291,3 +291,171 @@ The UI surfaces `Notify` as a desktop notification via
 system tray, so notifications and the app window are the only places status is
 visible. Note that GNOME only renders these once the app's `.desktop` file is
 installed in `XDG_DATA_DIRS`.
+
+## Photos (0.2.0)
+
+These methods require a signed-in account. All structured arguments and results
+are JSON strings. The daemon owns the Photos SDK, including crypto and remote
+access. Opening Folders does not access the photo gallery.
+
+| Method | Signature | Argument / result |
+|---|---|---|
+| `ListPhotos` | `s → s` | `PhotoQuery` / `PhotoPage` |
+| `ListPhotoAlbums` | `() → s` | `PhotoAlbum[]` |
+| `GetPhoto` | `s → s` | photo uid / `Photo` |
+| `GetPhotoThumbnails` | `s → s` | `{uids: string[], preview?: boolean}` / `PhotoThumbnail[]` |
+| `StartPhotoDownload` | `s → s` | `{uids: string[], destination: string}` / `PhotoDownload` |
+| `ListPhotoDownloads` | `() → s` | `PhotoDownload[]` |
+| `ControlPhotoDownload` | `ss → ()` | job id, action |
+| `StartPhotoUpload` | `s → s` | `{files: UploadInput[]}` / `PhotoUpload` |
+| `ListPhotoUploads` | `() → s` | `PhotoUpload[]` |
+| `ControlPhotoUpload` | `ss → ()` | job id, action |
+
+`PhotoQuery` accepts `albumUid`, `cursor`, `limit` (1 to 100, default 60),
+`search` (filename substring), `kind` (`all`, `favourites`, `videos`) and `month`
+(`YYYY-MM`, in UTC). Leave `albumUid` absent for the timeline. A cursor is opaque
+and must be used with the same query. A gallery event invalidates old cursors;
+reload from the first page after `PhotosChanged`. Filtered requests examine at
+most 600 entries, so an empty page can have a non-null `nextCursor`.
+
+```ts
+type Photo = {
+  uid: string;
+  name: string;
+  captureTime: number;             // epoch milliseconds
+  size: number | null;
+  mediaType: string;
+  revisionUid: string;
+  favourite: boolean;
+  relatedUids: string[];           // related live/motion assets
+  error: string | null;
+};
+type PhotoPage = { photos: Photo[]; nextCursor: string | null; revision: number };
+type PhotoAlbum = {
+  uid: string; name: string; photoCount: number; coverPhotoUid: string | null;
+};
+type PhotoThumbnail = { uid: string; data: string | null; error: string | null };
+```
+
+Thumbnail `data` is base64 image bytes. Request no more than 12 uids per call.
+`preview: false` requests SDK type 1, `true` requests type 2. A preview is not
+the original file. Thumbnail responses are capped at 3 MiB per image before
+base64 encoding; their memory cache is capped at 32 MiB. Account changes discard
+gallery state. The initial SDK timeline iterator is retained between pages;
+subsequent remote changes come from the SDK event scheduler. There is no
+periodic recursive gallery walk. Explicit SDK tree refresh events can discard
+that iterator. Browsing an empty gallery never creates a Photos volume.
+
+```ts
+type PhotoDownloadFile = {
+  uid: string; name: string; size: number | null; bytesDone: number;
+  status: 'queued' | 'downloading' | 'completed' | 'failed' | 'cancelled';
+  path: string | null; error: string | null;
+};
+type PhotoDownload = {
+  id: string; destination: string; createdAt: number;
+  status: 'queued' | 'downloading' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  files: PhotoDownloadFile[];
+};
+type UploadInput = {
+  path: string;
+  thumbnails: { type: 1 | 2; data: string }[]; // JPEG base64, one of each type
+};
+type PhotoUploadFile = {
+  uid: string; name: string; path: string; size: number; bytesDone: number;
+  status: 'queued' | 'uploading' | 'completed' | 'skipped' | 'failed' | 'cancelled';
+  error: string | null;
+};
+type PhotoUpload = {
+  id: string; destination: 'Proton Drive Photos'; createdAt: number;
+  status: 'queued' | 'uploading' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  files: PhotoUploadFile[];
+};
+```
+
+Download selections contain 1 to 1,000 photo uids. Related assets are included
+once, with a maximum of 5,000 files per job. The destination must resolve inside
+the user's home directory. Files first land in a `.halyard-part` temporary
+file, are checked by the SDK, then published without overwriting existing
+files. Collisions use numbered names. This does not create a folder pair; a
+destination overlapping an existing pair follows that pair's normal rules.
+
+Uploads accept 1 to 20 JPEG, PNG or WebP originals inside the user's home
+directory. The GTK client prepares oriented JPEG previews off the main thread,
+bounded to 256 and 2,048 pixels. The daemon checks paths, file type and previews
+before queueing. Maximum preview data is 24 MiB per job. Original bytes are
+streamed with expected size and SHA1 checks. A changed file fails and must be
+chosen again. The SDK duplicate check uses both name and content; matching
+copies receive `skipped` status. EXIF capture time is used where available in
+the first 1 MiB of metadata; otherwise the file modification date is used.
+Upload may initialise a missing Photos volume. Local files remain in place.
+
+Control actions are `pause`, `resume`, `cancel` and `retry`. Invalid transitions
+fail with a user-facing error. Retry skips completed files and skipped uploads.
+The daemon runs one download job and one upload job at a time. These queues are
+separate from folder reconciliation, the sync base and sync history. Jobs and
+previews are not persisted as plaintext. Jobs continue after the UI closes,
+but do not survive daemon restart. Sign-out cancels jobs and clears their state.
+
+### Photo signals
+
+| Signal | Signature | Payload |
+|---|---|---|
+| `PhotosChanged` | `s` | `{revision: number}` |
+| `PhotoDownloadsChanged` | `s` | `PhotoDownload[]` |
+| `PhotoUploadsChanged` | `s` | `PhotoUpload[]` |
+
+Progress signals are throttled to about four per second per queue; transitions
+are emitted immediately. `PhotosChanged` also follows successful uploads, so
+a visible gallery can offer Reload without disturbing the current selection.
+
+### Trash and video playback
+
+| Method | Signature | Argument / result |
+|---|---|---|
+| `TrashPhotos` | `s → s` | `{uids: string[]}` / `PhotoTrashResult[]` |
+| `StartVideoPreview` | `s → s` | video uid / `VideoPreview` |
+| `ReleaseVideoPreview` | `s → ()` | preview id |
+
+```ts
+type PhotoTrashResult = { uid: string; ok: boolean; error: string | null };
+type VideoPreview = {
+  id: string; uid: string; status: 'ready' | 'failed';
+  uri: string | null; size: number; error: string | null;
+};
+```
+
+`TrashPhotos` accepts 1 to 100 selected photo/video uids and includes their
+related assets (up to 1,000 files). Every node is validated as a photo before
+any mutation; folders and albums are refused. The SDK moves them to Trash,
+where Proton Drive can restore them. Local downloaded copies are untouched.
+This is not permanent deletion. The UI requires a destructive-action
+confirmation. Results cover individual assets, including partial failures.
+Successful mutations update the gallery revision immediately and release
+playback sessions for trashed videos.
+
+`StartVideoPreview` creates an in-memory playback capability and returns an
+unguessable URI on `http://127.0.0.1:<ephemeral-port>/video/<token>`. GTK uses it
+as a media source. The daemon serves HTTP byte ranges through the SDK's
+`getSeekableStream()`, which decrypts requested blocks and supports seeking.
+It does not download the full video first or create a decrypted media file.
+The listener rejects foreign origins, incorrect Host headers, unknown tokens,
+multiple ranges, and invalid ranges. No CORS headers are exposed. There are at
+most four previews and four concurrent requests per preview. Playback
+capabilities are secrets and must not be logged or persisted.
+
+Call `ReleaseVideoPreview` when leaving a video, changing selection or closing
+the preview. Sign-out and daemon shutdown release all capabilities and abort
+requests; idle previews expire after 15 minutes without requests. The GTK
+client stops its media stream before releasing the capability.
+
+The pinned SDK seekable path does **not** perform full-file integrity checks.
+Original downloads continue to use the verified download API. Videos with
+unknown sizes or older revisions lacking claimed block sizes can require
+Download instead. Each preview has a separate SDK client, sharing encrypted
+caches and account dependencies, so unsupported seeking cannot consume the
+original-download queue's capacity. Native codec support comes from GTK's
+media backend. Failed streaming and codec errors provide a Download fallback.
+
+`VideoPreviewChanged(s)` carries a `VideoPreview` when an active stream fails.
+Its URI must pass the same local-host checks before GTK receives it.

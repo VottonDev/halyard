@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ApiClient, initAccount, type Addresses, type Auth } from 'proton-drive-sdk-account';
+import { ProtonDrivePhotosClient } from '@protontech/drive-sdk/dist/protonDrivePhotosClient.js';
 
 import { Credentials } from '../auth/credentials.js';
 import type { SecretStore } from '../auth/keyring.js';
@@ -98,6 +99,11 @@ export type Account = {
  */
 export class DriveSession {
     private client?: ProtonDriveClient;
+    private photosClient?: ProtonDrivePhotosClient;
+    private createPhotosClient?: (writable?: boolean) => ProtonDrivePhotosClient;
+    private uploadClient?: ProtonDrivePhotosClient;
+    private generation = 0;
+    private photosPending?: Promise<ProtonDrivePhotosClient | null>;
     private caches?: Caches;
     private auth?: Auth;
     private addresses?: Addresses;
@@ -163,7 +169,7 @@ export class DriveSession {
         const caches = createCaches(() => this.credentials.getCachePassword());
         this.caches = caches;
 
-        this.client = new ProtonDriveClient({
+        const dependencies = {
             httpClient: new HttpClient(apiClient),
             entitiesCache: caches.entitiesCache,
             cryptoCache: caches.cryptoCache,
@@ -180,6 +186,11 @@ export class DriveSession {
             featureFlagProvider: {
                 isEnabled: async (flag: string) => flag === FeatureFlags.DriveSmallFileUpload,
             },
+        };
+        this.client = new ProtonDriveClient(dependencies);
+        this.createPhotosClient = (writable = false) => new ProtonDrivePhotosClient({
+            ...dependencies,
+            httpClient: new HttpClient(apiClient, !writable),
         });
     }
 
@@ -192,6 +203,40 @@ export class DriveSession {
             throw new Error('Not signed in to Proton Drive');
         }
         return this.client;
+    }
+
+    /** Lazy: opening Folders never fetches or initialises the photo gallery. */
+    async getPhotosClient(): Promise<ProtonDrivePhotosClient | null> {
+        this.getClient(); // Require a signed-in session, including on cache hits.
+        if (this.photosClient) return this.photosClient;
+        if (!this.photosPending) {
+            const generation = this.generation;
+            this.photosPending = (async () => {
+                const response = await this.apiClient!.authenticatedRequest(
+                    `https://${baseUrl}/drive/v2/shares/photos`,
+                    { method: 'GET', throwHttpErrors: false, timeout: 30_000 },
+                );
+                if (generation !== this.generation) throw new Error('The account changed. Please try again.');
+                if (response.status === 404) return null;
+                if (!response.ok) throw new Error('Could not open your photo library. Please try again.');
+                this.getClient();
+                return this.photosClient ??= this.createPhotosClient!();
+            })().finally(() => { if (generation === this.generation) this.photosPending = undefined; });
+        }
+        return this.photosPending;
+    }
+
+    async getPhotosStreamingClient(): Promise<ProtonDrivePhotosClient> {
+        this.getClient();
+        // The pinned SDK does not release download capacity if seeking is
+        // unsupported. Each preview gets its own bounded client so that this
+        // cannot stall original downloads or another preview.
+        return this.createPhotosClient!();
+    }
+
+    async getPhotosUploadClient(): Promise<ProtonDrivePhotosClient> {
+        this.getClient();
+        return this.uploadClient ??= this.createPhotosClient!(true);
     }
 
     async getAccount(): Promise<Account> {
@@ -272,6 +317,10 @@ export class DriveSession {
 
     async logout(): Promise<void> {
         this.cancelLogin();
+        this.generation++;
+        this.photosClient = undefined;
+        this.uploadClient = undefined;
+        this.photosPending = undefined;
         try {
             await this.auth?.logout();
         } catch (error) {

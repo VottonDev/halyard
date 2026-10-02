@@ -14,7 +14,7 @@ in [`../docs/dbus-api.md`](../docs/dbus-api.md).
 ## Requirements
 
 - Python 3.11+
-- GTK 4.12+ and libadwaita 1.5+ (developed against GTK 4.22 / libadwaita 1.9)
+- GTK 4.12+ and libadwaita 1.6+ (developed against GTK 4.22 / libadwaita 1.9)
 - PyGObject
 - A session D-Bus
 
@@ -78,6 +78,8 @@ halyard/
   window.py         main window, header bar, navigation, global state
   login_view.py     signed-out screen and the browser sign-in hand-off
   pairs_view.py     folder pair list, per-row status and actions
+  photos_view.py    lazy gallery, albums, previews and upload/download dialogs
+  photo_transfers_view.py background photo transfer progress and controls
   pair_dialog.py    add/edit a pair; lazy Proton Drive folder browser
   conflicts_view.py conflict list and resolution
   preferences.py    preferences dialog, autostart via the XDG portal
@@ -148,3 +150,11 @@ Run the offline update-check tests without starting the UI or daemon:
 ```sh
 PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_update_check.py'
 ```
+
+## Photos
+
+The app opens on Folders. Photos offers gallery and album browsing, previews,
+video playback, selected downloads, uploads and Trash. Activity shows photo
+transfers alongside folder sync history. For mock development use
+`dbus-run-session -- ./run-dev.sh --logged-in`; add `--no-photos` or `--offline`
+to test empty and error states.

@@ -6,6 +6,10 @@ import { DriveSession } from './drive/session.js';
 import { SyncManager } from './engine/manager.js';
 import { BUS_NAME, HalyardInterface, OBJECT_PATH } from './ipc/dbus.js';
 import { getLogger, logFilePath } from './log.js';
+import { PhotoLibrary } from './photos/library.js';
+import { PhotoVideos } from './photos/videos.js';
+import { PhotoUploads } from './photos/uploads.js';
+import { PhotoDownloads } from './photos/downloads.js';
 
 const logger = getLogger('main');
 
@@ -38,6 +42,29 @@ async function main(): Promise<void> {
     // becomes ours guarantees the handler is registered before any such call is
     // processed.
     const manager = new SyncManager(session);
+    let iface: HalyardInterface;
+    const photos = new PhotoLibrary(
+        () => session.getPhotosClient(),
+        revision => iface.PhotosChanged(JSON.stringify({ revision })),
+        error => logger.warn(`Could not update the photo library: ${error instanceof Error ? error.message : String(error)}`),
+    );
+    const downloads = new PhotoDownloads(
+        () => session.getPhotosClient(),
+        jobs => iface.PhotoDownloadsChanged(JSON.stringify(jobs)),
+        (failed, title, body) => iface.Notify(JSON.stringify({ kind: failed ? 'error' : 'info', title, body })),
+    );
+
+    const uploads = new PhotoUploads(
+        () => session.getPhotosUploadClient(),
+        jobs => iface.PhotoUploadsChanged(JSON.stringify(jobs)),
+        uid => photos.refreshUploaded(uid),
+        (failed, title, body) => iface.Notify(JSON.stringify({ kind: failed ? 'error' : 'info', title, body })),
+    );
+
+    const videos = new PhotoVideos(
+        () => session.getPhotosStreamingClient(),
+        preview => iface.VideoPreviewChanged(JSON.stringify(preview)),
+    );
 
     let quitting = false;
     const shutdown = async (reason: string): Promise<void> => {
@@ -47,6 +74,10 @@ async function main(): Promise<void> {
         quitting = true;
         logger.info(`Shutting down (${reason})`);
         try {
+            photos.reset();
+            await downloads.stop();
+            await uploads.stop();
+            await videos.stop();
             await manager.stop();
         } catch (error) {
             logger.error('Error during shutdown', error);
@@ -55,7 +86,7 @@ async function main(): Promise<void> {
         process.exit(0);
     };
 
-    const iface = new HalyardInterface(manager, session, () => void shutdown('requested over D-Bus'));
+    iface = new HalyardInterface(manager, session, () => void shutdown('requested over D-Bus'), photos, downloads, uploads, videos);
     bus.export(OBJECT_PATH, iface);
 
     manager.onStatusChanged((status) => {

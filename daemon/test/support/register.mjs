@@ -7,8 +7,8 @@
  * import fails. This hook does the rewrite, falling back to the original
  * specifier so real `.js` files still resolve.
  *
- * Only needed for tests that touch `node:sqlite`, which Bun does not
- * implement. Everything else runs under `bun test`.
+ * Used for `node:sqlite` tests (unsupported by Bun) and photo transfers
+ * that verify the Node stream and file descriptor behaviour used at runtime.
  */
 import { registerHooks } from 'node:module';
 

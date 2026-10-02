@@ -281,10 +281,11 @@ class HistoryRow(Adw.ExpanderRow):
 class HistoryPage(Adw.NavigationPage):
     """The activity log, filtered and paged."""
 
-    def __init__(self, client, window) -> None:
+    def __init__(self, client, window, embedded=False) -> None:
         super().__init__(title="Activity", tag="activity")
         self._client = client
         self._window = window
+        self._embedded = embedded
         self._pairs: list[Pair] = []
         self._entries: list[HistoryEntry] = []
         self._groups: list[Adw.PreferencesGroup] = []
@@ -309,7 +310,7 @@ class HistoryPage(Adw.NavigationPage):
     # -- construction ----------------------------------------------------
 
     def _build_header(self) -> Adw.HeaderBar:
-        header = Adw.HeaderBar()
+        header = Adw.HeaderBar(show_start_title_buttons=not self._embedded, show_end_title_buttons=not self._embedded, show_back_button=not self._embedded)
 
         self._search_button = Gtk.ToggleButton(
             icon_name="system-search-symbolic",

@@ -11,9 +11,18 @@ import type { ApiClient } from 'proton-drive-sdk-account';
  * and takes part in the shared 401-refresh flow.
  */
 export class HttpClient implements ProtonDriveHTTPClient {
-    constructor(private readonly apiClient: ApiClient) {}
+    constructor(
+        private readonly apiClient: ApiClient,
+        private readonly preventPhotoVolumeCreation = false,
+    ) {}
 
     async fetchJson(request: ProtonDriveHTTPClientJsonRequest): Promise<Response> {
+        // The Photos SDK bootstraps a volume when its initial GET returns
+        // 404. Browsing an empty gallery must not create cloud storage.
+        if (this.preventPhotoVolumeCreation && request.method.toUpperCase() === 'POST' &&
+            new URL(request.url).pathname.replace(/\/$/, '') === '/drive/photos/volumes') {
+            throw new Error('No photos have been added to Proton Drive yet.');
+        }
         return this.apiClient.authenticatedRequest(request.url, {
             method: request.method,
             ...(request.json !== undefined ? { json: request.json } : {}),
