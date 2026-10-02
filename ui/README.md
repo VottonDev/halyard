@@ -139,8 +139,9 @@ a few seconds after `BeginLogin`.
 Once per UI process, after presenting the window, Halyard checks the version in
 `daemon/package.json` on GitHub's `VottonDev/halyard` main branch. A newer stable
 version shows a banner with a link to the installation instructions. This is a
-main-branch version check, not a GitHub Releases check; maintainers should update
-the daemon package version and `halyard.__version__` together when publishing.
+main-branch version check, not a GitHub Releases check. `daemon/package.json`
+is the single version source; the UI reads it in a checkout and uses generated
+version metadata in an installation.
 The check runs in a background thread with a five-second network timeout.
 Offline and invalid responses are ignored, with no retries or periodic polling.
 It sends no Proton credentials or sync metadata and does not install anything.

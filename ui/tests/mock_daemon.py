@@ -56,7 +56,7 @@ OBJECT_PATH = "/io/github/votton/Halyard/Daemon"
 INTERFACE = "io.github.votton.Halyard.Daemon"
 ERROR_FAILED = "io.github.votton.Halyard.Error.Failed"
 
-VERSION = "0.2.1-mock"
+VERSION = json.loads((Path(__file__).resolve().parents[2] / "daemon/package.json").read_text())["version"] + "-mock"
 
 INTROSPECTION = f"""
 <node>

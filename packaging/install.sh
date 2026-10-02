@@ -94,6 +94,10 @@ if [ -d "$UI_DIR" ]; then
     say "Installing the user interface"
     mkdir -p "$LIBEXEC_DIR/ui"
     cp -r "$UI_DIR/halyard" "$LIBEXEC_DIR/ui/"
+    # Installed UIs receive their version from the same manifest as the daemon.
+    node -e 'const fs = require("node:fs"); const pkg = require(process.argv[1]);
+        fs.writeFileSync(process.argv[2], JSON.stringify({version: pkg.version}) + "\n");' \
+        "$DAEMON_DIR/package.json" "$LIBEXEC_DIR/ui/halyard/data/version.json"
 
     mkdir -p "$HOME/.local/bin"
     cat > "$HOME/.local/bin/halyard" <<EOF

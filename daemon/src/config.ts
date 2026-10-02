@@ -1,9 +1,10 @@
 import os from 'node:os';
 import path from 'node:path';
+import packageInfo from '../package.json' with { type: 'json' };
 
 export const APP_ID = 'io.github.votton.Halyard';
 export const APP_NAME = 'halyard';
-export const VERSION: string = process.env.HALYARD_VERSION ?? '0.2.1';
+export const VERSION: string = packageInfo.version;
 
 /**
  * Proton requires third-party clients to identify themselves honestly in the

@@ -34,9 +34,19 @@ CONFIG_HOME = Path(GLib.get_user_config_dir())
 
 DBUS_SERVICE_FILE = DATA_HOME / "dbus-1" / "services" / f"{BUS_NAME}.service"
 SYSTEMD_UNIT_FILE = CONFIG_HOME / "systemd" / "user" / UNIT_NAME
+SYSTEM_LIB_DIR = Path("/usr/lib/halyard")
+_SYSTEM_DBUS_SERVICE_FILES = tuple(
+    Path(directory) / "dbus-1" / "services" / f"{BUS_NAME}.service"
+    for directory in GLib.get_system_data_dirs()
+)
+_SYSTEM_UNIT_FILES = tuple(
+    Path(directory) / "systemd" / "user" / UNIT_NAME
+    for directory in ("/usr/local/lib", "/usr/lib", "/lib", "/etc")
+)
 
 #: Where the built daemon might live, most-installed first.
 _BUNDLE_CANDIDATES = (
+    SYSTEM_LIB_DIR / "halyard-daemon.cjs",
     Path.home() / ".local/lib/halyard/halyard-daemon.cjs",
     DATA_HOME / "halyard/halyard-daemon.cjs",  # pre-0.1 install location
     Path(__file__).resolve().parent.parent.parent / "daemon/dist/halyard-daemon.cjs",
@@ -52,15 +62,17 @@ def find_bundle() -> Path | None:
 
 
 def find_node() -> str | None:
+    if find_bundle() == SYSTEM_LIB_DIR / "halyard-daemon.cjs":
+        return "/usr/bin/node" if os.access("/usr/bin/node", os.X_OK) else None
     return shutil.which("node")
 
 
 def service_files_installed() -> bool:
-    return DBUS_SERVICE_FILE.is_file()
+    return any(path.is_file() for path in (DBUS_SERVICE_FILE, *_SYSTEM_DBUS_SERVICE_FILES))
 
 
 def unit_installed() -> bool:
-    return SYSTEMD_UNIT_FILE.is_file()
+    return any(path.is_file() for path in (SYSTEMD_UNIT_FILE, *_SYSTEM_UNIT_FILES))
 
 
 def _run(argv: list[str], done: Callable[[bool, str], None]) -> None:

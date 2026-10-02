@@ -1,0 +1,5 @@
+halyard (@VERSION@-1) unstable; urgency=medium
+
+  * Package upstream release @VERSION@ for Debian and Ubuntu.
+
+ -- Otto Hooper <votton@users.noreply.github.com>  @DATE@

@@ -8,3 +8,17 @@ __pycache__/
 
 *.log
 .DS_Store
+
+# Native package build output (never user sync data).
+/debian/.debhelper/
+/debian/halyard/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.debhelper
+/debian/*.substvars
+/debian/changelog
+/packaging/arch/PKGBUILD
+/packaging/arch/.SRCINFO
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/*.pkg.tar.*

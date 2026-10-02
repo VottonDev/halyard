@@ -1,0 +1,135 @@
+name: Distribution packages
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: Build release input
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: git submodule update --init proton-sdk
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - name: Build SDK and daemon with Bun's crypto patch
+        run: ./packaging/build.sh
+      - name: Validate the daemon before releasing
+        working-directory: daemon
+        run: |
+          bun run check-types
+          bun run test
+          dbus-run-session -- bun run doctor --strict
+      - name: Assemble release sources and checksummed PKGBUILD
+        run: |
+          version="$(node -p 'require("./daemon/package.json").version')"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo 'The release tag must match the version in daemon/package.json.' >&2
+            exit 1
+          fi
+          python3 packaging/release.py --epoch "$(git log -1 --format=%ct)"
+      - name: Check Arch's native source submodule preparation
+        run: python3 packaging/tests/source_recipes.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: halyard-release-input
+          path: dist/packages/*
+          if-no-files-found: error
+      - name: Deinitialise SDK before checkout cleanup
+        if: always()
+        run: git submodule deinit --force proton-sdk
+
+  native:
+    name: Build and install ${{ matrix.format }} package
+    needs: bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [debian, arch]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: halyard-release-input
+          path: dist/packages
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: matrix.format == 'debian'
+        with:
+          bun-version: 1.3.11
+      - name: Build and test Debian package on Ubuntu 26.04
+        if: matrix.format == 'debian'
+        run: |
+          docker build -t halyard-packaging-debian -f packaging/tests/Dockerfile.debian packaging/tests
+          archive="$(find "$PWD/dist/packages" -name 'halyard-*.tar.gz' -print -quit)"
+          docker run --rm -e HALYARD_TEST_SOURCE=1 \
+            -v "$(command -v bun):/usr/local/bin/bun:ro" \
+            -v "$PWD/dist/packages:/input:ro" -v "$PWD/dist/packages:/output" \
+            -v "$PWD/packaging/tests/debian.sh:/test.sh:ro" \
+            halyard-packaging-debian /test.sh "/input/$(basename "$archive")"
+      - name: Build and test Arch package
+        if: matrix.format == 'arch'
+        run: |
+          docker run --rm \
+            -v "$PWD/dist/packages:/input:ro" -v "$PWD/dist/packages:/output" \
+            -v "$PWD/packaging/tests/arch.sh:/test.sh:ro" \
+            archlinux:base /test.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: halyard-${{ matrix.format }}
+          path: |
+            dist/packages/*.deb
+            dist/packages/*.pkg.tar.zst
+            dist/packages/.SRCINFO
+          include-hidden-files: true
+          if-no-files-found: error
+
+  release:
+    name: Publish tested release packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: native
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: halyard-*
+          merge-multiple: true
+          path: packages
+      - name: Create checksums, attach assets and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd packages
+          sha256sum halyard-*.tar.gz *.deb *.pkg.tar.zst PKGBUILD > SHA256SUMS
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            if [[ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" == false ]]; then
+              echo 'This release is already published; its assets will not be replaced.'
+              exit 0
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+              --title "Halyard $GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" \
+            halyard-*.tar.gz *.deb *.pkg.tar.zst PKGBUILD SHA256SUMS --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false

@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+# Set HALYARD_PREBUILT=1 only after packaging/build.sh has built this tree.
+%:
+	dh $@
+
+override_dh_auto_build:
+ifeq ($(HALYARD_PREBUILT),1)
+	test -s daemon/dist/halyard-daemon.cjs
+	test -s daemon/dist/THIRD_PARTY_LICENSES.txt
+else
+	./packaging/build.sh
+endif
+
+override_dh_auto_test:
+ifneq ($(HALYARD_PREBUILT),1)
+	cd daemon && bun run test
+endif
+	PYTHONPATH=ui python3 -m unittest discover -s ui/tests -p 'test_*.py'
+	PYTHONPATH=ui python3 -m unittest discover -s packaging/tests
+
+override_dh_auto_install:
+	python3 packaging/stage.py --destdir debian/halyard
+
+# Neither package installation nor removal starts, stops or enables a user's
+# sync service. The UI and session D-Bus activation handle startup.
+override_dh_installsystemduser:
+	dh_installsystemduser --no-enable
+
+override_dh_compress:
+	dh_compress -XTHIRD_PARTY_LICENSES.txt -XTHIRD_PARTY_NOTICES.md
+
+override_dh_auto_clean:
+ifneq ($(HALYARD_PREBUILT),1)
+	rm -rf daemon/dist
+endif

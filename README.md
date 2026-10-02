@@ -39,11 +39,31 @@ When the safe answer is unclear, Halyard keeps both copies.
 ## Requirements
 
 - GNOME on Wayland or X11, with a Secret Service provider such as `gnome-keyring`
-- Node 22+
-- Bun, which applies the required patch for `@protontech/crypto`
-- Python 3 with PyGObject, GTK 4 and libadwaita 1
+- Node 22.13+
+- Python 3 with PyGObject, GTK 4.10+ and libadwaita 1.5+
+- Bun for source builds, which applies the required patch for `@protontech/crypto`
 
 ## Install
+
+Download the Debian/Ubuntu `.deb` or Arch Linux `.pkg.tar.zst` from
+[Releases](https://github.com/VottonDev/halyard/releases), then install it with
+your package manager:
+
+```bash
+# Debian/Ubuntu
+sudo apt install ./halyard_*_all.deb
+# Arch Linux
+sudo pacman -U ./halyard-*-any.pkg.tar.zst
+```
+
+Run these commands in a directory containing the one package you downloaded.
+Open Halyard from the application menu. Dependencies install automatically;
+no SDK build or Bun installation is needed. Ubuntu 26.04 and current Arch
+provide the required runtime versions. Ubuntu 24.04 and Debian 13 need a
+Node 22+ apt repository enabled first. See the [packaging guide](packaging/README.md)
+for compatibility, building packages, and replacing a manual installation.
+
+To install from source for your user:
 
 ```bash
 git clone --recurse-submodules https://github.com/VottonDev/halyard
@@ -64,7 +84,7 @@ Drive folder. Sync starts at once.
 
 Closing the window does not stop syncing. Choose Quit from the app menu or run
 `systemctl --user stop halyard-daemon` to stop the service. Halyard runs entirely
-as your user and never needs `sudo`.
+as your user; only installation of a distribution package uses administrator access.
 
 Conflicts appear in their own view. Both copies already exist on disk by the
 time you see one. Keep local restores your copy to the original name. Keep

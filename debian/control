@@ -1,0 +1,26 @@
+Source: halyard
+Section: net
+Priority: optional
+Maintainer: Otto Hooper <votton@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), git, nodejs (>= 22.15), python3,
+ python3-gi, gir1.2-gtk-4.0 (>= 4.10), gir1.2-adw-1 (>= 1.5)
+Standards-Version: 4.7.3
+Homepage: https://github.com/VottonDev/halyard
+Rules-Requires-Root: no
+
+Package: halyard
+Architecture: all
+Depends: ${misc:Depends}, nodejs (>= 22.13), python3, python3-gi,
+ gir1.2-gtk-4.0 (>= 4.10), gir1.2-adw-1 (>= 1.5),
+ dbus-user-session, gnome-keyring, xdg-desktop-portal, ca-certificates,
+ libgtk-4-1 (>= 4.19.2) | libgtk-4-media-gstreamer,
+ gstreamer1.0-plugins-base, gstreamer1.0-plugins-good
+Recommends: systemd, gstreamer1.0-libav
+Suggests: xdg-desktop-portal-gnome
+Description: unofficial two-way Proton Drive sync client for GNOME
+ Halyard keeps paired local and Proton Drive folders in sync, preserves both
+ copies when changes conflict, and provides a GTK interface for folders,
+ photos and activity. The daemon runs on the session bus as the logged-in
+ user and keeps credentials in the user's keyring.
+ .
+ This third-party application is not affiliated with or supported by Proton.

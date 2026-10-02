@@ -13,6 +13,7 @@ daemon/   Node sync engine. Owns the Proton SDK, auth, and all Drive access.
 ui/       Python GTK4 + libadwaita front end. Thin client, no Proton code.
 docs/dbus-api.md   The contract between them. Treat as an interface, not a note.
 packaging/         D-Bus activation, systemd user unit, installer.
+debian/            Debian/Ubuntu debhelper packaging metadata.
 ```
 
 The split exists because the Drive SDK is TypeScript (its crypto package ships
@@ -64,12 +65,14 @@ Each of these cost real debugging time. Do not "simplify" them away.
   under `bun test` — those files are named `*.nodetest.ts` (so Bun's `*.test.ts`
   glob skips them) and run under Node via `bun run test:node`. Node in turn
   cannot resolve the `.js` specifiers the `src/` tree uses, so that script
-  loads `test/support/register.mjs`, which rewrites them to `.ts`. Pure logic
+  loads `test/support/register.mjs`, which rewrites them to `.ts` and erases
+  types with esbuild (distro Node builds can omit native type stripping). Pure logic
   stays in `*.test.ts` under Bun. The crypto-cache regression is the one
   exception: it needs both `node:sqlite` and Proton's raw TypeScript crypto
   package, which Node refuses to type-strip under `node_modules`. It is named
   `*.bundletest.ts`; `bun run test:crypto` bundles it before running it with
-  Node.
+  Node. Source builds/tests require Node 22.15+ for the module hooks; the
+  installed daemon can run on Node 22.13+.
 - The `proton-sdk` submodule (pinned at tag `js/v0.22.2`) lives at the repo root
   — `../proton-sdk` from `daemon/` — and `client/js` must be built
   (`./scripts/build-proton-sdk.sh`) before this will compile. `git submodule update --init`
@@ -150,6 +153,13 @@ runs as the user, stores its session in the user's keyring, writes only under
 `systemctl --user`, D-Bus activation, or a direct spawn — in that order, and
 none of them prompt for a password.
 
+Distribution packages use apt/pacman to install read-only program files under
+`/usr/lib/halyard` and a user unit under `/usr/lib/systemd/user`. Only the package
+manager needs administrator access; the daemon still runs as the logged-in
+user. Package hooks must never start a system daemon, enable sync globally, or
+alter user credentials, paired folders or sync state. The manual installer
+continues to use `~/.local` and `~/.config` without elevation.
+
 If a change here appears to need `sudo`, the change is wrong. A sync tool that
 asks for root to move the user's own files is teaching them a bad habit, and
 Proton's own clients do not do it either.
@@ -193,6 +203,11 @@ data.
 
 ## Versioning
 
+- `daemon/package.json` is the only application version source. The daemon and
+  checkout UI read it; installers generate the UI's `data/version.json`.
+  `packaging/versioning.py` generates ignored `debian/changelog` and
+  `packaging/arch/PKGBUILD` from their `.in` templates. Do not add another version
+  constant or hand-edit generated metadata. Release tags must match `v<version>`.
 - An SDK upgrade requires a Halyard version bump in the same change. Increment
   the final component for an SDK update that remains compatible with Halyard's
   public behaviour, for example `0.1.1` to `0.1.2`, even if Proton labels an

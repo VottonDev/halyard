@@ -11,6 +11,7 @@
 import esbuild from 'esbuild';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeFile } from 'node:fs/promises';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const watch = process.argv.includes('--watch');
@@ -19,9 +20,12 @@ const entryArg = process.argv.find((arg) => arg.startsWith('--entry='));
 const entry = entryArg ? entryArg.slice('--entry='.length) : 'src/main.ts';
 const outArg = process.argv.find((arg) => arg.startsWith('--out='));
 const out = outArg ? outArg.slice('--out='.length) : 'dist/halyard-daemon.cjs';
+const metafileArg = process.argv.find((arg) => arg.startsWith('--metafile='));
+const metafile = metafileArg?.slice('--metafile='.length);
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {
+    absWorkingDir: root,
     entryPoints: [path.join(root, entry)],
     outfile: path.join(root, out),
     bundle: true,
@@ -31,6 +35,7 @@ const options = {
     preserveSymlinks: true,
     sourcemap: true,
     logLevel: 'info',
+    metafile: Boolean(metafile),
     // Node builtins are external automatically; nothing else should be.
     external: [],
     alias: {
@@ -38,7 +43,6 @@ const options = {
         x11: path.join(root, 'scripts/stubs/x11-unavailable.cjs'),
     },
     define: {
-        'process.env.HALYARD_VERSION': JSON.stringify(process.env.HALYARD_VERSION ?? '0.2.1'),
         // openpgp calls createRequire(import.meta.url) internally. That is
         // undefined once bundled to CJS, so point it at this bundle's own path.
         'import.meta.url': '__halyardModuleUrl',
@@ -53,6 +57,7 @@ if (watch) {
     await ctx.watch();
     console.log('[build] watching…');
 } else {
-    await esbuild.build(options);
+    const result = await esbuild.build(options);
+    if (metafile) await writeFile(path.resolve(root, metafile), JSON.stringify(result.metafile));
     console.log(`[build] wrote ${out}`);
 }

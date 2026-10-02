@@ -1,0 +1,11 @@
+FROM ubuntu:26.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get download libeatmydata1 && \
+    dpkg-deb --extract libeatmydata1_*.deb / && rm libeatmydata1_*.deb
+# Skip fsync only inside this disposable build image. This avoids expensive
+# package-database flushes on developer machines with btrfs Docker storage.
+ENV LD_PRELOAD=libeatmydata.so
+RUN apt-get install -y --no-install-recommends \
+    build-essential debhelper dpkg-dev git nodejs python3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
+    fakeroot dbus desktop-file-utils && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
