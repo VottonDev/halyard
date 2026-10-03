@@ -219,7 +219,7 @@ Drive session" in Passwords and Keys to drop the stored session.
 - One account
 - No resumable transfers; interrupted uploads restart
 - Symlinks are skipped
-- Shared-with-me folders are untested
+- Shared-with-me sync requires editing access
 
 ## Licence
 

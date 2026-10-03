@@ -348,13 +348,19 @@ export class RemoteTree {
 
             case DriveEventType.TreeRemove:
                 logger.warn(`Remote tree for pair ${this.pair.id} was removed`);
-                return 'reseed';
+                throw new Error('This Proton Drive folder is no longer available. Sync is paused; your local files are kept.');
 
             case DriveEventType.FastForward:
             case DriveEventType.SharedWithMeUpdated:
                 return 'ignored';
 
             case DriveEventType.NodeDeleted: {
+                if (event.nodeUid === this.pair.remoteUid) {
+                    // Retain the anchor and consume the event. Access is checked
+                    // before reconciliation; a later restore must not get stuck
+                    // replaying this tombstone from an unadvanced cursor.
+                    return 'changed';
+                }
                 if (!known.has(event.nodeUid)) {
                     return 'ignored';
                 }
@@ -382,6 +388,9 @@ export class RemoteTree {
                 }
 
                 if (event.isTrashed) {
+                    if (event.nodeUid === this.pair.remoteUid) {
+                        return 'changed';
+                    }
                     // Trashing is not deletion: it arrives as an update, and the
                     // node keeps existing. For us it means "gone from the tree".
                     this.db.deleteRemoteNode(this.pair.id, event.nodeUid);
@@ -401,6 +410,13 @@ export class RemoteTree {
                 const row = toRemoteNode(node);
                 if (!row) {
                     return 'ignored';
+                }
+
+                if (row.uid === this.pair.remoteUid) {
+                    // The root is a path anchor, stored with no parent/name.
+                    // A shared-root rename or membership update must not turn
+                    // it into a child of its inaccessible upstream parent.
+                    return 'changed';
                 }
 
                 // A node moved out of our subtree stops being ours.

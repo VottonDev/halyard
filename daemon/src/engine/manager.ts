@@ -5,6 +5,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { VERSION } from '../config.js';
+import { requireWritableFolder } from '../drive/folders.js';
 import type { DriveSession } from '../drive/session.js';
 import { getLogger } from '../log.js';
 import { SyncDatabase } from './db.js';
@@ -281,6 +282,11 @@ export class SyncManager {
         }
         const before = syncer.status;
         await syncer.sync(this.abort.signal);
+        // A first seed can establish the scope after startEventScheduler ran.
+        // Shared volumes need registering too, at the SDK's own cadence.
+        if (syncer.pair.treeEventScopeId) {
+            this.scheduler?.addScope(syncer.pair.treeEventScopeId);
+        }
 
         if (syncer.transientFailure) {
             this.online = false;
@@ -391,6 +397,7 @@ export class SyncManager {
         if (!remoteUid) {
             throw new Error('remoteUid is required');
         }
+        remotePath = (await requireWritableFolder(this.session.getClient(), remoteUid)).path;
 
         // If these exact folders were paired before and the state was kept,
         // pick up where we left off rather than starting from scratch. A
@@ -401,9 +408,9 @@ export class SyncManager {
         if (revived) {
             logger.info(`Reviving previously removed pair for ${localPath}`);
             this.db.markPairRemoved(revived.id, false);
-            this.db.updatePair(revived.id, { excludes });
+            this.db.updatePair(revived.id, { excludes, remotePath });
             this.purgeExcludedBase(revived.id, excludes);
-            pair = { ...revived, enabled: true, excludes };
+            pair = { ...revived, enabled: true, excludes, remotePath };
         } else {
             pair = {
                 id: `p_${randomUUID().slice(0, 8)}`,
@@ -423,11 +430,7 @@ export class SyncManager {
 
         const syncer = this.ensureSyncer(pair);
         this.startWatching(pair);
-        void this.runSync(syncer).then(() => {
-            if (syncer.pair.treeEventScopeId) {
-                this.scheduler?.addScope(syncer.pair.treeEventScopeId);
-            }
-        });
+        void this.runSync(syncer);
 
         this.scheduleEmit();
         return pair;
@@ -513,6 +516,10 @@ export class SyncManager {
         let nextLocalPath = existing.localPath;
 
         if (wantsLocal || wantsRemote) {
+            const context = await requireWritableFolder(
+                this.session.getClient(), patch.remoteUid ?? existing.remoteUid,
+            );
+            patch = { ...patch, remotePath: context.path };
             nextLocalPath = await this.validateTarget(
                 patch.localPath ?? existing.localPath,
                 patch.remoteUid ?? existing.remoteUid,

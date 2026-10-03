@@ -1,6 +1,6 @@
 {
     "name": "halyard-daemon",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "description": "Sync engine for Halyard, an unofficial two-way sync client for Proton Drive",
     "license": "MIT",
     "private": true,
@@ -11,9 +11,10 @@
         "start": "node dist/halyard-daemon.cjs",
         "check-types": "tsc --noEmit",
         "doctor": "node scripts/build.mjs --entry=src/probe.ts --out=dist/doctor.cjs && node dist/doctor.cjs",
-        "test": "bun test && bun run test:node && bun run test:crypto",
+        "test": "bun test && bun run test:node && bun run test:crypto && bun run test:shared",
         "test:node": "node --import ./test/support/register.mjs --test 'test/**/*.nodetest.ts'",
-        "test:crypto": "node scripts/build.mjs --entry=test/crypto-cache.bundletest.ts --out=dist/crypto-cache.bundletest.cjs && node --test dist/crypto-cache.bundletest.cjs"
+        "test:crypto": "node scripts/build.mjs --entry=test/crypto-cache.bundletest.ts --out=dist/crypto-cache.bundletest.cjs && node --test dist/crypto-cache.bundletest.cjs",
+        "test:shared": "node scripts/build.mjs --entry=test/shared-sync.bundletest.ts --out=dist/shared-sync.bundletest.cjs && node --test dist/shared-sync.bundletest.cjs"
     },
     "dependencies": {
         "@protontech/crypto": "2.1.1",

@@ -222,6 +222,8 @@ class RemoteFolder:
     name: str = ""
     path: str = ""
     has_children: bool = False
+    shared_with_me: bool = False
+    can_write: bool = True
 
     @classmethod
     def from_json(cls, data: Any) -> "RemoteFolder":
@@ -231,6 +233,8 @@ class RemoteFolder:
             name=str(data.get("name") or ""),
             path=str(data.get("path") or ""),
             has_children=bool(data.get("hasChildren", False)),
+            shared_with_me=bool(data.get("sharedWithMe", False)),
+            can_write=bool(data.get("canWrite", True)),
         )
 
 

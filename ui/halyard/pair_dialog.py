@@ -29,11 +29,13 @@ class RemoteFolderPage(Adw.NavigationPage):
     """One level of the Proton Drive folder tree."""
 
     def __init__(self, dialog: "PairDialog", uid: str, title: str,
-                 path: str) -> None:
+                 path: str, shared_with_me: bool = False,
+                 can_write: bool = True) -> None:
         super().__init__(title=title)
         self._dialog = dialog
         self._uid = uid
         self._path = path
+        self._can_write = can_write
         self._loaded = False
 
         toolbar = Adw.ToolbarView()
@@ -44,10 +46,20 @@ class RemoteFolderPage(Adw.NavigationPage):
             tooltip_text="Create folder here",
         )
         new_folder.connect("clicked", self._on_new_folder)
+        new_folder.set_sensitive(can_write)
+        self._new_folder = new_folder
         header.pack_end(new_folder)
         toolbar.add_top_bar(header)
 
         self._banner = Adw.Banner(revealed=False)
+        self._shared_status = (
+            ("Shared with you · Can edit" if can_write else
+             "Read-only share · Two-way sync requires editing access")
+            if shared_with_me else ""
+        )
+        if self._shared_status:
+            self._banner.set_title(self._shared_status)
+            self._banner.set_revealed(True)
         toolbar.add_top_bar(self._banner)
 
         self._stack = Gtk.Stack(vexpand=True)
@@ -59,7 +71,8 @@ class RemoteFolderPage(Adw.NavigationPage):
         empty = Adw.StatusPage(
             icon_name="folder-symbolic",
             title="No folders here",
-            description="Create a folder, or sync with this one.",
+            description=("Create a folder, or sync with this one." if can_write
+                         else "This shared folder is read-only."),
         )
         self._stack.add_named(empty, "empty")
 
@@ -67,8 +80,14 @@ class RemoteFolderPage(Adw.NavigationPage):
             hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True
         )
         page = Adw.PreferencesPage()
-        self._group = Adw.PreferencesGroup()
+        self._group = Adw.PreferencesGroup(title=ROOT_LABEL if not uid else "")
         page.add(self._group)
+        self._shared_group = Adw.PreferencesGroup(
+            title="Shared with me",
+            description="Folders other people have shared with you.",
+            visible=False,
+        )
+        page.add(self._shared_group)
         scrolled.set_child(page)
         self._stack.add_named(scrolled, "list")
 
@@ -97,10 +116,12 @@ class RemoteFolderPage(Adw.NavigationPage):
         select.add_css_class("suggested-action")
         select.add_css_class("pill")
         select.connect("clicked", self._on_select)
+        select.set_sensitive(False)
+        self._select_button = select
         bottom.append(select)
         toolbar.add_bottom_bar(bottom)
 
-        self._rows: list[Adw.ActionRow] = []
+        self._rows: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
         self.set_child(toolbar)
         self._stack.set_visible_child_name("loading")
 
@@ -116,14 +137,19 @@ class RemoteFolderPage(Adw.NavigationPage):
         if self._loaded and not force:
             return
         self._loaded = True
+        self._select_button.set_sensitive(False)
+        self._new_folder.set_sensitive(False)
         self._stack.set_visible_child_name("loading")
 
         def on_ok(folders: list[RemoteFolder]) -> None:
-            for row in self._rows:
-                self._group.remove(row)
+            for group, row in self._rows:
+                group.remove(row)
             self._rows.clear()
+            self._shared_group.set_visible(False)
             for folder in folders:
-                self._group.add(self._make_row(folder))
+                self._add_folder(folder)
+            self._select_button.set_sensitive(self._can_write)
+            self._new_folder.set_sensitive(self._can_write)
             self._stack.set_visible_child_name(
                 "list" if folders else "empty"
             )
@@ -139,26 +165,43 @@ class RemoteFolderPage(Adw.NavigationPage):
             title=GLib.markup_escape_text(folder.name),
             activatable=True,
         )
-        row.add_prefix(Gtk.Image.new_from_icon_name("folder-symbolic"))
+        row.add_prefix(Gtk.Image.new_from_icon_name(
+            "folder-publicshare-symbolic" if folder.shared_with_me
+            else "folder-symbolic"
+        ))
+        if folder.shared_with_me:
+            row.set_subtitle("Can edit" if folder.can_write else
+                             "Read-only · Two-way sync requires editing access")
         # Only promise a deeper level when the daemon says there is one.
         if folder.has_children:
             row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
         row.set_tooltip_text(folder.path or folder.name)
         row.connect("activated", lambda *_: self._dialog.push_folder(folder))
-        self._rows.append(row)
         return row
+
+    def _add_folder(self, folder: RemoteFolder) -> None:
+        group = (self._shared_group if not self._uid and folder.shared_with_me
+                 else self._group)
+        row = self._make_row(folder)
+        group.add(row)
+        group.set_visible(True)
+        self._rows.append((group, row))
 
     def add_created(self, folder: RemoteFolder) -> None:
         if self._stack.get_visible_child_name() in ("empty", "loading"):
             self._stack.set_visible_child_name("list")
-        self._group.add(self._make_row(folder))
+        self._add_folder(folder)
 
     def _on_select(self, _button) -> None:
+        if not self._can_write:
+            return
         self._dialog.choose_remote(self._uid, self._path or "/")
 
     # -- creating a folder ------------------------------------------------
 
     def _on_new_folder(self, _button) -> None:
+        if not self._can_write:
+            return
         dialog = Adw.AlertDialog(
             heading="New folder",
             body=f"Create a folder inside “{self.get_title()}”.",
@@ -185,6 +228,8 @@ class RemoteFolderPage(Adw.NavigationPage):
 
             def on_ok(folder: RemoteFolder) -> None:
                 self.add_created(folder)
+                self._banner.set_title(self._shared_status)
+                self._banner.set_revealed(bool(self._shared_status))
                 self._dialog.toast(f"Created “{folder.name}”")
 
             def on_err(message: str) -> None:
@@ -572,7 +617,8 @@ class PairDialog(Adw.Dialog):
         page.load()
 
     def push_folder(self, folder: RemoteFolder) -> None:
-        page = RemoteFolderPage(self, folder.uid, folder.name, folder.path)
+        page = RemoteFolderPage(self, folder.uid, folder.name, folder.path,
+                                folder.shared_with_me, folder.can_write)
         self._nav.push(page)
         page.load()
 

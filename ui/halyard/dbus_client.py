@@ -409,7 +409,7 @@ class DaemonClient(GObject.Object):
 
     def list_remote_folders(self, parent_uid: str, on_ok: OkCallback,
                             on_err: ErrCallback) -> None:
-        """An empty parent_uid lists the root of My Files."""
+        """An empty parent_uid lists My Files folders, then accepted shares."""
 
         def parse(data: Any) -> list[RemoteFolder]:
             return [

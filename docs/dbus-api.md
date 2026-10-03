@@ -146,13 +146,32 @@ instead of re-hashing and re-transferring everything.
 | `ListRemoteFolders` | `(s parentUid) → s` | `RemoteFolder[]` |
 | `CreateRemoteFolder` | `(s parentUid, s name) → s` | the created `RemoteFolder` |
 
-An empty `parentUid` lists the root of My Files. Folders only — the picker has
-no use for files.
+An empty `parentUid` lists folders at the root of My Files followed by accepted
+folders shared with the user. Each category is sorted by name; the UI displays
+the shared folders in a separate **Shared with me** group below My Files.
+Folders only — the picker has no use for files. Pending invitations and shared
+links/bookmarks are not included. Opening a folder lists only its children.
 
 ```jsonc
 // RemoteFolder
-{ "uid": "volumeId~nodeId", "name": "Work", "path": "/Work", "hasChildren": true }
+{
+  "uid": "volumeId~nodeId", "name": "Trips",
+  "path": "/Shared with me/Trips", "hasChildren": true,
+  "sharedWithMe": true, "canWrite": true
+}
 ```
+
+`sharedWithMe` is also true for descendants of a shared folder. `canWrite`
+reflects the highest role along the accessible hierarchy (editor or admin).
+Older daemons may omit these fields; the UI defaults them to false and true,
+respectively. Read-only folders remain browsable but cannot be paired for
+two-way sync or used for `CreateRemoteFolder`. The daemon enforces this for
+pair creation, retargeting, and each sync cycle. Lost access pauses sync and
+preserves local files and durable sync state.
+
+`CreateRemoteFolder` returns the complete display path and the same sharing
+metadata, including for folders created inside an editable share. An empty
+`parentUid` still creates a folder at the root of My Files.
 
 ### Status and conflicts
 
