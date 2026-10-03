@@ -397,8 +397,12 @@ class MockState:
                  "hasChildren": True},
                 {"uid": "vol_1~node_archive_root", "name": "Archive",
                  "path": "/Archive", "hasChildren": True},
-                {"uid": "vol_1~node_shared", "name": "Shared with me",
-                 "path": "/Shared with me", "hasChildren": False},
+                {"uid": "vol_shared~trips", "name": "Trips",
+                 "path": "/Shared with me/Trips", "hasChildren": True,
+                 "sharedWithMe": True, "canWrite": True},
+                {"uid": "vol_shared~reference", "name": "Reference",
+                 "path": "/Shared with me/Reference", "hasChildren": False,
+                 "sharedWithMe": True, "canWrite": False},
             ],
             "vol_1~node_work": [
                 {"uid": "vol_1~node_proposals", "name": "proposals",
@@ -438,8 +442,19 @@ class MockState:
             "vol_1~node_archive": [],
             "vol_1~node_archive23": [],
             "vol_1~node_signed": [],
-            "vol_1~node_shared": [],
+            "vol_shared~trips": [
+                {"uid": "vol_shared~summer", "name": "Summer",
+                 "path": "/Shared with me/Trips/Summer", "hasChildren": False,
+                 "sharedWithMe": True, "canWrite": True},
+            ],
+            "vol_shared~summer": [],
+            "vol_shared~reference": [],
         }
+
+        for folders in self.remote_tree.values():
+            for folder in folders:
+                folder.setdefault("sharedWithMe", False)
+                folder.setdefault("canWrite", True)
 
         # Activity log. Deliberately spread across several days and both
         # directions, with one failure and one deletion, so the grouping,
@@ -550,6 +565,16 @@ class MockState:
     def find_pair(self, pair_id: str) -> dict | None:
         return next((p for p in self.pairs if p["id"] == pair_id), None)
 
+    def remote_folder(self, uid: str) -> dict | None:
+        return next((folder for folders in self.remote_tree.values()
+                     for folder in folders if folder["uid"] == uid), None)
+
+    def require_writable_folder(self, uid: str) -> None:
+        folder = self.remote_folder(uid)
+        if folder and not folder["canWrite"]:
+            raise ValueError("This Proton Drive folder is read-only. "
+                             "Two-way sync requires editing access. Your local files are kept.")
+
     # -- remote folder creation -----------------------------------------
 
     def create_folder(self, parent_uid: str, name: str) -> dict:
@@ -563,6 +588,10 @@ class MockState:
             raise ValueError("Folder name cannot be empty.")
         if "/" in name:
             raise ValueError("Folder names cannot contain “/”.")
+        parent = self.remote_folder(parent_uid)
+        if parent and not parent["canWrite"]:
+            raise ValueError("This Proton Drive folder is read-only. "
+                             "Two-way sync requires editing access. Your local files are kept.")
         siblings = self.remote_tree.setdefault(parent_uid, [])
         if any(f["name"].lower() == name.lower() for f in siblings):
             raise ValueError(f"A folder called “{name}” already exists here.")
@@ -577,6 +606,8 @@ class MockState:
             "name": name,
             "path": f"{parent_path}/{name}",
             "hasChildren": False,
+            "sharedWithMe": bool(parent and parent["sharedWithMe"]),
+            "canWrite": True,
         }
         siblings.append(folder)
         self.remote_tree[folder["uid"]] = []
@@ -891,6 +922,7 @@ class MockDaemon:
                 "remoteUid is required unless createRemote is set."
             )
 
+        self.state.require_writable_folder(remote_uid)
         pair = {
             "id": f"p_{random.randint(0x1000, 0xffff):04x}",
             "localPath": local,
@@ -939,6 +971,8 @@ class MockDaemon:
             raise ValueError(
                 "The update contained nothing that can be changed."
             )
+        if "remoteUid" in patch:
+            self.state.require_writable_folder(patch["remoteUid"])
         if "excludes" in patch:
             # Validated before anything is mutated, so a bad pattern leaves
             # the pair exactly as it was.
@@ -1013,7 +1047,8 @@ class MockDaemon:
             raise ValueError("That folder is no longer available in "
                              "Proton Drive.")
         folders = sorted(
-            self.state.remote_tree[parent_uid], key=lambda f: f["name"].lower()
+            self.state.remote_tree[parent_uid],
+            key=lambda f: (f["sharedWithMe"], f["name"].lower())
         )
         # Deliberately slow: proves the UI stays responsive during the call.
         self._reply_json(invocation, folders, delay_ms=750)

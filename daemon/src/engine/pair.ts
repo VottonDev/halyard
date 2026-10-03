@@ -2,6 +2,7 @@ import type { ProtonDriveClient } from '@protontech/drive-sdk';
 import { randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 
+import { requireWritableFolder } from '../drive/folders.js';
 import { getLogger } from '../log.js';
 import type { SyncDatabase } from './db.js';
 import { compileExcludes, filterExcluded } from './exclude.js';
@@ -176,6 +177,7 @@ export class PairSyncer {
             // --- Remote side: enumerate once, then follow the event stream.
             if (!this.pair.seeded) {
                 this.setStatus('setup');
+                await requireWritableFolder(this.client, this.pair.remoteUid);
                 await this.tree.seed(signal);
             } else {
                 this.setStatus('scanning');
@@ -189,6 +191,11 @@ export class PairSyncer {
             }
             this.pair = this.db.getPair(pair.id) ?? pair;
             this.tree.setPair(this.pair);
+
+            // Event handling invalidates the SDK's cached membership metadata.
+            // Check access before any reconciliation can delete local files or
+            // upload local changes into a share that has become read-only.
+            await requireWritableFolder(this.client, this.pair.remoteUid);
 
             // Never reconcile against a half-enumerated remote view. Files we
             // have not listed yet look exactly like files deleted on Drive, and

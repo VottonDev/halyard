@@ -139,7 +139,7 @@ function nodeEvent(
     nodeUid: string,
     parentNodeUid: string,
     eventId = 'e1',
-): DriveEvent {
+): Extract<DriveEvent, { type: DriveEventType.NodeCreated | DriveEventType.NodeUpdated }> {
     return {
         type,
         nodeUid,
@@ -148,7 +148,7 @@ function nodeEvent(
         isShared: false,
         treeEventScopeId: 'scope',
         eventId,
-    } as unknown as DriveEvent;
+    };
 }
 
 function makePair(): Pair {
@@ -186,6 +186,47 @@ function makeTree(db: FakeDb, client: MockClient): RemoteTree {
 }
 
 describe('RemoteTree.applyEvent catch-up enumeration', () => {
+    test('a shared-root metadata update keeps the path anchor and subsequent children intact', async () => {
+        const db = new FakeDb();
+        const client = new MockClient();
+        const tree = makeTree(db, client);
+        client.nodes.set(ROOT, folderNode(ROOT, 'inaccessible-parent', 'Renamed Trips'));
+        client.nodes.set('F', folderNode('F', ROOT, 'Summer'));
+        client.nodes.set('C', fileNode('C', 'F', 'plan.txt'));
+        client.children.set('F', ['C']);
+        client.events = [nodeEvent(DriveEventType.NodeUpdated, ROOT, 'inaccessible-parent'),
+            nodeEvent(DriveEventType.NodeCreated, 'F', ROOT, 'e2')];
+        await tree.pull();
+        expect([...tree.snapshot().keys()]).toEqual(['Summer', 'Summer/plan.txt']);
+        const root = db.getRemoteNodes('p1').find(row => row.uid === ROOT);
+        expect(root?.name).toBe('');
+        expect(root?.parent_uid).toBeNull();
+    });
+
+    test('root tombstones retain the anchor and are consumed so a later restore can recover', async () => {
+        const events: DriveEvent[] = [
+            { type: DriveEventType.NodeDeleted, nodeUid: ROOT, treeEventScopeId: 'scope', eventId: 'e1' },
+            { ...nodeEvent(DriveEventType.NodeUpdated, ROOT, 'parent'), isTrashed: true },
+        ];
+        for (const event of events) {
+            const db = new FakeDb();
+            const client = new MockClient();
+            const tree = makeTree(db, client);
+            client.events = [event];
+            expect(await tree.pull()).toEqual({ needsReseed: false, changed: true });
+            expect(db.getRemoteNodes('p1').some(row => row.uid === ROOT)).toBe(true);
+        }
+    });
+
+    test('lost volume access stops without removing the stored root', async () => {
+        const db = new FakeDb();
+        const client = new MockClient();
+        const tree = makeTree(db, client);
+        client.events = [{ type: DriveEventType.TreeRemove, treeEventScopeId: 'scope', eventId: 'none' }];
+        await expect(tree.pull()).rejects.toThrow('your local files are kept');
+        expect(db.getRemoteNodes('p1').some(row => row.uid === ROOT)).toBe(true);
+    });
+
     test('a folder moved in from another device pulls in its pre-existing descendants', async () => {
         // Folder F, holding file C, was outside the pair and moves under the
         // root. The move is a NodeUpdated (F already existed; only its parent

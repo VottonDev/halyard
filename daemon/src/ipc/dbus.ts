@@ -1,7 +1,7 @@
-import { NodeType } from '@protontech/drive-sdk';
 import * as dbus from 'dbus-next';
 
 import { VERSION } from '../config.js';
+import { createRemoteFolder, listRemoteFolders } from '../drive/folders.js';
 import type { DriveSession } from '../drive/session.js';
 import type { SyncManager } from '../engine/manager.js';
 import type { HistoryFilter, SyncEventAction } from '../engine/types.js';
@@ -210,75 +210,15 @@ export class HalyardInterface extends Interface {
 
     async ListRemoteFolders(parentUid: string): Promise<string> {
         try {
-            const client = this.session.getClient();
-
-            let uid = parentUid;
-            let basePath = '';
-            if (!uid) {
-                const root = await client.getMyFilesRootFolder();
-                uid = root.uid;
-            } else {
-                const hierarchy = await client.getNodeHierarchy(uid);
-                basePath = hierarchy
-                    .slice(1)
-                    .map((node) => (node.name.ok ? node.name.value : '?'))
-                    .join('/');
-                basePath = basePath ? `/${basePath}` : '';
-            }
-
-            const childUids: string[] = [];
-            for await (const childUid of client.iterateFolderChildrenNodeUids(uid, { type: NodeType.Folder })) {
-                childUids.push(childUid);
-            }
-
-            const folders: Array<{ uid: string; name: string; path: string; hasChildren: boolean }> = [];
-            for await (const node of client.iterateNodes(childUids)) {
-                if ('missingUid' in node || node.type !== NodeType.Folder || node.trashTime) {
-                    continue;
-                }
-                const name = node.name.ok ? node.name.value : null;
-                if (!name) {
-                    continue;
-                }
-                folders.push({
-                    uid: node.uid,
-                    name,
-                    path: `${basePath}/${name}`,
-                    hasChildren: await this.hasSubfolders(node.uid),
-                });
-            }
-
-            folders.sort((a, b) => a.name.localeCompare(b.name));
-            return JSON.stringify(folders);
+            return JSON.stringify(await listRemoteFolders(this.session.getClient(), parentUid));
         } catch (error) {
             return fail(error);
         }
     }
 
-    /** Peeks for a single child so the picker can show a meaningful expander. */
-    private async hasSubfolders(uid: string): Promise<boolean> {
-        try {
-            const client = this.session.getClient();
-            for await (const _child of client.iterateFolderChildrenNodeUids(uid, { type: NodeType.Folder })) {
-                return true;
-            }
-        } catch {
-            // Not worth failing the whole listing over.
-        }
-        return false;
-    }
-
     async CreateRemoteFolder(parentUid: string, name: string): Promise<string> {
         try {
-            const client = this.session.getClient();
-            const uid = parentUid || (await client.getMyFilesRootFolder()).uid;
-            const node = await client.createFolder(uid, name);
-            return JSON.stringify({
-                uid: node.uid,
-                name,
-                path: name,
-                hasChildren: false,
-            });
+            return JSON.stringify(await createRemoteFolder(this.session.getClient(), parentUid, name));
         } catch (error) {
             return fail(error);
         }

@@ -22,6 +22,7 @@ import { accountUrl, APP_VERSION_HEADER, AUTH_CLIENT_ID, AUTH_CLIENT_ID as authC
 import { getLogger } from '../log.js';
 import { LocalTelemetry } from '../telemetry.js';
 import { createCaches, type Caches } from './caches.js';
+import { registerFolderRefresh } from './folders.js';
 import { HttpClient } from './httpClient.js';
 
 const logger = getLogger('session');
@@ -188,6 +189,12 @@ export class DriveSession {
             },
         };
         this.client = new ProtonDriveClient(dependencies);
+        registerFolderRefresh(this.client, async (uids) => {
+            // Pinned SDK v0.22.2 NodesCache uses node-<uid> metadata keys.
+            // Removing just these forces fresh roles/access without dropping
+            // descendant metadata, crypto keys, or the durable sync base.
+            await caches.entitiesCache.removeEntities(uids.map(uid => `node-${uid}`));
+        });
         this.createPhotosClient = (writable = false) => new ProtonDrivePhotosClient({
             ...dependencies,
             httpClient: new HttpClient(apiClient, !writable),
