@@ -82,6 +82,15 @@ pair, which discards its recorded sync state — the next sync then treats both
 sides as new and merges them, so nothing is deleted and differing files become
 conflicts with both copies kept.
 
+`RemovePair` cancels the pair's active sync and prevents queued cycles from
+starting. It returns after the running work has unwound, then hides the pair
+and either retains its sync state (`deleteLocalState: false`) or deletes that
+state and its Activity history (`true`). Cancellation is not logged as a sync
+failure. Local files and files on Proton Drive are kept.
+Updates and removals of the same pair run in request order. An update queued
+after removal fails with `No such pair`; a later removal can still discard
+retained state.
+
 ### Exclusions
 
 `excludes` is a list of gitignore-style patterns, relative to the pair root,

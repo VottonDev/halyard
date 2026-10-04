@@ -92,7 +92,7 @@ export class PairSyncer {
         }
         // The caller's signal is manager-wide (it trips on sign-out and
         // shutdown). Chaining a per-run controller onto it lets cancel() stop
-        // this one pair during a retarget without touching the others.
+        // this one pair during removal or retargeting without touching the others.
         const controller = new AbortController();
         const propagate = () => controller.abort();
         if (signal?.aborted) {
@@ -144,6 +144,10 @@ export class PairSyncer {
     private async runOnce(signal?: AbortSignal): Promise<void> {
         const pair = this.pair;
         this.transientFailure = false;
+        if (signal?.aborted) {
+            this.setStatus('idle');
+            return;
+        }
 
         // A previously-synced local root that has vanished was probably moved,
         // deleted, or unmounted. The user probably did not empty it file by file.
@@ -156,6 +160,10 @@ export class PairSyncer {
             .stat(pair.localPath)
             .then((stats) => stats.isDirectory())
             .catch(() => false);
+        if (signal?.aborted) {
+            this.setStatus('idle');
+            return;
+        }
         if (!rootExists && this.db.getBase(pair.id).size > 0) {
             this.setStatus(
                 'error',
@@ -169,19 +177,26 @@ export class PairSyncer {
         try {
             await fsp.mkdir(pair.localPath, { recursive: true });
         } catch (error) {
+            if (signal?.aborted) {
+                this.setStatus('idle');
+                return;
+            }
             this.setStatus('error', `Local folder is not usable: ${error}`);
             return;
         }
 
         try {
+            signal?.throwIfAborted();
             // --- Remote side: enumerate once, then follow the event stream.
             if (!this.pair.seeded) {
                 this.setStatus('setup');
                 await requireWritableFolder(this.client, this.pair.remoteUid);
+                signal?.throwIfAborted();
                 await this.tree.seed(signal);
             } else {
                 this.setStatus('scanning');
                 const { needsReseed } = await this.tree.pull(signal);
+                signal?.throwIfAborted();
                 if (needsReseed) {
                     this.db.updatePair(this.pair.id, { seeded: false });
                     this.pair = { ...this.pair, seeded: false };
@@ -189,6 +204,7 @@ export class PairSyncer {
                     await this.tree.seed(signal);
                 }
             }
+            signal?.throwIfAborted();
             this.pair = this.db.getPair(pair.id) ?? pair;
             this.tree.setPair(this.pair);
 
@@ -196,6 +212,7 @@ export class PairSyncer {
             // Check access before any reconciliation can delete local files or
             // upload local changes into a share that has become read-only.
             await requireWritableFolder(this.client, this.pair.remoteUid);
+            signal?.throwIfAborted();
 
             // Never reconcile against a half-enumerated remote view. Files we
             // have not listed yet look exactly like files deleted on Drive, and
@@ -216,7 +233,8 @@ export class PairSyncer {
             // only the local scan would leave files present in the base and on
             // Drive but missing locally, which reads as a deletion and would
             // trash the user's remote copies the moment they excluded a folder.
-            const local = filterExcluded(await scanLocal(this.pair.localPath, isExcluded), isExcluded);
+            const local = filterExcluded(await scanLocal(this.pair.localPath, isExcluded, signal), isExcluded);
+            signal?.throwIfAborted();
             const remote = filterExcluded(this.tree.snapshot(), isExcluded);
             const base = filterExcluded(this.db.getBase(this.pair.id), isExcluded);
 
@@ -236,7 +254,8 @@ export class PairSyncer {
                 return;
             }
 
-            await fillRequiredHashes(this.pair.localPath, local, base, remote);
+            await fillRequiredHashes(this.pair.localPath, local, base, remote, signal);
+            signal?.throwIfAborted();
 
             // --- Decide.
             const plan = reconcile({ base, local, remote, now: Date.now() });
@@ -276,6 +295,7 @@ export class PairSyncer {
             this.stats.bytesUp += result.bytesUp;
             this.stats.bytesDown += result.bytesDown;
             this.stats.pending = result.failed.length;
+            signal?.throwIfAborted();
 
             const now = Date.now();
             this.db.updatePair(this.pair.id, { lastSyncAt: now });

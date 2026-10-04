@@ -203,12 +203,14 @@ export class RemoteTree {
             this.db.clearRemoteNodes(pairId);
 
             const root = await this.client.getNode(this.pair.remoteUid);
+            signal?.throwIfAborted();
             const scopeId = root.treeEventScopeId;
 
             let cursor: string | null = null;
             for await (const event of this.client.iterateEvents(scopeId, undefined, signal)) {
                 cursor = event.eventId;
             }
+            signal?.throwIfAborted();
 
             // The root is stored so the frontier logic can treat it like any
             // other folder. snapshot() walks down from it, so it never appears
@@ -254,6 +256,7 @@ export class RemoteTree {
 
                 const rows: RemoteNodeInput[] = [];
                 for await (const node of this.listChildren(folderUid, signal)) {
+                    signal?.throwIfAborted();
                     const row = toRemoteNode(node);
                     if (!row || row.trashed) {
                         continue;
@@ -265,6 +268,9 @@ export class RemoteTree {
                     }
                     rows.push(row);
                 }
+                // A cancelled iterator may end normally after a partial page.
+                // Leave this folder on the frontier so revival lists it fully.
+                signal?.throwIfAborted();
 
                 // One commit per listed folder rather than one per child: a
                 // seed writes thousands of rows, and per-row auto-commits were
@@ -315,6 +321,7 @@ export class RemoteTree {
 
         try {
             for await (const event of this.client.iterateEvents(scopeId, cursor, signal)) {
+                signal?.throwIfAborted();
                 const outcome = await this.applyEvent(event, known);
                 if (outcome === 'reseed') {
                     return { needsReseed: true, changed };
@@ -331,9 +338,10 @@ export class RemoteTree {
                 }
             }
         } catch (error) {
-            // A removed volume yields TreeRemove and then rethrows. Everything
-            // else is a genuine failure worth surfacing.
-            logger.error(`Event stream failed for pair ${this.pair.id}`, error);
+            // Cancellation is expected when removing or retargeting a pair.
+            if (!signal?.aborted) {
+                logger.error(`Event stream failed for pair ${this.pair.id}`, error);
+            }
             throw error;
         }
 

@@ -27,12 +27,15 @@ export function isIgnoredName(name: string): boolean {
  * `claimedDigests`, so using the same algorithm lets us compare local and
  * remote content without downloading anything.
  */
-export async function hashFile(absolutePath: string): Promise<string | null> {
+export async function hashFile(absolutePath: string, signal?: AbortSignal): Promise<string | null> {
     try {
         const hash = createHash('sha1');
-        await pipeline(fs.createReadStream(absolutePath), hash);
+        await pipeline(fs.createReadStream(absolutePath), hash, { signal });
         return hash.digest('hex');
     } catch (error) {
+        if (signal?.aborted) {
+            throw error;
+        }
         logger.warn(`Could not hash ${absolutePath}: ${error}`);
         return null;
     }
@@ -47,19 +50,23 @@ export async function hashFile(absolutePath: string): Promise<string | null> {
 export async function scanLocal(
     root: string,
     isExcluded: (relativePath: string) => boolean = () => false,
+    signal?: AbortSignal,
 ): Promise<Map<string, LocalItem>> {
     const items = new Map<string, LocalItem>();
 
     async function walk(directory: string, prefix: string): Promise<void> {
+        signal?.throwIfAborted();
         let entries: fs.Dirent[];
         try {
             entries = await fsp.readdir(directory, { withFileTypes: true });
         } catch (error) {
+            signal?.throwIfAborted();
             logger.warn(`Could not read ${directory}: ${error}`);
             return;
         }
 
         for (const entry of entries) {
+            signal?.throwIfAborted();
             if (isIgnoredName(entry.name)) {
                 continue;
             }
@@ -126,6 +133,7 @@ export async function fillRequiredHashes(
     local: Map<string, LocalItem>,
     base: Map<string, BaseEntry>,
     remote: Map<string, RemoteItem>,
+    signal?: AbortSignal,
 ): Promise<void> {
     const needed: LocalItem[] = [];
 
@@ -154,8 +162,9 @@ export async function fillRequiredHashes(
     let index = 0;
     async function worker(): Promise<void> {
         while (index < needed.length) {
+            signal?.throwIfAborted();
             const item = needed[index++];
-            item.hash = await hashFile(path.join(root, item.path));
+            item.hash = await hashFile(path.join(root, item.path), signal);
         }
     }
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, needed.length) }, worker));

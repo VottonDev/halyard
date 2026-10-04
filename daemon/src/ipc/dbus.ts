@@ -190,9 +190,9 @@ export class HalyardInterface extends Interface {
         }
     }
 
-    RemovePair(id: string, deleteLocalState: boolean): void {
+    async RemovePair(id: string, deleteLocalState: boolean): Promise<void> {
         try {
-            this.manager.removePair(id, deleteLocalState);
+            await this.manager.removePair(id, deleteLocalState);
         } catch (error) {
             fail(error);
         }

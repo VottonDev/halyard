@@ -383,7 +383,292 @@ test('manager rejects viewer pair creation and retargeting, and registers a new 
         assert.equal(await fsp.readFile(path.join(pair.localPath, 'plan.txt'), 'utf8'), 'original itinerary');
         assert.deepEqual(drive.trashed, []);
     } finally {
+        for (const pair of manager.listPairs()) await manager.removePair(pair.id, true);
         await manager.stop();
         await fsp.rm(directory, { recursive: true, force: true });
     }
 });
+
+/** Holds an SDK operation after progress begins, including its abort cleanup. */
+class TransferGate {
+    signal?: AbortSignal;
+    progress?: () => void;
+    private begin!: () => void;
+    private finish!: () => void;
+    readonly started = new Promise<void>(resolve => { this.begin = resolve; });
+    private readonly released = new Promise<void>(resolve => { this.finish = resolve; });
+
+    async wait(signal: AbortSignal | undefined, progress: () => void): Promise<void> {
+        this.signal = signal;
+        this.progress = progress;
+        progress();
+        this.begin();
+        await this.released;
+        signal?.throwIfAborted();
+    }
+
+    release(): void { this.finish(); }
+}
+
+function holdUpload(client: ProtonDriveClient, gate: TransferGate): void {
+    const getUploader = client.getFileUploader.bind(client);
+    client.getFileUploader = async (parent, name, metadata, signal) => {
+        const uploader = await getUploader(parent, name, metadata, signal);
+        if (name !== 'b.txt') return uploader;
+        return { ...uploader, uploadFromStream: async (stream, thumbnails, progress) => ({
+            completion: async () => {
+                try {
+                    await gate.wait(signal, () => progress?.(0));
+                } catch (error) {
+                    await stream.cancel();
+                    throw error;
+                }
+                return (await uploader.uploadFromStream(stream, thumbnails, progress)).completion();
+            },
+            pause() {}, resume() {},
+        }) };
+    };
+}
+
+for (const overlap of ['remove', 'update-during-removal', 'update-before-removal'] as const) {
+    test(`pair mutations wait for cancellation cleanup (${overlap})`, async () => {
+        const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'halyard-pair-mutations-'));
+        const drive = new OfflineDrive();
+        const client = drive.asClient();
+        const gate = new TransferGate();
+        holdUpload(client, gate);
+        const session = { isLoggedIn: () => true, getClient: () => client } as DriveSession;
+        const manager = new SyncManager(session);
+        const db = new SyncDatabase(path.join(testDataHome, 'halyard', 'sync.sqlite'));
+        let running: Promise<void> | undefined;
+        let mutation: Promise<unknown> | undefined;
+        let followup: Promise<{ error?: unknown }> | undefined;
+        try {
+            await manager.start();
+            const pair = await manager.addPair({ localPath: path.join(directory, 'Trips'),
+                remoteUid: SHARED_ROOT, remotePath: '/Trips' });
+            await waitUntil(() => manager.listPairs().find(item => item.id === pair.id)?.seeded === true &&
+                manager.getStatus().pairs.find(item => item.id === pair.id)?.status === 'idle');
+            for (const name of ['a.txt', 'b.txt']) await fsp.writeFile(path.join(pair.localPath, name), name);
+            running = manager.syncAll(pair.id);
+            await gate.started;
+            assert.ok(db.getBase(pair.id).has('a.txt'));
+
+            mutation = overlap === 'update-before-removal'
+                ? manager.updatePair(pair.id, { excludes: ['a.txt'] })
+                : manager.removePair(pair.id, false);
+            let finished = false;
+            const next = overlap === 'update-during-removal'
+                ? manager.updatePair(pair.id, { excludes: ['a.txt'] })
+                : manager.removePair(pair.id, true);
+            followup = next.then(() => { finished = true; return {}; }, error => {
+                finished = true;
+                return { error };
+            });
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(gate.signal?.aborted, true);
+            assert.equal(finished, false, 'overlapping mutation waits for the retired run');
+            assert.ok(db.getPair(pair.id), 'the pair cannot be forgotten during cleanup');
+            assert.ok(db.getBase(pair.id).has('a.txt'), 'an update cannot purge the old run\'s base');
+            assert.equal(db.findRemovedPair(pair.localPath, pair.remoteUid), undefined,
+                'retained state cannot be revived during cleanup');
+
+            gate.release();
+            await Promise.all([running, mutation]);
+            const outcome = await followup;
+            assert.deepEqual(manager.listPairs(), []);
+            if (overlap === 'update-during-removal') {
+                assert.match(String(outcome.error), /No such pair/);
+                assert.ok(db.findRemovedPair(pair.localPath, pair.remoteUid));
+                assert.ok(db.getBase(pair.id).has('a.txt'));
+                assert.deepEqual(manager.listHistory({ pairId: pair.id }).map(event => event.path), ['a.txt']);
+            } else {
+                assert.equal(outcome.error, undefined);
+                assert.equal(db.getPair(pair.id), undefined);
+                assert.deepEqual(manager.listHistory({ pairId: pair.id }), []);
+            }
+            await manager.removePair(pair.id, true);
+        } finally {
+            gate.release();
+            await Promise.allSettled([running, mutation, followup]);
+            for (const pair of manager.listPairs()) await manager.removePair(pair.id, true);
+            await manager.stop();
+            db.close();
+            await fsp.rm(directory, { recursive: true, force: true });
+        }
+    });
+}
+
+test('cancelling setup preserves an incomplete folder for the next enumeration', async () => {
+    await withPair(async (db, pair, drive, syncer) => {
+        drive.putFile('shared~a', 'a.txt', 'first', 2_000);
+        drive.putFile('shared~b', 'b.txt', 'second', 2_000);
+        const client = drive.asClient();
+        const iterateChildren = client.iterateFolderChildrenNodeUids.bind(client);
+        const gate = new TransferGate();
+        client.iterateFolderChildrenNodeUids = async function* (_parent, _options, signal) {
+            yield 'shared~a';
+            try { await gate.wait(signal, () => {}); }
+            catch (error) {
+                // Exercise an iterator that ends normally on cancellation.
+                if (!signal?.aborted) throw error;
+            }
+        };
+        const running = syncer.sync();
+        try {
+            await gate.started;
+            const cancellation = syncer.cancel();
+            gate.release();
+            await Promise.all([running, cancellation]);
+            assert.equal(syncer.status, 'idle');
+            assert.equal(db.getPair(pair.id)!.seeded, false);
+            assert.deepEqual(db.getUnlistedFolders(pair.id), [SHARED_ROOT]);
+            assert.equal(db.getBase(pair.id).size, 0);
+            assert.deepEqual(drive.downloads, []);
+            assert.deepEqual(db.listEvents(), []);
+
+            client.iterateFolderChildrenNodeUids = iterateChildren;
+            await syncer.sync();
+            assert.equal(syncer.status, 'idle', syncer.error ?? 'resumed sync completed');
+            assert.equal(await fsp.readFile(path.join(pair.localPath, 'a.txt'), 'utf8'), 'first');
+            assert.equal(await fsp.readFile(path.join(pair.localPath, 'b.txt'), 'utf8'), 'second');
+        } finally {
+            gate.release();
+            await running;
+        }
+    });
+});
+
+test('a syncAll snapshot skips a removed queued pair and continues the remaining pair', async () => {
+    const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'halyard-remove-queued-'));
+    const drive = new OfflineDrive();
+    drive.nodes.set('shared~other', folder('shared~other', 'inaccessible-parent', 'Other', MemberRole.Editor));
+    const client = drive.asClient();
+    const gate = new TransferGate();
+    holdUpload(client, gate);
+    const session = { isLoggedIn: () => true, getClient: () => client } as DriveSession;
+    const manager = new SyncManager(session);
+    let running: Promise<void> | undefined;
+    try {
+        await manager.start();
+        const first = await manager.addPair({ localPath: path.join(directory, 'Trips'),
+            remoteUid: SHARED_ROOT, remotePath: '/Trips' });
+        const queued = await manager.addPair({ localPath: path.join(directory, 'Other'),
+            remoteUid: 'shared~other', remotePath: '/Other' });
+        await waitUntil(() => manager.listPairs().every(pair => pair.seeded) &&
+            manager.getStatus().pairs.every(pair => pair.status === 'idle'));
+        await fsp.writeFile(path.join(first.localPath, 'b.txt'), 'first pair');
+        await fsp.writeFile(path.join(queued.localPath, 'queued.txt'), 'second pair');
+        running = manager.syncAll();
+        await gate.started;
+        await manager.removePair(queued.id, true);
+        assert.equal(gate.signal?.aborted, false, 'removing another pair does not abort this transfer');
+        assert.equal(manager.getStatus().activity?.pairId, first.id, 'other pair activity stays visible');
+        gate.release();
+        await running;
+        assert.equal(manager.getStatus().pairs[0].status, 'idle');
+        assert.deepEqual(manager.listHistory({}).map(event => event.path), ['b.txt']);
+        assert.equal([...drive.nodes.values()].some(node => node.name.ok && node.name.value === 'queued.txt'), false);
+    } finally {
+        gate.release();
+        await running;
+        for (const pair of manager.listPairs()) await manager.removePair(pair.id, true);
+        await manager.stop();
+        await fsp.rm(directory, { recursive: true, force: true });
+    }
+});
+
+for (const kind of ['upload', 'download'] as const) {
+    for (const forget of [false, true]) {
+        test(`removing a pair during ${kind} cancels it quietly (${forget ? 'forget' : 'keep'} state)`, async () => {
+            const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'halyard-remove-pair-'));
+            const drive = new OfflineDrive();
+            const client = drive.asClient();
+            const gate = new TransferGate();
+            if (kind === 'upload') holdUpload(client, gate);
+            else {
+                const getDownloader = client.getFileDownloader.bind(client);
+                client.getFileDownloader = async (uid, signal) => {
+                    const downloader = await getDownloader(uid, signal);
+                    if (uid !== 'shared~b') return downloader;
+                    return { ...downloader, downloadToStream: (stream, progress) => ({
+                        completion: async () => {
+                            const writer = stream.getWriter();
+                            try {
+                                await writer.write(Buffer.from('partial'));
+                                await gate.wait(signal, () => progress?.(7));
+                            } finally {
+                                await writer.abort();
+                            }
+                        },
+                        isDownloadCompleteWithSignatureIssues: () => false,
+                        pause() {}, resume() {},
+                    }) };
+                };
+            }
+            const session = { isLoggedIn: () => true, getClient: () => client } as DriveSession;
+            const manager = new SyncManager(session);
+            const db = new SyncDatabase(path.join(testDataHome, 'halyard', 'sync.sqlite'));
+            const notices: string[] = [];
+            manager.onNotify((_kind, _title, body) => notices.push(body));
+            let running: Promise<void> | undefined;
+            try {
+                await manager.start();
+                const pair = await manager.addPair({ localPath: path.join(directory, 'Trips'),
+                    remoteUid: SHARED_ROOT, remotePath: '/Trips' });
+                await waitUntil(() => manager.listPairs().find(item => item.id === pair.id)?.seeded === true &&
+                    manager.getStatus().pairs.find(item => item.id === pair.id)?.status === 'idle');
+                const lastSyncAt = db.getPair(pair.id)!.lastSyncAt;
+                for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+                    if (kind === 'upload') await fsp.writeFile(path.join(pair.localPath, name), name);
+                    else drive.nodeEvent(drive.putFile(`shared~${name[0]}`, name, name, 2_000), DriveEventType.NodeCreated);
+                }
+                running = manager.syncAll(pair.id);
+                await Promise.race([gate.started, new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('offline transfer never started')), 2_000).unref())]);
+                assert.equal(manager.getStatus().activity?.pairId, pair.id);
+                assert.ok(db.getBase(pair.id).has('a.txt'), 'finished transfer has durable state');
+
+                let removed = false;
+                const removal = Promise.resolve(manager.removePair(pair.id, forget)).then(() => { removed = true; });
+                assert.equal(gate.signal?.aborted, true, 'removal aborts the active SDK transfer immediately');
+                await new Promise(resolve => setImmediate(resolve));
+                assert.equal(removed, false, 'removal waits for the old run to unwind');
+                assert.ok(db.getPair(pair.id), 'state is kept until cancellation cleanup finishes');
+                assert.equal(manager.getStatus().activity, null);
+                gate.progress?.();
+                assert.equal(manager.getStatus().activity, null, 'late progress cannot revive removed activity');
+
+                gate.release();
+                await Promise.all([running, removal]);
+                assert.equal(manager.listPairs().some(item => item.id === pair.id), false);
+                assert.equal(manager.getStatus().activity, null);
+                assert.deepEqual(notices, []);
+                assert.equal(db.getBase(pair.id).has('c.txt'), false, 'queued transfer never runs');
+                const history = manager.listHistory({ pairId: pair.id });
+                assert.deepEqual(history.map(event => event.path), forget ? [] : ['a.txt']);
+                assert.ok(history.every(event => event.outcome === 'ok'), 'cancellation is not an Activity error');
+                if (forget) {
+                    assert.equal(db.getPair(pair.id), undefined);
+                    assert.equal(db.getBase(pair.id).size, 0);
+                    assert.equal(db.getRemoteNodes(pair.id).length, 0);
+                } else {
+                    assert.ok(db.findRemovedPair(pair.localPath, pair.remoteUid));
+                    assert.equal(db.getPair(pair.id)!.lastSyncAt, lastSyncAt, 'cancelled cycles do not mark sync complete');
+                }
+                if (kind === 'download') {
+                    await assert.rejects(fsp.stat(path.join(pair.localPath, 'b.txt')), { code: 'ENOENT' });
+                    await assert.rejects(fsp.stat(path.join(pair.localPath, 'b.txt.halyard-part')), { code: 'ENOENT' });
+                } else assert.equal(await fsp.readFile(path.join(pair.localPath, 'b.txt'), 'utf8'), 'b.txt');
+                await manager.removePair(pair.id, true);
+            } finally {
+                gate.release();
+                await running;
+                for (const pair of manager.listPairs()) await manager.removePair(pair.id, true);
+                await manager.stop();
+                db.close();
+                await fsp.rm(directory, { recursive: true, force: true });
+            }
+        });
+    }
+}

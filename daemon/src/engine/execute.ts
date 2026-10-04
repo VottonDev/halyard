@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 
 import { PARTIAL_DOWNLOAD_SUFFIX } from '../config.js';
 import { getLogger } from '../log.js';
@@ -165,6 +166,10 @@ export class Executor {
                     events.push({ ...described, at: Date.now(), outcome: 'ok', error: null });
                 }
             } catch (error) {
+                // User cancellation is not a failed sync operation.
+                if (this.context.signal?.aborted) {
+                    break;
+                }
                 const failure = describeSyncFailure(error);
                 const message = failure.message;
                 logger.warn(`Action ${action.kind} failed: ${message}`);
@@ -312,13 +317,14 @@ export class Executor {
                 // same content stays recoverable from Proton's Trash.
                 const occupant = this.context.remote.get(action.path);
                 if (occupant && occupant.type === 'file') {
-                    for await (const outcome of this.context.client.trashNodes([occupant.uid])) {
+                    for await (const outcome of this.context.client.trashNodes([occupant.uid], this.context.signal)) {
                         if (!outcome.ok) {
                             throw outcome.error;
                         }
                     }
                     this.pathToUid.delete(action.path);
                 }
+                this.context.signal?.throwIfAborted();
                 const local = this.context.local.get(action.path);
                 const node = await this.context.client.createFolder(
                     parentUid,
@@ -361,7 +367,7 @@ export class Executor {
             }
 
             case 'trashRemote': {
-                for await (const outcome of this.context.client.trashNodes([action.remoteUid])) {
+                for await (const outcome of this.context.client.trashNodes([action.remoteUid], this.context.signal)) {
                     if (!outcome.ok) {
                         throw outcome.error;
                     }
@@ -447,13 +453,14 @@ export class Executor {
 
         if (fromParent !== toParent) {
             const newParentUid = this.parentUidFor(to);
-            for await (const outcome of client.moveNodes([remoteUid], newParentUid)) {
+            for await (const outcome of client.moveNodes([remoteUid], newParentUid, this.context.signal)) {
                 if (!outcome.ok) {
                     throw outcome.error;
                 }
             }
         }
         if (fromName !== toName) {
+            this.context.signal?.throwIfAborted();
             await client.renameNode(remoteUid, toName);
         }
 
@@ -481,21 +488,33 @@ export class Executor {
         const temporary = `${target}${PARTIAL_DOWNLOAD_SUFFIX}`;
 
         await fsp.mkdir(path.dirname(target), { recursive: true });
+        this.context.signal?.throwIfAborted();
 
         const downloader = await client.getFileDownloader(remoteUid, this.context.signal);
+        this.context.signal?.throwIfAborted();
         const total = downloader.getClaimedSizeInBytes() ?? remote.get(relative)?.size ?? 0;
 
         const fileStream = fs.createWriteStream(temporary);
+        // The SDK aborts its Web writer on failure. Also consume the Node
+        // stream error, then wait for it to close before removing the partial.
+        fileStream.on('error', () => {});
         const controller = downloader.downloadToStream(Writable.toWeb(fileStream) as WritableStream, (done) => {
             this.context.onProgress?.({ kind: 'download', path: relative, bytesDone: done, bytesTotal: total });
         });
 
         try {
             await controller.completion();
+            this.context.signal?.throwIfAborted();
+            // The SDK releases its writer without closing the caller's stream.
+            if (!fileStream.writableEnded) fileStream.end();
+            await finished(fileStream);
+            this.context.signal?.throwIfAborted();
         } catch (error) {
             // The SDK can reject after writing every byte when a signature
             // fails to verify. Treat that as a real failure: we cannot vouch
             // for the contents, so the partial file is discarded.
+            fileStream.destroy();
+            await finished(fileStream).catch(() => undefined);
             await fsp.rm(temporary, { force: true });
             throw error;
         }
@@ -549,7 +568,9 @@ export class Executor {
             return false;
         }
 
-        const hash = await hashFile(source);
+        this.context.signal?.throwIfAborted();
+        const hash = await hashFile(source, this.context.signal);
+        this.context.signal?.throwIfAborted();
         const metadata = {
             mediaType: mediaTypeFor(relative),
             expectedSize: stats.size,
@@ -558,7 +579,7 @@ export class Executor {
         };
 
         const openStream = (): ReadableStream =>
-            Readable.toWeb(fs.createReadStream(source)) as unknown as ReadableStream;
+            Readable.toWeb(fs.createReadStream(source, { signal: this.context.signal })) as unknown as ReadableStream;
 
         const onProgress = (done: number) => {
             this.context.onProgress?.({ kind: 'upload', path: relative, bytesDone: done, bytesTotal: stats.size });
@@ -568,6 +589,7 @@ export class Executor {
 
         if (existingRemoteUid) {
             const uploader = await client.getFileRevisionUploader(existingRemoteUid, metadata, this.context.signal);
+            this.context.signal?.throwIfAborted();
             const controller = await uploader.uploadFromStream(openStream(), [], onProgress);
             uploaded = await controller.completion();
         } else {
@@ -575,9 +597,11 @@ export class Executor {
             const name = path.basename(relative);
             try {
                 const uploader = await client.getFileUploader(parentUid, name, metadata, this.context.signal);
+                this.context.signal?.throwIfAborted();
                 const controller = await uploader.uploadFromStream(openStream(), [], onProgress);
                 uploaded = await controller.completion();
             } catch (error) {
+                this.context.signal?.throwIfAborted();
                 // Our snapshot said this name was free but someone else created it.
                 // Upload as a new revision of theirs
                 // instead of failing or silently duplicating.
@@ -588,6 +612,7 @@ export class Executor {
                         metadata,
                         this.context.signal,
                     );
+                    this.context.signal?.throwIfAborted();
                     const controller = await uploader.uploadFromStream(openStream(), [], onProgress);
                     uploaded = await controller.completion();
                 } else {
@@ -595,6 +620,7 @@ export class Executor {
                 }
             }
         }
+        this.context.signal?.throwIfAborted();
 
         this.pathToUid.set(relative, uploaded.nodeUid);
 

@@ -52,6 +52,8 @@ export type Status = {
 export class SyncManager {
     private readonly db = new SyncDatabase();
     private syncers = new Map<string, PairSyncer>();
+    /** Pair updates/removals share a barrier until cancellation has unwound. */
+    private pairMutations = new Map<string, Promise<void>>();
     private watchers = new Map<string, FSWatcher>();
     private debounces = new Map<string, NodeJS.Timeout>();
     private scheduler?: EventScheduler;
@@ -186,6 +188,13 @@ export class SyncManager {
             this.db,
             this.session.getClient(),
             (progress) => {
+                // An SDK callback can arrive while a removed pair unwinds.
+                if (this.syncers.get(pair.id) !== syncer) {
+                    return;
+                }
+                if (!progress && this.activity?.pairId !== pair.id) {
+                    return;
+                }
                 this.activity = progress ? { ...progress, pairId: pair.id } : null;
                 this.scheduleEmit();
             },
@@ -277,11 +286,17 @@ export class SyncManager {
     }
 
     private async runSync(syncer: PairSyncer): Promise<boolean> {
-        if (this.paused || !syncer.pair.enabled || !this.session.isLoggedIn()) {
+        if (this.syncers.get(syncer.pair.id) !== syncer ||
+            this.paused || !syncer.pair.enabled || !this.session.isLoggedIn()) {
             return true;
         }
         const before = syncer.status;
         await syncer.sync(this.abort.signal);
+        // syncAll and event callbacks hold snapshots of the syncer list. A
+        // removal must retire those references as well as the map entry.
+        if (this.syncers.get(syncer.pair.id) !== syncer) {
+            return true;
+        }
         // A first seed can establish the scope after startEventScheduler ran.
         // Shared volumes need registering too, at the SDK's own cadence.
         if (syncer.pair.treeEventScopeId) {
@@ -492,17 +507,37 @@ export class SyncManager {
         return localPath;
     }
 
+    /** Serializes changes to one pair while leaving other pairs independent. */
+    private async mutatePair<T>(id: string, operation: () => Promise<T>): Promise<T> {
+        const previous = this.pairMutations.get(id);
+        let release!: () => void;
+        const finished = new Promise<void>(resolve => { release = resolve; });
+        this.pairMutations.set(id, finished);
+        try {
+            // With no predecessor, run immediately so RemovePair aborts its
+            // active transfer before yielding. A failed predecessor still
+            // releases this resolve-only barrier for subsequent operations.
+            if (previous) await previous;
+            return await operation();
+        } finally {
+            release();
+            if (this.pairMutations.get(id) === finished) this.pairMutations.delete(id);
+        }
+    }
+
     /**
-     * Applies changes to a pair. Beyond enabling and disabling, a pair can be
-     * re-pointed at different folders. This invalidates everything we knew
-     * about it, since the recorded state refers to the old paths and node ids.
-     *
-     * Discarding that state is safe: with no base, the next sync treats both
-     * sides as new and merges them. Nothing is deleted, and files that differ
-     * become conflicts with both copies kept.
+     * Applies changes to a pair. Re-pointing it discards its recorded sync
+     * state: the next sync merges both sides as new, preserving differing files
+     * as conflicts rather than deleting either copy.
      */
     async updatePair(id: string, patch: Partial<Pair>): Promise<Pair> {
-        const existing = this.db.getPair(id);
+        return this.mutatePair(id, () => this.applyPairUpdate(id, patch));
+    }
+
+    private async applyPairUpdate(id: string, patch: Partial<Pair>): Promise<Pair> {
+        // Re-read after acquiring the mutation barrier. getPair also returns
+        // hidden retained rows, which must not be updated or watched again.
+        const existing = this.db.listPairs().find(pair => pair.id === id);
         if (!existing) {
             throw new Error(`No such pair: ${id}`);
         }
@@ -585,9 +620,23 @@ export class SyncManager {
         return updated;
     }
 
-    removePair(id: string, deleteLocalState: boolean): void {
+    async removePair(id: string, deleteLocalState: boolean): Promise<void> {
+        return this.mutatePair(id, () => this.performPairRemoval(id, deleteLocalState));
+    }
+
+    private async performPairRemoval(id: string, deleteLocalState: boolean): Promise<void> {
         this.stopWatching(id);
         const syncer = this.syncers.get(id);
+        // Detach first so queued cycles and late progress cannot revive it.
+        this.syncers.delete(id);
+        if (this.activity?.pairId === id) {
+            this.activity = null;
+        }
+        this.scheduleEmit();
+
+        // Keep the state intact until in-flight operations have unwound.
+        // Otherwise the executor can write base/history rows after deletion.
+        if (syncer) await syncer.cancel();
         if (syncer?.pair.treeEventScopeId) {
             const stillUsed = [...this.syncers.values()].some(
                 (other) => other.pair.id !== id && other.pair.treeEventScopeId === syncer.pair.treeEventScopeId,
@@ -596,8 +645,6 @@ export class SyncManager {
                 this.scheduler?.removeScope(syncer.pair.treeEventScopeId);
             }
         }
-        this.syncers.delete(id);
-
         if (deleteLocalState) {
             this.db.deletePair(id);
         } else {
