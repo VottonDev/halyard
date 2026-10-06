@@ -104,6 +104,11 @@ INTROSPECTION = f"""
     </method>
 
     <method name="TrashPhotos"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="CreatePhotoAlbum"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="RenamePhotoAlbum"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="DeletePhotoAlbum"><arg type="s" direction="in"/></method>
+    <method name="ManagePhotos"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="CancelPhotoOperation"><arg type="s" direction="in"/></method>
     <method name="StartVideoPreview"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
     <method name="ReleaseVideoPreview"><arg type="s" direction="in"/></method>
     <signal name="VideoPreviewChanged"><arg type="s"/></signal>
@@ -677,7 +682,8 @@ def mock_photo(index):
     month = 10 - index // 32
     return {"uid": f"photo-{index}", "name": f"IMG_{index % 24:04d}.jpg", "captureTime": int(time.mktime((2026, month, 1 + index % 28, 12, 0, 0, 0, 0, -1)) * 1000),
             "size": 3200000 + index * 7000, "mediaType": "video/webm" if index % 17 == 0 else "image/jpeg", "revisionUid": f"rev-{index}",
-            "favourite": index % 5 == 0, "relatedUids": ["photo-related"] if index == 1 else [], "error": None}
+            "favourite": index % 5 == 0, "relatedUids": ["photo-related"] if index == 1 else [], "error": None,
+            "canFavourite": True, "canTrash": True}
 
 
 def mock_preview(index):
@@ -695,6 +701,19 @@ class MockDaemon:
         self.bus_name = args.bus_name
         self.photos = [] if args.no_photos else sorted([mock_photo(i) for i in range(96)], key=lambda p: p["captureTime"], reverse=True)
         self.photo_revision = 0
+        self.photo_timeline = {p["uid"] for p in self.photos}
+        self.photo_albums = [{"uid": "album-1", "name": "Summer", "sharedWithMe": False, "canWrite": True, "canDelete": True}] if self.photos else []
+        self.album_members = {"album-1": {p["uid"] for i, p in enumerate(self.photos) if i % 3 == 0}}
+        self.photo_operations = {}
+        if args.photo_management_fixture:
+            self.photo_albums.extend([
+                {"uid": "shared-viewer", "name": "Shared read-only", "sharedWithMe": True, "canWrite": False, "canDelete": False},
+                {"uid": "shared-editor", "name": "Shared editable", "sharedWithMe": True, "canWrite": True, "canDelete": False}])
+            shared = dict(mock_photo(97), uid="shared-photo", canFavourite=False, canTrash=False)
+            self.photos.append(shared)
+            self.album_members.update({"shared-viewer": {shared["uid"]}, "shared-editor": {shared["uid"]}})
+            self.photo_timeline.discard("photo-1")
+            self.album_members["album-1"].add("photo-1")
         self.downloads = []
         self.uploads = []
         self.video_server = None
@@ -1097,8 +1116,12 @@ class MockDaemon:
     def _do_ListPhotos(self, invocation, raw):
         self._require_photos()
         query = json.loads(raw)
-        photos = self.photos
-        if query.get("albumUid"): photos = [p for i, p in enumerate(photos) if i % 3 == 0]
+        if query.get("albumUid"):
+            self._photo_album(query["albumUid"])
+            members = self.album_members.get(query["albumUid"], set())
+        else:
+            members = self.photo_timeline
+        photos = [p for p in self.photos if p["uid"] in members]
         if query.get("kind") == "favourites": photos = [p for p in photos if p["favourite"]]
         if query.get("kind") == "videos": photos = [p for p in photos if p["mediaType"].startswith("video/")]
         if query.get("search"): photos = [p for p in photos if query["search"].lower() in p["name"].lower()]
@@ -1110,7 +1133,91 @@ class MockDaemon:
 
     def _do_ListPhotoAlbums(self, invocation):
         self._require_photos()
-        self._reply_json(invocation, [{"uid": "album-1", "name": "Summer", "photoCount": len(self.photos) // 3, "coverPhotoUid": self.photos[0]["uid"]}] if self.photos else [], delay_ms=200)
+        self._reply_json(invocation, [self._photo_album_payload(a) for a in self.photo_albums], delay_ms=200)
+
+    def _photo_album(self, uid, editing=False, deleting=False):
+        self._require_photos()
+        album = next((a for a in self.photo_albums if a["uid"] == uid), None)
+        if not album: raise ValueError("This album is no longer available.")
+        if deleting and not album["canDelete"]: raise ValueError("Only albums you own can be deleted here.")
+        if editing and not album["canWrite"]: raise ValueError("This album is read-only. Editing access is required.")
+        return album
+
+    def _photo_album_payload(self, album):
+        members = [p for p in self.photos if p["uid"] in self.album_members.get(album["uid"], set())]
+        return dict(album, photoCount=len(members), coverPhotoUid=members[0]["uid"] if members else None)
+
+    def _photos_changed(self):
+        self.photo_revision += 1
+        self.emit("PhotosChanged", {"revision": self.photo_revision})
+
+    def _do_CreatePhotoAlbum(self, invocation, name):
+        self._require_photos()
+        if not name.strip(): raise ValueError("Enter an album name.")
+        album = {"uid": str(uuid.uuid4()), "name": name.strip(), "sharedWithMe": False, "canWrite": True, "canDelete": True}
+        self.photo_albums.append(album)
+        self.album_members[album["uid"]] = set()
+        self._photos_changed()
+        self._reply_json(invocation, self._photo_album_payload(album), delay_ms=150)
+
+    def _do_RenamePhotoAlbum(self, invocation, raw):
+        data = json.loads(raw)
+        album = self._photo_album(data["uid"], editing=True)
+        if not data["name"].strip(): raise ValueError("Enter an album name.")
+        album["name"] = data["name"].strip()
+        self._photos_changed()
+        self._reply_json(invocation, self._photo_album_payload(album), delay_ms=150)
+
+    def _do_DeletePhotoAlbum(self, invocation, uid):
+        album = self._photo_album(uid, deleting=True)
+        if self.args.photo_management_errors and album["name"] == "Cannot delete":
+            self._photos_changed()
+            raise ValueError("An album-only photo could not be saved. Album kept.")
+        self.photo_timeline.update(self.album_members.get(uid, set()))
+        self.photo_albums.remove(album)
+        self.album_members.pop(uid, None)
+        self._photos_changed()
+        self._reply_void(invocation)
+
+    def _do_CancelPhotoOperation(self, invocation, uid):
+        if uid in self.photo_operations: self.photo_operations[uid]["cancelled"] = True
+        self._reply_void(invocation)
+
+    def _do_ManagePhotos(self, invocation, raw):
+        self._require_photos()
+        data = json.loads(raw)
+        action, operation_id = data["action"], data["operationId"]
+        uids = list(dict.fromkeys(data["uids"]))
+        if not 1 <= len(uids) <= 100 or action not in ("favourite", "add", "remove"): raise ValueError("Choose between 1 and 100 photos and a valid photo action.")
+        if operation_id in self.photo_operations: raise ValueError("This photo action is already running.")
+        if action != "favourite": self._photo_album(data["albumUid"], editing=True)
+        state = {"cancelled": False, "results": []}
+        self.photo_operations[operation_id] = state
+        def step():
+            if not self.state.logged_in: state["cancelled"] = True
+            uid = uids[len(state["results"])]
+            photo = next((p for p in self.photos if p["uid"] == uid), None)
+            error = None
+            if state["cancelled"]: error = "Cancelled before this photo was changed."
+            elif not photo: error = "This photo is no longer available."
+            elif self.args.photo_management_errors and uid == "photo-2": error = "Permission denied for this photo."
+            elif action == "favourite" and not photo["canFavourite"]: error = "Only photos in your own library can have their favourites changed here."
+            elif action == "remove" and uid not in self.album_members[data["albumUid"]]: error = "This photo is no longer in the album."
+            if not error:
+                if action == "favourite":
+                    photo["favourite"] = data["favourite"]
+                    if data["favourite"]: self.photo_timeline.add(uid)
+                elif action == "add": self.album_members[data["albumUid"]].add(uid)
+                else:
+                    self.photo_timeline.add(uid)
+                    self.album_members[data["albumUid"]].discard(uid)
+            state["results"].append({"uid": uid, "ok": error is None, "error": error})
+            if len(state["results"]) < len(uids): return True
+            self.photo_operations.pop(operation_id, None)
+            self._photos_changed()
+            self._reply_json(invocation, dict(state, revision=self.photo_revision))
+            return False
+        GLib.timeout_add(100, step)
 
     def _do_GetPhoto(self, invocation, uid):
         self._require_photos()
@@ -1148,6 +1255,7 @@ class MockDaemon:
             photo = next((p for p in self.photos if p["uid"] == uid), None)
             if not photo: results.append({"uid": uid, "ok": False, "error": "Photo unavailable"}); continue
             self.photos.remove(photo)
+            self.photo_timeline.discard(uid)
             results.extend({"uid": item, "ok": True, "error": None} for item in [uid] + photo["relatedUids"])
         self.photo_revision += 1; self.emit("PhotosChanged", {"revision": self.photo_revision})
         self._reply_json(invocation, results, delay_ms=150)
@@ -1230,6 +1338,7 @@ class MockDaemon:
                         photo = mock_photo(len(self.photos))
                         photo.update(uid=f"uploaded-{uuid.uuid4()}", name=file["name"], captureTime=now_ms(), mediaType="image/jpeg")
                         file["uid"] = photo["uid"]; self.photos.insert(0, photo)
+                        self.photo_timeline.add(photo["uid"])
                         self.photo_revision += 1; self.emit("PhotosChanged", {"revision": self.photo_revision})
                     else: file["path"] = os.path.join(job["destination"], file["name"])
             if all(f["status"] == "completed" for f in job["files"]): job["status"] = "completed"
@@ -1298,6 +1407,8 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true",
                         help="do not emit periodic Notify signals")
     parser.add_argument("--no-photos", action="store_true", help="start with an empty photo gallery")
+    parser.add_argument("--photo-management-fixture", action="store_true", help="include shared albums and album-only photos")
+    parser.add_argument("--photo-management-errors", action="store_true", help="simulate per-photo and safe album-deletion failures")
     parser.add_argument("--no-pairs", action="store_true",
                         help="start with no folder pairs (empty state)")
     parser.add_argument("--bus-name", default=DEFAULT_BUS_NAME,

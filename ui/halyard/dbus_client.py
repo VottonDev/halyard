@@ -18,7 +18,7 @@ from typing import Any, Callable
 from gi.repository import Gio, GLib, GObject
 
 from .models import (
-    VideoPreview, PhotoTrashResult,
+    VideoPreview, PhotoTrashResult, PhotoManagementResult,
     Account,
     Conflict,
     HistoryEntry,
@@ -256,6 +256,24 @@ class DaemonClient(GObject.Object):
     def get_photo(self, uid: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
         self._call("GetPhoto", GLib.Variant("(s)", [uid]), parse=Photo.from_json,
                    on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def create_photo_album(self, name: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("CreatePhotoAlbum", GLib.Variant("(s)", [name]), parse=PhotoAlbum.from_json,
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def rename_photo_album(self, uid: str, name: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("RenamePhotoAlbum", GLib.Variant("(s)", [json.dumps({"uid": uid, "name": name})]), parse=PhotoAlbum.from_json,
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def delete_photo_album(self, uid: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("DeletePhotoAlbum", GLib.Variant("(s)", [uid]), on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def manage_photos(self, request: dict, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ManagePhotos", GLib.Variant("(s)", [json.dumps(request)]), parse=PhotoManagementResult.from_json,
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def cancel_photo_operation(self, operation_id: str, on_err: ErrCallback) -> None:
+        self._call("CancelPhotoOperation", GLib.Variant("(s)", [operation_id]), on_err=on_err)
 
     def get_photo_thumbnails(self, uids: list[str], on_ok: OkCallback, on_err: ErrCallback, preview: bool = False) -> None:
         self._call("GetPhotoThumbnails", GLib.Variant("(s)", [json.dumps({"uids": uids, "preview": preview})]),

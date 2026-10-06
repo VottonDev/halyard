@@ -15,6 +15,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ApiClient, initAccount, type Addresses, type Auth } from 'proton-drive-sdk-account';
 import { ProtonDrivePhotosClient } from '@protontech/drive-sdk/dist/protonDrivePhotosClient.js';
+import { registerPhotoRefresh } from '../photos/library.js';
 
 import { Credentials } from '../auth/credentials.js';
 import type { SecretStore } from '../auth/keyring.js';
@@ -195,10 +196,16 @@ export class DriveSession {
             // descendant metadata, crypto keys, or the durable sync base.
             await caches.entitiesCache.removeEntities(uids.map(uid => `node-${uid}`));
         });
-        this.createPhotosClient = (writable = false) => new ProtonDrivePhotosClient({
-            ...dependencies,
-            httpClient: new HttpClient(apiClient, !writable),
-        });
+        this.createPhotosClient = (writable = false) => {
+            const client = new ProtonDrivePhotosClient({
+                ...dependencies,
+                httpClient: new HttpClient(apiClient, !writable),
+            });
+            registerPhotoRefresh(client, async (uids) => {
+                await caches.entitiesCache.removeEntities(uids.map(uid => `node-${uid}`));
+            });
+            return client;
+        };
     }
 
     isLoggedIn(): boolean {

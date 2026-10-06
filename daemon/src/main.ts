@@ -47,6 +47,7 @@ async function main(): Promise<void> {
         () => session.getPhotosClient(),
         revision => iface.PhotosChanged(JSON.stringify({ revision })),
         error => logger.warn(`Could not update the photo library: ${error instanceof Error ? error.message : String(error)}`),
+        () => session.getPhotosUploadClient(),
     );
     const downloads = new PhotoDownloads(
         () => session.getPhotosClient(),

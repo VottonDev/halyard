@@ -359,6 +359,8 @@ class Photo:
     favourite: bool = False
     related_uids: tuple[str, ...] = ()
     error: str | None = None
+    can_favourite: bool = False
+    can_trash: bool = False
 
     @classmethod
     def from_json(cls, data: Any) -> "Photo":
@@ -374,6 +376,8 @@ class Photo:
             favourite=bool(data.get("favourite", False)),
             related_uids=tuple(x for x in related if isinstance(x, str)) if isinstance(related, list) else (),
             error=str(data["error"]) if data.get("error") else None,
+            can_favourite=data.get("canFavourite") is True,
+            can_trash=data.get("canTrash") is True,
         )
 
     @property
@@ -404,13 +408,19 @@ class PhotoAlbum:
     name: str = ""
     photo_count: int = 0
     cover_photo_uid: str | None = None
+    shared_with_me: bool = False
+    can_write: bool = False
+    can_delete: bool = False
 
     @classmethod
     def from_json(cls, data: Any) -> "PhotoAlbum":
         data = _as_dict(data)
         return cls(uid=str(data.get("uid") or ""), name=str(data.get("name") or ""),
                    photo_count=int(_as_int(data.get("photoCount"))),
-                   cover_photo_uid=data.get("coverPhotoUid") or None)
+                   cover_photo_uid=data.get("coverPhotoUid") or None,
+                   shared_with_me=data.get("sharedWithMe") is True,
+                   can_write=data.get("canWrite") is True,
+                   can_delete=data.get("canDelete") is True)
 
 
 @dataclass(frozen=True)
@@ -485,6 +495,20 @@ class PhotoTrashResult:
     def from_json(cls, data):
         data = _as_dict(data)
         return cls(uid=str(data.get("uid") or ""), ok=data.get("ok") is True, error=data.get("error") or None)
+
+
+@dataclass(frozen=True)
+class PhotoManagementResult:
+    results: tuple[PhotoTrashResult, ...] = ()
+    cancelled: bool = False
+    revision: int = 0
+
+    @classmethod
+    def from_json(cls, data):
+        data = _as_dict(data)
+        results = data.get("results")
+        return cls(results=tuple(PhotoTrashResult.from_json(r) for r in results if isinstance(r, dict)) if isinstance(results, list) else (),
+                   cancelled=data.get("cancelled") is True, revision=int(_as_int(data.get("revision"))))
 
 
 @dataclass(frozen=True)

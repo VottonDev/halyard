@@ -1,9 +1,10 @@
 """Offline checks for the photo D-Bus boundary and disposable transfer models."""
 import re
 import unittest
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from xml.etree import ElementTree
-from halyard.models import Photo, PhotoPage, PhotoDownload, PhotoThumbnail, VideoPreview
+from halyard.models import Photo, PhotoAlbum, PhotoPage, PhotoDownload, PhotoThumbnail, VideoPreview, PhotoManagementResult
 from mock_daemon import INTROSPECTION, mock_photo
 
 
@@ -44,6 +45,27 @@ class PhotoModelTests(unittest.TestCase):
             self.assertEqual(signature.groups(), tuple("".join(a.attrib["type"] for a in method.findall("arg") if a.attrib["direction"] == d) for d in ("in", "out")))
         for name in ("PhotosChanged", "PhotoDownloadsChanged", "PhotoUploadsChanged", "VideoPreviewChanged"):
             self.assertIsNotNone(interface.find(f"signal[@name='{name}']"))
+
+    def test_permissions_default_to_disabled_and_require_booleans(self):
+        self.assertFalse(Photo.from_json({}).can_favourite)
+        self.assertFalse(Photo.from_json({"canTrash": "true"}).can_trash)
+        self.assertFalse(PhotoAlbum.from_json({}).can_write)
+        album = PhotoAlbum.from_json({"sharedWithMe": True, "canWrite": True, "canDelete": False})
+        self.assertTrue(album.shared_with_me and album.can_write)
+        self.assertFalse(album.can_delete)
+        with self.assertRaises(FrozenInstanceError):
+            album.can_write = False
+
+    def test_management_results_are_immutable_and_do_not_invent_success(self):
+        result = PhotoManagementResult.from_json({"results": [
+            {"uid": "a", "ok": True}, {"uid": "b", "ok": False, "error": "Permission denied"},
+            {"uid": "c", "ok": "true"}], "cancelled": True, "revision": 7})
+        self.assertIsInstance(result.results, tuple)
+        self.assertEqual(tuple(r.ok for r in result.results), (True, False, False))
+        self.assertEqual(result.results[1].error, "Permission denied")
+        self.assertTrue(result.cancelled)
+        self.assertEqual(result.revision, 7)
+        self.assertEqual(PhotoManagementResult.from_json(None).results, ())
 
 
 if __name__ == "__main__":
