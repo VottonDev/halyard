@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import threading
+import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
 
@@ -37,6 +38,10 @@ class _PhotoRow(GObject.Object):
 
 
 class PhotosView(Gtk.Box):
+    __gsignals__ = {
+        "management-changed": (GObject.SIGNAL_RUN_FIRST, None, (bool, bool)),
+    }
+
     def __init__(self, client, window, settings) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.client = client
@@ -61,12 +66,22 @@ class PhotosView(Gtk.Box):
         self._tile_checks: dict[str, list[Gtk.CheckButton]] = {}
         self._updating_checks = False
         self._columns = 5
+        self._account_epoch = 0
+        self._management_id: str | None = None
+        self._management_busy = False
+        self._management_errors: list[tuple[str, str]] = []
+        self._refresh_selection: set[str] | None = None
+        self._refresh_position: float | None = None
+        self._refresh_count = 0
 
         self._changed_handler = client.connect("photos-changed", self._on_library_changed)
 
         self._changed_banner = Adw.Banner(title="Your photo library changed", button_label="Reload")
         self._changed_banner.connect("button-clicked", lambda *_: self.reload())
         self.append(self._changed_banner)
+        self._management_error_banner = Adw.Banner(title="Some photo changes could not be completed", button_label="Details")
+        self._management_error_banner.connect("button-clicked", lambda *_: self.show_management_errors())
+        self.append(self._management_error_banner)
 
         heading = Gtk.Box(spacing=12)
         self._heading = Gtk.Label(label="Photos", xalign=0, hexpand=True)
@@ -81,6 +96,20 @@ class PhotosView(Gtk.Box):
         self._select_button = Gtk.Button(label="Select")
         self._select_button.connect("clicked", self._toggle_selection)
         heading.append(self._select_button)
+        self._create_album_button = Gtk.Button(icon_name="folder-new-symbolic", tooltip_text="Create album…", visible=False)
+        self._create_album_button.connect("clicked", lambda *_: self.edit_album())
+        heading.append(self._create_album_button)
+        self._album_menu = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text="Manage album", visible=False)
+        album_actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._rename_album_button = Gtk.Button(label="Rename album…")
+        self._rename_album_button.connect("clicked", lambda *_: (self._album_menu.popdown(), self.edit_album(self._album)))
+        album_actions.append(self._rename_album_button)
+        self._delete_album_button = Gtk.Button(label="Delete album…")
+        self._delete_album_button.add_css_class("destructive-action")
+        self._delete_album_button.connect("clicked", lambda *_: (self._album_menu.popdown(), self.delete_album(self._album)))
+        album_actions.append(self._delete_album_button)
+        self._album_menu.set_popover(Gtk.Popover(child=album_actions))
+        heading.append(self._album_menu)
         self._margin(heading, 20)
         self.append(heading)
 
@@ -165,7 +194,28 @@ class PhotosView(Gtk.Box):
         self._trash_button = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Move selected photos to Trash")
         self._trash_button.connect("clicked", lambda *_: self.trash_items([p for p in self._photos if p.uid in self._selected]))
         self._selection_bar.pack_end(self._trash_button)
+        self._selection_menu = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text="Manage selected photos")
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._favourite_selection = Gtk.Button(label="Add to favourites")
+        self._unfavourite_selection = Gtk.Button(label="Remove from favourites")
+        self._add_to_album_button = Gtk.Button(label="Add to album…")
+        self._remove_from_album_button = Gtk.Button(label="Remove from this album…", visible=False)
+        for button, action in ((self._favourite_selection, lambda: self.set_favourites(self.selected_items(), True)),
+                               (self._unfavourite_selection, lambda: self.set_favourites(self.selected_items(), False)),
+                               (self._add_to_album_button, lambda: self.add_to_album(self.selected_items())),
+                               (self._remove_from_album_button, lambda: self.remove_from_album(self.selected_items()))):
+            button.connect("clicked", lambda _button, work=action: (self._selection_menu.popdown(), work()))
+            actions.append(button)
+        self._selection_menu.set_popover(Gtk.Popover(child=actions))
+        self._selection_bar.pack_end(self._selection_menu)
         self.append(self._selection_bar)
+        self._management_bar = Gtk.ActionBar(revealed=False)
+        self._management_label = Gtk.Label(label="Updating your photo library…", wrap=True)
+        self._management_bar.pack_start(self._management_label)
+        self._cancel_management = Gtk.Button(label="Cancel")
+        self._cancel_management.connect("clicked", self.cancel_management)
+        self._management_bar.pack_end(self._cancel_management)
+        self.append(self._management_bar)
         self._stack.set_visible_child_name("loading")
 
     @GObject.Property(type=int, default=5, minimum=2, maximum=5)
@@ -190,6 +240,17 @@ class PhotosView(Gtk.Box):
             self.reload()
 
     def reset(self) -> None:
+        if self._management_id and self.client.available:
+            self.client.cancel_photo_operation(self._management_id, lambda _message: None)
+        self._account_epoch += 1
+        self._management_id = None
+        self._management_busy = False
+        self._management_errors.clear()
+        self._management_error_banner.set_revealed(False)
+        self._management_bar.set_revealed(False)
+        self.emit("management-changed", False, False)
+        self._refresh_selection = None
+        self._refresh_position = None
         self._request += 1
         self._loaded = False
         self._loading = False
@@ -282,6 +343,9 @@ class PhotosView(Gtk.Box):
         chooser.open_multiple(self.window, None, chosen)
 
     def dispose(self) -> None:
+        self._account_epoch += 1
+        if self._management_id and self.client.available:
+            self.client.cancel_photo_operation(self._management_id, lambda _message: None)
         self.client.disconnect(self._changed_handler)
         for source in (self._thumb_idle, self._search_timeout):
             if source:
@@ -316,6 +380,12 @@ class PhotosView(Gtk.Box):
         self._albums_button.set_active(self._albums_mode or self._album is not None)
         self._kind.set_sensitive(not self._albums_mode)
         self._select_button.set_sensitive(not self._albums_mode)
+        self._create_album_button.set_visible(self._albums_mode)
+        self._create_album_button.set_sensitive(not self._management_busy)
+        self._album_menu.set_visible(self._album is not None)
+        self._rename_album_button.set_sensitive(bool(self._album and self._album.can_write) and not self._management_busy)
+        self._delete_album_button.set_sensitive(bool(self._album and self._album.can_delete) and not self._management_busy)
+        self._remove_from_album_button.set_visible(self._album is not None)
 
     def _search_changed(self, *_args) -> None:
         if self._search_timeout:
@@ -327,22 +397,47 @@ class PhotosView(Gtk.Box):
             return False
         self._search_timeout = GLib.timeout_add(300, run)
 
-    def reload(self) -> None:
+    def reload(self, preserve: bool = False) -> None:
         if not self.client.available or not self.window.account_logged_in:
             return
         self._request += 1
+        self._refresh_selection = set(self._selected) if preserve else None
+        self._refresh_position = self._scrolled.get_vadjustment().get_value() if preserve else None
+        self._refresh_count = len(self._photos) if preserve else 0
         self._loading = False
         self._loaded = True
         self._photos.clear()
         self._rows.remove_all()
-        self._selected.clear()
-        self._selecting = False
+        if not preserve:
+            self._selected.clear()
+            self._selecting = False
         self._next_cursor = None
         self._thumb_waiters.clear()
         self._thumb_busy = False
         self._changed_banner.set_revealed(False)
         self._update_selection()
-        self._load()
+        if self._album:
+            request = self._request
+            self._loading = True
+            def album_ready(albums):
+                if request != self._request: return
+                self._loading = False
+                updated = next((a for a in albums if a.uid == self._album.uid), None)
+                if updated is None:
+                    self._album = None
+                    self._albums_mode = True
+                else:
+                    self._album = updated
+                self._update_controls()
+                self._load()
+            def album_failed(message):
+                if request != self._request: return
+                self._loading = False
+                self._error.set_description(message)
+                self._stack.set_visible_child_name("error")
+            self.client.list_photo_albums(album_ready, album_failed)
+        else:
+            self._load()
 
     def _load(self, more: bool = False) -> None:
         if self._loading:
@@ -371,8 +466,9 @@ class PhotosView(Gtk.Box):
                     self._album_group.remove(row)
                 self._album_rows.clear()
                 for album in albums:
+                    noun = "photo" if album.photo_count == 1 else "photos"
                     row = Adw.ActionRow(title=GLib.markup_escape_text(album.name),
-                                        subtitle=f"{album.photo_count} photos", activatable=True)
+                                        subtitle=f"{album.photo_count} {noun}" + (" · Shared with you" + (" · Read-only" if not album.can_write else "") if album.shared_with_me else ""), activatable=True)
                     row.add_prefix(Gtk.Image.new_from_icon_name("folder-pictures-symbolic"))
                     row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
                     row.connect("activated", lambda _row, a=album: self._open_album(a))
@@ -380,7 +476,7 @@ class PhotosView(Gtk.Box):
                     self._album_rows.append(row)
                 self._more.set_visible(False)
                 self._empty.set_title("No albums yet")
-                self._empty.set_description("Albums created in Proton Drive will appear here.")
+                self._empty.set_description("Create an album to organise your photos.")
                 self._stack.set_visible_child_name("albums" if albums else "empty")
             self.client.list_photo_albums(albums_ok, error)
             return
@@ -398,7 +494,20 @@ class PhotosView(Gtk.Box):
             self._photos.extend(p for p in page.photos if p.uid not in known)
             self._next_cursor = page.next_cursor
             self._revision = page.revision
+            # Refill only the pages the user had already loaded after a local
+            # action. This keeps selection and scroll without a polling loop.
+            if self._refresh_selection is not None and self._next_cursor and len(self._photos) < self._refresh_count and self._latest_revision <= page.revision:
+                self._load(more=True)
+                return
+            if self._refresh_selection is not None:
+                self._selected = self._refresh_selection & {p.uid for p in self._photos}
+                self._refresh_selection = None
             self._rebuild_rows()
+            if self._refresh_position is not None:
+                position = self._refresh_position
+                self._refresh_position = None
+                GLib.idle_add(lambda: (self._scrolled.get_vadjustment().set_value(position), False)[1])
+            self._update_selection()
             self._more.set_visible(bool(page.next_cursor))
             self._more.set_sensitive(self._latest_revision <= page.revision)
             if self._latest_revision > page.revision:
@@ -564,6 +673,12 @@ class PhotosView(Gtk.Box):
         noun = "photo" if len(selected) == 1 else "photos"
         size = f" · {format_size(sum(p.size or 0 for p in selected))}" if selected and all(p.size is not None and not p.related_uids for p in selected) else ""
         self._selection_label.set_label(f"{len(selected)} {noun} selected{size}")
+        available = bool(selected) and not self._management_busy
+        self._selection_menu.set_sensitive(available)
+        self._trash_button.set_sensitive(available and all(p.can_trash for p in selected))
+        self._favourite_selection.set_sensitive(available and all(p.can_favourite for p in selected) and any(not p.favourite for p in selected))
+        self._unfavourite_selection.set_sensitive(available and all(p.can_favourite for p in selected) and any(p.favourite for p in selected))
+        self._remove_from_album_button.set_sensitive(available and bool(self._album and self._album.can_write))
         self._updating_checks = True
         try:
             for uid, checks in self._tile_checks.items():
@@ -581,8 +696,219 @@ class PhotosView(Gtk.Box):
             self._changed_banner.set_revealed(True)
             self._more.set_sensitive(False)
 
+    def selected_items(self) -> list[Photo]:
+        return [p for p in self._photos if p.uid in self._selected]
+
+    def _location(self):
+        return (self._albums_mode, self._album.uid if self._album else None,
+                self._kind.get_selected(), self._search_entry.get_text())
+
+    def _begin_management(self, label: str, operation_id: str | None = None) -> None:
+        self._management_errors.clear()
+        self._management_error_banner.set_revealed(False)
+        self._management_busy = True
+        self._management_id = operation_id
+        self._management_label.set_label(label)
+        self._management_bar.set_revealed(True)
+        self._cancel_management.set_visible(operation_id is not None)
+        self._cancel_management.set_sensitive(True)
+        self._update_controls()
+        self._update_selection()
+        self.emit("management-changed", True, operation_id is not None)
+
+    def _finish_management(self) -> None:
+        self._management_busy = False
+        self._management_id = None
+        self._management_bar.set_revealed(False)
+        self._update_controls()
+        self._update_selection()
+        self.emit("management-changed", False, False)
+
+    def cancel_management(self, *_args) -> None:
+        if self._management_id:
+            self._cancel_management.set_sensitive(False)
+            self._management_label.set_label("Cancelling… Completed changes are kept.")
+            def failed(message):
+                self.window.toast(message)
+                self._cancel_management.set_sensitive(True)
+            self.client.cancel_photo_operation(self._management_id, failed)
+
+    def _manage(self, items: list[Photo], action: str, *, album: PhotoAlbum | None = None, favourite: bool | None = None) -> None:
+        if self._management_busy or not self.window.account_logged_in:
+            return
+        if not items or len(items) > 100:
+            self.window.toast("Choose between 1 and 100 photos at a time.")
+            return
+        if action == "favourite" and not all(p.can_favourite for p in items):
+            self.window.toast("Only photos in your own library can have their favourites changed here.")
+            return
+        if action != "favourite" and (not album or not album.can_write):
+            self.window.toast("This album is read-only. Editing access is required.")
+            return
+        epoch, location = self._account_epoch, self._location()
+        operation_id = str(uuid.uuid4())
+        request = {"operationId": operation_id, "action": action, "uids": [p.uid for p in items]}
+        if album: request["albumUid"] = album.uid
+        if favourite is not None: request["favourite"] = favourite
+        self._begin_management("Updating your photo library…", operation_id)
+        def refresh():
+            self._finish_management()
+            if self._location() == location:
+                self.reload(preserve=True)
+        def done(result):
+            if epoch != self._account_epoch: return
+            confirmed = {r.uid for r in result.results if r.ok}
+            failures = [r for r in result.results if not r.ok]
+            missing = set(request["uids"]) - {r.uid for r in result.results}
+            if failures or missing or result.cancelled:
+                names = {p.uid: p.name for p in items}
+                self._management_errors = [(names.get(r.uid, "Photo"), r.error or "This change could not be confirmed.") for r in failures]
+                self._management_errors.extend((names[uid], "No confirmed result was returned.") for uid in missing)
+                self._management_error_banner.set_revealed(bool(self._management_errors))
+                message = failures[0].error if failures else "Some changes could not be confirmed. Reload before trying again."
+                self.window.toast(f"{'Cancelled. ' if result.cancelled else ''}{len(confirmed)} of {len(items)} photos updated. {message}")
+            else:
+                self.window.toast({"favourite": "Favourites updated", "add": "Photos added to album", "remove": "Photos removed from album; originals kept"}[action])
+            refresh()
+        def failed(message):
+            if epoch != self._account_epoch: return
+            self.client.cancel_photo_operation(operation_id, lambda _message: None)
+            self._management_errors = [(p.name, message) for p in items]
+            self._management_error_banner.set_revealed(True)
+            self.window.toast(message)
+            refresh()
+        self.client.manage_photos(request, done, failed)
+
+    def show_management_errors(self) -> None:
+        if not self._management_errors: return
+        dialog = Adw.AlertDialog(heading="Photo changes", body=(
+            "Completed changes are kept. These photos could not be updated. "
+            "Check the library before retrying unconfirmed changes."))
+        details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for name, error in self._management_errors:
+            details.append(Gtk.Label(label=f"{name}\n{error}", wrap=True, xalign=0, selectable=True))
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, min_content_height=100,
+                                   max_content_height=300, propagate_natural_height=True)
+        scroll.set_child(details)
+        dialog.set_extra_child(scroll)
+        dialog.add_response("close", "Close")
+        dialog.set_default_response("close"); dialog.set_close_response("close")
+        dialog.present(self.window)
+
+    def set_favourites(self, items: list[Photo], favourite: bool) -> None:
+        self._manage(items, "favourite", favourite=favourite)
+
+    def add_to_album(self, items: list[Photo]) -> None:
+        if not items or self._management_busy: return
+        request = self._request
+        def ready(albums):
+            if request != self._request or not self.window.account_logged_in: return
+            choices = tuple(a for a in albums if a.can_write)
+            if not choices:
+                self.window.toast("Create an album first, or ask for editing access to a shared album.")
+                return
+            dialog = Adw.AlertDialog(heading="Add to album", body=(
+                "Originals stay available. Linked live-photo files are included. "
+                "Photos from another user’s library are copied into the destination album."))
+            picker = Gtk.DropDown.new_from_strings([a.name + (" · Shared with you" if a.shared_with_me else "") for a in choices])
+            dialog.set_extra_child(picker)
+            dialog.add_response("cancel", "Cancel"); dialog.add_response("add", "Add")
+            dialog.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_default_response("add"); dialog.set_close_response("cancel")
+            def respond(_dialog, response):
+                if response == "add" and request == self._request and self.window.account_logged_in:
+                    self._manage(items, "add", album=choices[picker.get_selected()])
+            dialog.connect("response", respond); dialog.present(self.window)
+        self.client.list_photo_albums(ready, self.window.toast)
+
+    def remove_from_album(self, items: list[Photo]) -> None:
+        album = self._album
+        if not items or not album or not album.can_write or self._management_busy: return
+        request = self._request
+        dialog = Adw.AlertDialog(heading="Remove from album", body=(
+            f"Remove the selected photos from “{album.name}”? The originals are kept. "
+            "Album-only photos are saved to your timeline first; photos shared with you are copied there. "
+            "Linked live-photo files are included. A photo stays in the album if it cannot be saved."))
+        dialog.add_response("cancel", "Cancel"); dialog.add_response("remove", "Remove")
+        dialog.set_default_response("cancel"); dialog.set_close_response("cancel")
+        def respond(_dialog, response):
+            if response == "remove" and request == self._request and self.window.account_logged_in:
+                self._manage(items, "remove", album=album)
+        dialog.connect("response", respond); dialog.present(self.window)
+
+    def edit_album(self, album: PhotoAlbum | None = None) -> None:
+        if self._management_busy or (album and not album.can_write): return
+        epoch = self._account_epoch
+        dialog = Adw.AlertDialog(heading="Rename album" if album else "Create album")
+        entry = Adw.EntryRow(title="Album name", text=album.name if album else "")
+        group = Adw.PreferencesGroup()
+        group.add(entry)
+        dialog.set_extra_child(group)
+        dialog.add_response("cancel", "Cancel"); dialog.add_response("save", "Rename" if album else "Create")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("save"); dialog.set_close_response("cancel")
+        def validate(*_):
+            name = entry.get_text().strip()
+            dialog.set_response_enabled("save", bool(name) and len(name) <= 255 and not any(ord(c) < 32 or c in "/\\" for c in name))
+        entry.connect("changed", validate)
+        validate()
+        def respond(_dialog, response):
+            if response != "save" or epoch != self._account_epoch or not self.window.account_logged_in or self._management_busy: return
+            self._begin_management("Renaming album…" if album else "Creating album…")
+            def done(updated):
+                if epoch != self._account_epoch: return
+                self._finish_management()
+                self.window.toast("Album renamed" if album else "Album created")
+                if self._album and self._album.uid == updated.uid:
+                    self._album = updated
+                    self._update_controls()
+                    self.reload(preserve=True)
+                elif self._albums_mode:
+                    self.reload()
+            def failed(message):
+                if epoch != self._account_epoch: return
+                self._finish_management(); self.window.toast(message)
+                self.reload(preserve=True)
+            if album:
+                self.client.rename_photo_album(album.uid, entry.get_text().strip(), done, failed)
+            else:
+                self.client.create_photo_album(entry.get_text().strip(), done, failed)
+        dialog.connect("response", respond); dialog.present(self.window)
+
+    def delete_album(self, album: PhotoAlbum | None) -> None:
+        if not album or not album.can_delete or self._management_busy: return
+        epoch = self._account_epoch
+        dialog = Adw.AlertDialog(heading="Delete album", body=(
+            f"Permanently delete “{album.name}”? This cannot be undone. The photos remain available in your timeline. "
+            "Any album-only photos are saved there first, including linked live-photo files. "
+            "If a photo cannot be saved, the album will not be deleted."))
+        dialog.add_response("cancel", "Cancel"); dialog.add_response("delete", "Delete album")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel"); dialog.set_close_response("cancel")
+        def respond(_dialog, response):
+            if response != "delete" or epoch != self._account_epoch or not self.window.account_logged_in or self._management_busy: return
+            # The pinned SDK has no abort signal for album create/rename/delete.
+            self._begin_management("Saving album-only photos and deleting album…")
+            def done(_result):
+                if epoch != self._account_epoch: return
+                self._finish_management()
+                self.window.toast("Album deleted; photos kept in your timeline")
+                if self._album and self._album.uid == album.uid:
+                    self.show_albums()
+                elif self._albums_mode:
+                    self.reload()
+            def failed(message):
+                if epoch != self._account_epoch: return
+                self._finish_management(); self.window.toast(f"Album deletion could not be confirmed. {message}")
+                self.reload(preserve=True)
+            self.client.delete_photo_album(album.uid, done, failed)
+        dialog.connect("response", respond); dialog.present(self.window)
+
     def trash_items(self, items: list[Photo]) -> None:
         if not items: return
+        if self._management_busy: return
+        if not all(p.can_trash for p in items):
+            self.window.toast("Only photos in your own library can be moved to Trash here."); return
         if len(items) > 100:
             self.window.toast("Select at most 100 photos to move to Trash at once."); return
         request = self._request
@@ -671,12 +997,14 @@ class PhotosView(Gtk.Box):
 
 
 class PhotoPreviewPage(Adw.NavigationPage):
-    def __init__(self, client, window, photo: Photo, photos: tuple[Photo, ...]) -> None:
+    def __init__(self, client, window, photo: Photo, photos: tuple[Photo, ...], management: PhotosView) -> None:
         # A popped page can remain parented during its closing animation.
         # Previews are addressed by object, so they do not need a shared tag.
         super().__init__(title=photo.name)
         self._client = client
         self._window = window
+        self._management = management
+        self._management_handler = management.connect("management-changed", self._management_changed)
         self._photos = photos
         self._index = next((i for i, p in enumerate(photos) if p.uid == photo.uid), 0)
         self._request = 0
@@ -685,6 +1013,10 @@ class PhotoPreviewPage(Adw.NavigationPage):
         self._video_session = None
         self._media = None
         self._video_handler = client.connect("video-preview-changed", self._video_changed)
+        self._photos_handler = client.connect("photos-changed", self._library_changed)
+        self._metadata_request = 0
+        self._metadata_pending = True
+        self._metadata_available = False
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
         self._title = Adw.WindowTitle(title=photo.name)
@@ -696,6 +1028,14 @@ class PhotoPreviewPage(Adw.NavigationPage):
         trash = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Move to Trash")
         trash.connect("clicked", lambda *_: window.trash_photos([self._photos[self._index]]))
         header.pack_end(trash)
+        self._trash_button = trash
+        self._favourite_button = Gtk.Button(icon_name="non-starred-symbolic", tooltip_text="Add to favourites")
+        self._favourite_button.connect("clicked", self._favourite_clicked)
+        header.pack_end(self._favourite_button)
+        album = Gtk.Button(icon_name="folder-new-symbolic", tooltip_text="Add to album…")
+        album.connect("clicked", lambda *_: window.add_photos_to_album([self._photos[self._index]]))
+        header.pack_end(album)
+        self._album_button = album
         self._details = Gtk.MenuButton(icon_name="dialog-information-symbolic", tooltip_text="Photo details")
         self._detail_label = Gtk.Label(wrap=True, xalign=0)
         self._detail_label.set_margin_top(16)
@@ -739,6 +1079,12 @@ class PhotoPreviewPage(Adw.NavigationPage):
         self._caption = Gtk.Label(hexpand=True, wrap=True)
         self._caption.add_css_class("dim-label")
         footer.append(self._caption)
+        self._cancel_button = Gtk.Button(label="Cancel change", visible=False)
+        self._cancel_button.connect("clicked", management.cancel_management)
+        footer.append(self._cancel_button)
+        self._error_details = Gtk.Button(label="Change details", visible=False)
+        self._error_details.connect("clicked", lambda *_: management.show_management_errors())
+        footer.append(self._error_details)
         self._play_button = Gtk.Button(label="Play video", visible=False)
         self._play_button.connect("clicked", self._play_video)
         footer.append(self._play_button)
@@ -755,12 +1101,60 @@ class PhotoPreviewPage(Adw.NavigationPage):
 
     def reset(self) -> None:
         self._request += 1
+        self._metadata_request += 1
         self._release_video()
         if self._video_handler:
             self._client.disconnect(self._video_handler)
             self._video_handler = None
+        if self._photos_handler:
+            self._client.disconnect(self._photos_handler)
+            self._photos_handler = None
+        if self._management_handler:
+            self._management.disconnect(self._management_handler)
+            self._management_handler = None
         self._picture.set_paintable(None)
         self._texture = None
+
+    def _management_changed(self, _view, _busy, _cancellable) -> None:
+        self._update_photo_actions()
+
+    def _update_photo_actions(self) -> None:
+        photo = self._photos[self._index]
+        busy = self._management._management_busy
+        available = self._metadata_available and not self._metadata_pending and not busy
+        self._favourite_button.set_icon_name("starred-symbolic" if photo.favourite else "non-starred-symbolic")
+        self._favourite_button.set_tooltip_text(("Remove from favourites" if photo.favourite else "Add to favourites") if photo.can_favourite else "Favourites can be changed for photos in your own library")
+        self._favourite_button.set_sensitive(photo.can_favourite and available)
+        self._trash_button.set_sensitive(photo.can_trash and available)
+        self._album_button.set_sensitive(available)
+        self._cancel_button.set_visible(busy and self._management._management_id is not None)
+        self._error_details.set_visible(bool(self._management._management_errors))
+
+    def _favourite_clicked(self, *_args) -> None:
+        photo = self._photos[self._index]
+        self._window.favourite_photos([photo], not photo.favourite)
+
+    def _library_changed(self, *_args) -> None:
+        self._metadata_request += 1
+        metadata_request, request = self._metadata_request, self._request
+        uid = self._photos[self._index].uid
+        self._metadata_pending = True
+        self._update_photo_actions()
+        def loaded(photo):
+            if request != self._request or metadata_request != self._metadata_request: return
+            self._metadata_pending = False
+            self._metadata_available = True
+            self._photos = tuple(photo if p.uid == uid else p for p in self._photos)
+            self._update_photo_actions()
+            self.set_title(photo.name)
+            self._title.set_title(photo.name)
+        def failed(message):
+            if request != self._request or metadata_request != self._metadata_request: return
+            self._metadata_pending = False
+            self._metadata_available = False
+            self._update_photo_actions()
+            self._favourite_button.set_tooltip_text(message)
+        self._client.get_photo(uid, loaded, failed)
 
     def _release_video(self):
         if self._media:
@@ -838,6 +1232,8 @@ class PhotoPreviewPage(Adw.NavigationPage):
         request = self._request
         photo = self._photos[self._index]
         self.set_title(photo.name)
+        self._album_button.set_sensitive(True)
+        self._update_photo_actions()
         self._title.set_title(photo.name)
         self._title.set_subtitle(format_absolute_time(photo.capture_time))
         self._previous.set_sensitive(self._index > 0)
@@ -868,3 +1264,4 @@ class PhotoPreviewPage(Adw.NavigationPage):
                 self._error.set_description(message)
                 self._stack.set_visible_child_name("error")
         self._client.get_photo_thumbnails([photo.uid], loaded, error, preview=True)
+        self._library_changed()
