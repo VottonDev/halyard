@@ -11,6 +11,7 @@ from . import daemon_control
 from .conflicts_view import ConflictsPage
 from .dbus_client import DaemonClient
 from .history_view import HistoryPage
+from .trash_view import TrashPage
 from .login_view import LoginView
 from .models import STATUS_ERROR, Pair, Status
 from .pair_dialog import PairDialog
@@ -31,6 +32,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._account_logged_in: bool | None = None
         self._conflicts_page: ConflictsPage | None = None
         self._history_page: HistoryPage | None = None
+        self._trash_page: TrashPage | None = None
         self._preview_page = None
         self._last_account_state = None
         self._last_conflict_count = -1
@@ -67,6 +69,7 @@ class HalyardWindow(Adw.ApplicationWindow):
             self._refresh_everything()
 
     def _on_destroy(self, *_):
+        if self._trash_page: self._trash_page.dispose()
         if self._preview_page: self._preview_page.reset()
         self._photos_view.dispose()
         self._transfers_view.dispose()
@@ -118,6 +121,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         sync_section = Gio.Menu()
         sync_section.append("Sync all now", "win.sync-all")
         sync_section.append("Conflicts", "win.conflicts")
+        sync_section.append("Trash", "win.trash")
         menu.append_section(None, sync_section)
 
         app_section = Gio.Menu()
@@ -335,6 +339,7 @@ class HalyardWindow(Adw.ApplicationWindow):
             ("sync-all", self._on_sync_all, None),
             ("activity", lambda *_: self._show_history(), "<Primary>h"),
             ("conflicts", lambda *_: self._show_conflicts(), None),
+            ("trash", lambda *_: self._show_trash(), None),
             ("preferences", lambda *_: self._show_preferences(),
              "<Primary>comma"),
             ("about", lambda *_: self._show_about(), None),
@@ -422,6 +427,7 @@ class HalyardWindow(Adw.ApplicationWindow):
         if self._last_account_state != self._account_logged_in:
             self._last_account_state = self._account_logged_in
             if not self._account_logged_in:
+                if self._trash_page: self._trash_page.reset()
                 self._photos_view.reset()
                 self._transfers_view.reset()
                 self.present_home()
@@ -605,6 +611,17 @@ class HalyardWindow(Adw.ApplicationWindow):
 
     # -- navigation ------------------------------------------------------
 
+    def _show_trash(self) -> None:
+        if not self.account_logged_in:
+            self.toast("Sign in to open Trash.")
+            return
+        if self._trash_page is None:
+            self._trash_page = TrashPage(self._client, self)
+            self._nav.add(self._trash_page)
+        if self._nav.get_visible_page() is not self._trash_page:
+            self._nav.push(self._trash_page)
+        self._trash_page.activate()
+
     def _show_conflicts(self) -> None:
         if not self._client.available:
             self.toast("The sync service is not running.")
@@ -688,6 +705,8 @@ class HalyardWindow(Adw.ApplicationWindow):
             self._nav.pop()
 
     def _on_page_popped(self, _nav, page):
+        if page is self._trash_page:
+            page.deactivate()
         if page is self._preview_page:
             page.reset()
             self._preview_page = None

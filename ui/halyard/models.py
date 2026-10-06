@@ -270,6 +270,73 @@ class Conflict:
 
 
 @dataclass(frozen=True)
+class TrashItem:
+    uid: str = ""
+    source: str = "drive"
+    name: str = ""
+    type: str = "file"
+    size: int | None = None
+    trashed_at: int | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "TrashItem":
+        data = _as_dict(data)
+
+        def nullable_number(key: str) -> int | None:
+            value = data.get(key)
+            return _as_int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+        return cls(uid=str(data.get("uid") or ""), source=str(data.get("source") or "drive"),
+                   name=str(data.get("name") or ""), type=str(data.get("type") or "file"),
+                   size=nullable_number("size"), trashed_at=nullable_number("trashedAt"),
+                   error=str(data["error"]) if data.get("error") else None)
+
+
+@dataclass(frozen=True)
+class TrashPage:
+    items: tuple[TrashItem, ...] = ()
+    next_cursor: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "TrashPage":
+        data = _as_dict(data)
+        raw = data.get("items")
+        return cls(items=tuple(TrashItem.from_json(item) for item in raw) if isinstance(raw, list) else (),
+                   next_cursor=str(data["nextCursor"]) if data.get("nextCursor") else None)
+
+
+@dataclass(frozen=True)
+class TrashRestoreResult:
+    item: TrashItem = field(default_factory=TrashItem)
+    status: str = "unknown"
+
+    @classmethod
+    def from_json(cls, data: Any) -> "TrashRestoreResult":
+        data = _as_dict(data)
+        return cls(item=TrashItem.from_json(data), status=str(data.get("status") or "unknown"))
+
+
+@dataclass(frozen=True)
+class TrashRestore:
+    id: str = ""
+    source: str = "drive"
+    created_at: int = 0
+    status: str = "completed"
+    results: tuple[TrashRestoreResult, ...] = ()
+    refresh_error: str | None = None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "TrashRestore":
+        data = _as_dict(data)
+        raw = data.get("results")
+        return cls(id=str(data.get("id") or ""), source=str(data.get("source") or "drive"),
+                   created_at=_as_int(data.get("createdAt")), status=str(data.get("status") or "completed"),
+                   results=tuple(TrashRestoreResult.from_json(r) for r in raw) if isinstance(raw, list) else (),
+                   refresh_error=str(data["refreshError"]) if data.get("refreshError") else None)
+
+
+@dataclass(frozen=True)
 class HistoryEntry:
     """One thing sync did to one file, as shown in the activity log."""
 

@@ -33,6 +33,43 @@ after(async () => {
     await fsp.rm(testDataHome, { recursive: true, force: true });
 });
 
+test('the D-Bus Trash boundary rejects malformed requests and blocks new work throughout sign-out', async () => {
+    const { HalyardInterface } = await import('../src/ipc/dbus.js');
+    const { TrashRecovery } = await import('../src/drive/trash.js');
+    let loggedIn = true, writes = 0, stopped = false;
+    let release!: () => void;
+    const cleanup = new Promise<void>(resolve => { release = resolve; });
+    const client = {
+        async *iterateTrashedNodes() {
+            yield { uid: 'drive~file', name: { ok: true, value: 'notes.txt' }, type: 'file', trashTime: new Date() } as NodeEntity;
+        },
+        async getNode() { throw new Error('Unexpected lookup'); },
+        async *restoreNodes() { writes++; },
+    };
+    const trash = new TrashRecovery(async () => client, async () => {}, async () => {});
+    const session = {
+        getClient() { if (!loggedIn) throw new Error('Not signed in to Proton Drive'); return client; },
+        async logout() { loggedIn = false; },
+    };
+    const downloads = { async stop() { await cleanup; stopped = true; } };
+    const iface = new HalyardInterface({ onSignedOut() {} } as never, session as never, () => {},
+        { reset() {} } as never, downloads as never, { async stop() {} } as never, { async stop() {} } as never, trash);
+    const page = JSON.parse(await iface.ListTrash(JSON.stringify({ source: 'drive', requestId: 'ipc' })));
+    assert.equal(page.items[0].name, 'notes.txt');
+    for (const raw of ['null', '[]', '{}', '{"source":"drive","uids":"drive~file"}', '{"source":"other","uids":["drive~file"]}']) {
+        assert.throws(() => iface.StartTrashRestore(raw));
+    }
+    await assert.rejects(iface.ListTrash('{"source":"drive","requestId":"../bad"}'), /invalid/);
+    const signingOut = iface.Logout();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(loggedIn, true, 'the session remains valid while transfer cleanup is pending');
+    assert.throws(() => iface.StartTrashRestore('{"source":"drive","uids":["drive~file"]}'), /sign-out/);
+    await assert.rejects(iface.ListTrash('{"source":"drive","requestId":"blocked"}'), /sign-out/);
+    release(); await signingOut;
+    assert.equal(stopped, true); assert.equal(loggedIn, false); assert.equal(writes, 0);
+    assert.deepEqual(JSON.parse(iface.ListTrashRestores()), []);
+});
+
 const SHARED_ROOT = 'shared~trips';
 function folder(uid: string, parentUid: string | undefined, name: string,
     role?: MemberRole, mtime = 1_000): NodeEntity {
@@ -325,6 +362,32 @@ test('shared-root deletion, trash, and lost volume access preserve local files a
             }
         });
     }
+});
+
+test('a restored folder enters through events and keeps an unsynced local file as a conflict copy', async () => {
+    await withPair(async (db, pair, drive, syncer) => {
+        drive.putFile('shared~anchor', 'anchor.txt', 'keep the local root nonempty', 2_000);
+        const restored = { ...folder('shared~restored', SHARED_ROOT, 'Recovered'), trashTime: new Date() };
+        drive.nodes.set(restored.uid, restored);
+        drive.putFile('shared~old', 'notes.txt', 'recovered remote contents', 2_000, 'old-revision', restored.uid);
+        await syncer.sync();
+        assert.deepEqual(drive.enumerated, [SHARED_ROOT]);
+        const local = path.join(pair.localPath, 'Recovered');
+        await fsp.mkdir(local);
+        await fsp.writeFile(path.join(local, 'notes.txt'), 'unsynced local edit');
+        const live = { ...restored, trashTime: undefined };
+        drive.nodes.set(live.uid, live);
+        drive.nodeEvent(live);
+        await syncer.sync();
+        assert.equal(syncer.status, 'idle', syncer.error ?? 'restored folder reconciled');
+        assert.equal(await fsp.readFile(path.join(local, 'notes.txt'), 'utf8'), 'recovered remote contents');
+        const conflict = (await fsp.readdir(local)).find(name => name.includes('(conflict '));
+        assert.ok(conflict, 'local edits were preserved as a conflict copy');
+        assert.equal(await fsp.readFile(path.join(local, conflict), 'utf8'), 'unsynced local edit');
+        assert.deepEqual(drive.enumerated, [SHARED_ROOT, restored.uid], 'only the restored subtree is enumerated');
+        assert.ok(db.getBase(pair.id).has('Recovered/notes.txt'));
+        assert.deepEqual(drive.trashed, []);
+    });
 });
 
 test('missing or unexpectedly empty shared-pair local roots never trash remote copies', async () => {

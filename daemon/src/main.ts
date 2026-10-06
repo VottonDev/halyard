@@ -3,6 +3,7 @@ import * as dbus from 'dbus-next';
 import { createSecretStore } from './auth/keyring.js';
 import { VERSION } from './config.js';
 import { DriveSession } from './drive/session.js';
+import { TrashRecovery } from './drive/trash.js';
 import { SyncManager } from './engine/manager.js';
 import { BUS_NAME, HalyardInterface, OBJECT_PATH } from './ipc/dbus.js';
 import { getLogger, logFilePath } from './log.js';
@@ -67,6 +68,17 @@ async function main(): Promise<void> {
         preview => iface.VideoPreviewChanged(JSON.stringify(preview)),
     );
 
+    const trash = new TrashRecovery(
+        async source => source === 'photos' ? session.getPhotosClient() : session.getClient(),
+        uids => session.refreshNodes(uids),
+        async source => {
+            if (source === 'photos') await photos.refreshRestored();
+            else void manager.syncAll().catch(error => logger.error('Sync after Trash restore failed', error));
+        },
+        jobs => iface.TrashRestoresChanged(JSON.stringify(jobs)),
+        (warning, body) => iface.Notify(JSON.stringify({ kind: warning ? 'warning' : 'info', title: 'Trash restore', body })),
+    );
+
     let quitting = false;
     const shutdown = async (reason: string): Promise<void> => {
         if (quitting) {
@@ -75,6 +87,7 @@ async function main(): Promise<void> {
         quitting = true;
         logger.info(`Shutting down (${reason})`);
         try {
+            await trash.stop();
             photos.reset();
             await downloads.stop();
             await uploads.stop();
@@ -87,7 +100,7 @@ async function main(): Promise<void> {
         process.exit(0);
     };
 
-    iface = new HalyardInterface(manager, session, () => void shutdown('requested over D-Bus'), photos, downloads, uploads, videos);
+    iface = new HalyardInterface(manager, session, () => void shutdown('requested over D-Bus'), photos, downloads, uploads, videos, trash);
     bus.export(OBJECT_PATH, iface);
 
     manager.onStatusChanged((status) => {
