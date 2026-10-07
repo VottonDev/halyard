@@ -141,6 +141,52 @@ describe('photo library', () => {
             expect(new Set(retry.photos.map(p => p.uid)).size).toBe(17);
         } finally { library.reset(); }
     });
+    test('year/month pagination stops at its SDK frontier and keeps older photos available', async () => {
+        for (const albumUid of [undefined, 'own~album']) {
+            const g = gallery(1800);
+            let yielded = 0;
+            for (const [index, node] of [...g.nodes.values()].entries()) node.photo.captureTime = new Date(index < 75 ? '2026-10-02' : index < 130 ? '2026-09-02' : '2017-06-01');
+            const iterator = async function* () {
+                for (const node of g.nodes.values()) { yielded++; yield { nodeUid: node.uid, captureTime: node.photo.captureTime }; }
+            };
+            (g.client as any).iterateTimeline = iterator;
+            (g.client as any).iterateAlbum = iterator;
+            const library = new PhotoLibrary(async () => g.client);
+            try {
+                const first = await library.list({ albumUid, year: '2026', month: '2026-10', limit: 60 });
+                const last = await library.list({ albumUid, year: '2026', month: '2026-10', limit: 60, cursor: first.nextCursor! });
+                expect(first.photos).toHaveLength(60); expect(last.photos).toHaveLength(15); expect(last.nextCursor).toBeNull();
+                expect(yielded).toBeLessThan(150);
+                const year = await library.list({ albumUid, year: '2026', limit: 100 });
+                const yearLast = await library.list({ albumUid, year: '2026', limit: 100, cursor: year.nextCursor! });
+                expect(year.photos.length + yearLast.photos.length).toBe(130); expect(yearLast.nextCursor).toBeNull();
+                expect(yielded).toBeLessThan(180);
+                expect((await library.list({ albumUid, year: '2027' })).nextCursor).toBeNull();
+                expect((await library.list({ albumUid, month: '2026-11' })).photos).toEqual([]);
+                expect((await library.list({ albumUid, month: '2017-06', limit: 10 })).photos).toHaveLength(10);
+                let cursor: string | null = null, count = 0;
+                do {
+                    const page = await library.list({ albumUid, limit: 100, ...(cursor ? { cursor } : {}) });
+                    count += page.photos.length; cursor = page.nextCursor;
+                } while (cursor);
+                expect(count).toBe(1800);
+            } finally { library.reset(); }
+        }
+    });
+    test('an event-injected old photo does not hide matching photos beyond the cached prefix', async () => {
+        const g = gallery(100);
+        for (const node of g.nodes.values()) node.photo.captureTime = new Date('2026-10-02');
+        const library = new PhotoLibrary(async () => g.client);
+        try {
+            await library.list({ limit: 10 });
+            const old = photo(101); old.photo.captureTime = new Date('2017-06-01'); g.nodes.set(old.uid, old);
+            await g.event({ type: 'node_created', nodeUid: old.uid, eventId: 'old-added' });
+            const first = await library.list({ year: '2026', month: '2026-10', limit: 60 });
+            const last = await library.list({ year: '2026', month: '2026-10', cursor: first.nextCursor!, limit: 60 });
+            expect(first.photos.length + last.photos.length).toBe(100); expect(last.nextCursor).toBeNull();
+            expect((await library.list({ year: '2017' })).photos.map(p => p.uid)).toEqual([old.uid]);
+        } finally { library.reset(); }
+    });
 });
 
 function managementGallery() {

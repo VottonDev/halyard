@@ -31,10 +31,11 @@ def texture_from_thumbnail(thumb: PhotoThumbnail) -> Gdk.Texture | None:
 class _PhotoRow(GObject.Object):
     """A virtualised row of tiles, optionally preceded by a month heading."""
 
-    def __init__(self, photos: tuple[Photo, ...], heading: str = "") -> None:
+    def __init__(self, photos: tuple[Photo, ...], heading: str = "", columns: int = 5) -> None:
         super().__init__()
         self.photos = photos
         self.heading = heading
+        self.columns = columns
 
 
 class PhotosView(Gtk.Box):
@@ -49,6 +50,7 @@ class PhotosView(Gtk.Box):
         self.settings = settings
         self._photos: list[Photo] = []
         self._selected: set[str] = set()
+        self._selection_anchor: str | None = None
         self._selecting = False
         self._loaded = False
         self._loading = False
@@ -67,6 +69,9 @@ class PhotosView(Gtk.Box):
         self._thumb_idle = 0
         self._search_timeout = 0
         self._scroll_load_source = 0
+        self._scroll_restore_tick = 0
+        self._scroll_restore_position: float | None = None
+        self._scroll_input_serial = 0
         self._page_error = False
         self._tile_checks: dict[str, list[Gtk.CheckButton]] = {}
         self._updating_checks = False
@@ -74,6 +79,7 @@ class PhotosView(Gtk.Box):
         self._account_epoch = 0
         self._management_id: str | None = None
         self._management_busy = False
+        self._management_cancelled = False
         self._management_errors: list[tuple[str, str]] = []
         self._refresh_selection: set[str] | None = None
         self._refresh_position: float | None = None
@@ -106,6 +112,7 @@ class PhotosView(Gtk.Box):
         heading.append(self._upload_button)
         self._select_button = Gtk.Button(label="Select")
         self._select_button.connect("clicked", self._toggle_selection)
+        self._select_button.set_tooltip_text("Select photos. Shift-click to select a range.")
         heading.append(self._select_button)
         self._create_album_button = Gtk.Button(icon_name="folder-new-symbolic", tooltip_text="Create album…", visible=False)
         self._create_album_button.connect("clicked", lambda *_: self.edit_album())
@@ -173,10 +180,22 @@ class PhotosView(Gtk.Box):
         self._list.add_css_class("halyard-photo-list")
         self._scrolled = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         self._scrolled.set_child(self._list)
+        scroll = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        scroll.connect("scroll", self._on_user_scroll)
+        self._scrolled.add_controller(scroll)
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_scroll_key)
+        self._scrolled.add_controller(keys)
+        scrollbar = Gtk.GestureClick()
+        scrollbar.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        scrollbar.connect("pressed", lambda *_: self._on_user_scroll(None, 0, 0))
+        self._scrolled.get_vscrollbar().add_controller(scrollbar)
         adjustment = self._scrolled.get_vadjustment()
         adjustment.connect("value-changed", self._schedule_scroll_load)
         adjustment.connect("changed", self._schedule_scroll_load)
-        self._scrolled.connect("map", self._schedule_scroll_load)
+        self._scrolled.connect("map", self._gallery_mapped)
         adaptive = Adw.BreakpointBin(child=self._scrolled)
         adaptive.set_size_request(280, 200)
         for width, columns in ((850, 4), (650, 3), (450, 2)):
@@ -275,6 +294,7 @@ class PhotosView(Gtk.Box):
         self._account_epoch += 1
         self._management_id = None
         self._management_busy = False
+        self._management_cancelled = False
         self._management_errors.clear()
         self._management_error_banner.set_revealed(False)
         self._management_bar.set_revealed(False)
@@ -282,6 +302,7 @@ class PhotosView(Gtk.Box):
         self._refresh_selection = None
         self._refresh_position = None
         self._request += 1
+        self._cancel_scroll_restore()
         self._loaded = False
         self._loading = False
         self._page_error = False
@@ -292,6 +313,7 @@ class PhotosView(Gtk.Box):
             self._scroll_load_source = 0
         self._photos.clear()
         self._selected.clear()
+        self._selection_anchor = None
         self._textures.clear()
         self._thumb_waiters.clear()
         self._thumb_busy = False
@@ -389,6 +411,7 @@ class PhotosView(Gtk.Box):
             if source:
                 GLib.source_remove(source)
         self._request += 1
+        self._cancel_scroll_restore()
 
     def show_timeline(self) -> None:
         if not self._albums_mode and self._album is None:
@@ -470,21 +493,26 @@ class PhotosView(Gtk.Box):
         self._year = None; self._month = None
         self._update_controls(); self.reload()
 
-    def reload(self, preserve: bool = False) -> None:
+    def reload(self, preserve: bool = False, *, scroll_position: float | None = None) -> None:
         if not self.client.available or not self.window.account_logged_in:
             return
+        position = scroll_position if scroll_position is not None else self._scroll_restore_position
+        if position is None: position = self._scrolled.get_vadjustment().get_value()
         self._request += 1
+        self._cancel_scroll_restore()
         self._page_error = False
         self._page_loading.set_visible(False)
         self._refresh_selection = set(self._selected) if preserve else None
-        self._refresh_position = self._scrolled.get_vadjustment().get_value() if preserve else 0
+        self._refresh_position = position if preserve else 0
         self._refresh_count = len(self._photos) if preserve else 0
         self._loading = False
         self._loaded = True
         self._photos.clear()
-        self._rows.remove_all()
+        if not preserve:
+            self._rows.remove_all()
         if not preserve:
             self._selected.clear()
+            self._selection_anchor = None
             self._selecting = False
         self._next_cursor = None
         self._thumb_waiters.clear()
@@ -520,9 +548,14 @@ class PhotosView(Gtk.Box):
             # the remaining space. This is driven by scrolling/layout events.
             self._scroll_load_source = GLib.timeout_add(100, self._load_near_bottom)
 
+    def _gallery_mapped(self, *_args) -> None:
+        if self._scroll_restore_position is not None:
+            self._restore_scroll_after_layout(self._scroll_restore_position)
+        self._schedule_scroll_load()
+
     def _load_near_bottom(self) -> bool:
         self._scroll_load_source = 0
-        if (not self._active or not self._loaded or self._loading or self._albums_mode or not self._next_cursor or
+        if (not self._active or not self._loaded or self._loading or self._scroll_restore_position is not None or self._albums_mode or not self._next_cursor or
                 not self._photos or self._page_error or self._management_busy or
                 not self._scrolled.get_mapped()):
             return False
@@ -633,16 +666,10 @@ class PhotosView(Gtk.Box):
         if self._refresh_selection is not None:
             self._selected = self._refresh_selection & {p.uid for p in self._photos}
             self._refresh_selection = None
+        if self._selection_anchor not in {p.uid for p in self._photos}:
+            self._selection_anchor = None
         self._rebuild_rows()
-        if self._refresh_position is not None:
-            position = self._refresh_position
-            self._refresh_position = None
-            request = self._request
-            def restore():
-                if request == self._request:
-                    self._scrolled.get_vadjustment().set_value(position)
-                return False
-            GLib.idle_add(restore)
+        self._refresh_position = None
         self._update_selection()
         self._more.set_label("Try again" if self._page_error else "Load more photos")
         self._more.set_visible(bool(self._next_cursor) and (self._page_error or not self._photos))
@@ -658,7 +685,9 @@ class PhotosView(Gtk.Box):
 
     def _rebuild_rows(self) -> None:
         adjustment = self._scrolled.get_vadjustment()
-        position = adjustment.get_value()
+        position = self._refresh_position
+        if position is None: position = self._scroll_restore_position
+        if position is None: position = adjustment.get_value()
         rows: list[_PhotoRow] = []
         grouped: OrderedDict[str, list[Photo]] = OrderedDict()
         for photo in self._photos:
@@ -666,15 +695,87 @@ class PhotosView(Gtk.Box):
         for month, photos in grouped.items():
             for start in range(0, len(photos), self._columns):
                 heading = datetime.strptime(month, "%Y-%m").strftime("%B %Y") if start == 0 else ""
-                rows.append(_PhotoRow(tuple(photos[start:start + self._columns]), heading))
-        self._rows.splice(0, self._rows.get_n_items(), rows)
-        GLib.idle_add(lambda: (adjustment.set_value(position), False)[1])
+                rows.append(_PhotoRow(tuple(photos[start:start + self._columns]), heading, self._columns))
+        # Keep unchanged rows (and GTK's scroll anchor) across metadata refreshes.
+        old = [self._rows.get_item(i) for i in range(self._rows.get_n_items())]
+        def same(a, b): return a.photos == b.photos and a.heading == b.heading and a.columns == b.columns
+        prefix = 0
+        while prefix < min(len(old), len(rows)) and same(old[prefix], rows[prefix]): prefix += 1
+        suffix = 0
+        while suffix < min(len(old), len(rows)) - prefix and same(old[-suffix - 1], rows[-suffix - 1]): suffix += 1
+        if prefix + suffix < max(len(old), len(rows)):
+            focus = self.window.get_focus()
+            focused_row = None
+            while focus and focus != self._list:
+                focused_row = getattr(focus, "_photo_row", None)
+                if focused_row is not None: break
+                focus = focus.get_parent()
+            if self._active and focused_row in old[prefix:len(old) - suffix]:
+                self._select_button.grab_focus()
+            self._rows.splice(prefix, len(old) - prefix - suffix, rows[prefix:len(rows) - suffix])
+        self._restore_scroll_after_layout(position)
+
+    def _cancel_scroll_restore(self) -> None:
+        if self._scroll_restore_tick:
+            self._scrolled.remove_tick_callback(self._scroll_restore_tick)
+            self._scroll_restore_tick = 0
+        self._scroll_restore_position = None
+
+    def _on_user_scroll(self, _controller, _dx, _dy) -> bool:
+        self._scroll_input_serial += 1
+        self._cancel_scroll_restore()
+        return False
+
+    def _on_scroll_key(self, _controller, key, _code, _state) -> bool:
+        if key in (Gdk.KEY_Page_Up, Gdk.KEY_Page_Down, Gdk.KEY_Home, Gdk.KEY_End, Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_space):
+            self._on_user_scroll(None, 0, 0)
+        return False
+
+    def _restore_scroll_after_layout(self, position: float) -> None:
+        self._cancel_scroll_restore()
+        if not self._photos:
+            return
+        self._scroll_restore_position = position
+        request = self._request
+        geometry, stable, started = None, 0, None
+        def finished():
+            self._scroll_restore_tick = 0
+            self._scroll_restore_position = None
+            self._schedule_scroll_load()
+            return False
+        def restore(widget, clock):
+            nonlocal geometry, stable, started
+            if request != self._request:
+                return finished()
+            adjustment = widget.get_vadjustment()
+            current = (adjustment.get_upper(), adjustment.get_page_size())
+            if not widget.get_mapped() or current[1] <= 0:
+                return True
+            if started is None: started = clock.get_frame_time()
+            if clock.get_frame_time() - started > 1_000_000:
+                return finished()
+            # Ticks run before layout: first let a frame allocate the new rows,
+            # then verify the offset survives subsequent layout and bar resizing.
+            if current != geometry:
+                geometry, stable = current, 0
+                return True
+            target = max(0, min(position, current[0] - current[1]))
+            if abs(adjustment.get_value() - target) < 1:
+                stable += 1
+                if stable >= 2:
+                    return finished()
+            else:
+                stable = 0
+                adjustment.set_value(target)
+            return True
+        self._scroll_restore_tick = self._scrolled.add_tick_callback(restore)
 
     def _setup_row(self, _factory, item: Gtk.ListItem) -> None:
         item.set_child(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8))
 
     def _unbind_row(self, _factory, item: Gtk.ListItem) -> None:
         box = item.get_child()
+        box._photo_row = None
         for uid, check in getattr(item, "_checks", []):
             checks = self._tile_checks.get(uid, [])
             if check in checks:
@@ -690,6 +791,7 @@ class PhotosView(Gtk.Box):
         self._unbind_row(_factory, item)
         row = item.get_item()
         box = item.get_child()
+        box._photo_row = row
         box.set_margin_start(20)
         box.set_margin_end(20)
         box.set_margin_bottom(8)
@@ -719,6 +821,13 @@ class PhotosView(Gtk.Box):
             check.set_visible(self._selecting)
             check.connect("toggled", lambda b, uid=photo.uid: self._check_toggled(b, uid))
             overlay.add_overlay(check)
+            range_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+            range_click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            range_click.connect("pressed", self._range_pressed, photo.uid)
+            range_click.connect("released", self._range_released)
+            range_click.connect("cancel", self._range_cancelled)
+            range_click.connect("unpaired-release", self._range_cancelled)
+            overlay.add_controller(range_click)
             self._tile_checks.setdefault(photo.uid, []).append(check)
             item._checks.append((photo.uid, check))
             badge = Gtk.Label(label="▶" if photo.is_video else "★" if photo.favourite else "")
@@ -785,9 +894,43 @@ class PhotosView(Gtk.Box):
                 self._selected.remove(photo.uid)
             else:
                 self._selected.add(photo.uid)
+            self._selection_anchor = photo.uid
             self._update_selection()
         else:
             self.window.open_photo(photo, tuple(self._photos))
+
+    def _range_pressed(self, gesture, _count, _x, _y, uid: str) -> None:
+        gesture._range_target = None
+        if gesture.get_current_event_state() & Gdk.ModifierType.SHIFT_MASK:
+            gesture._range_target = (self._request, uid)
+            # Suppress the normal button/check toggle for this Shift click.
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+
+    def _range_cancelled(self, gesture, *_args) -> None:
+        gesture._range_target = None
+
+    def _range_released(self, gesture, _count, x, y) -> None:
+        target = getattr(gesture, "_range_target", None)
+        gesture._range_target = None
+        tile = gesture.get_widget()
+        if (not target or target[0] != self._request or self._stack.get_visible_child_name() != "photos" or
+                not (0 <= x < tile.get_width() and 0 <= y < tile.get_height())):
+            return
+        if self._select_range(target[1]):
+            tile.get_child().grab_focus()
+
+    def _select_range(self, uid: str) -> bool:
+        # Rows reflect the displayed month grouping, including off-screen tiles.
+        uids = [p.uid for i in range(self._rows.get_n_items()) for p in self._rows.get_item(i).photos]
+        if uid not in uids or uid not in {p.uid for p in self._photos}:
+            return False
+        if self._selection_anchor not in uids:
+            self._selection_anchor = uid
+        start, end = sorted((uids.index(self._selection_anchor), uids.index(uid)))
+        self._selecting = True
+        self._selected.update(uids[start:end + 1])
+        self._update_selection()
+        return True
 
     def _check_toggled(self, check: Gtk.CheckButton, uid: str) -> None:
         if self._updating_checks:
@@ -796,12 +939,14 @@ class PhotosView(Gtk.Box):
             self._selected.add(uid)
         else:
             self._selected.discard(uid)
+        self._selection_anchor = uid
         self._update_selection()
 
     def _toggle_selection(self, *_args) -> None:
         self._selecting = not self._selecting
         if not self._selecting:
             self._selected.clear()
+            self._selection_anchor = None
         self._update_selection()
 
     def _update_selection(self) -> None:
@@ -845,6 +990,7 @@ class PhotosView(Gtk.Box):
         self._management_errors.clear()
         self._management_error_banner.set_revealed(False)
         self._management_busy = True
+        self._management_cancelled = False
         self._management_id = operation_id
         self._management_label.set_label(label)
         self._management_bar.set_revealed(True)
@@ -863,19 +1009,23 @@ class PhotosView(Gtk.Box):
         self.emit("management-changed", False, False)
 
     def cancel_management(self, *_args) -> None:
+        if not self._management_busy: return
+        self._management_cancelled = True
         if self._management_id:
+            operation_id, epoch = self._management_id, self._account_epoch
             self._cancel_management.set_sensitive(False)
             self._management_label.set_label("Cancelling… Completed changes are kept.")
             def failed(message):
-                self.window.toast(message)
-                self._cancel_management.set_sensitive(True)
-            self.client.cancel_photo_operation(self._management_id, failed)
+                if epoch == self._account_epoch and self._management_busy and self._management_id == operation_id:
+                    self.window.toast(message)
+            self.client.cancel_photo_operation(operation_id, failed)
 
     def _manage(self, items: list[Photo], action: str, *, album: PhotoAlbum | None = None, favourite: bool | None = None) -> None:
         if self._management_busy or not self.window.account_logged_in:
             return
-        if not items or len(items) > 100:
-            self.window.toast("Choose between 1 and 100 photos at a time.")
+        items = list({p.uid: p for p in items}.values())
+        if not items:
+            self.window.toast("Choose at least one photo.")
             return
         if action == "favourite" and not all(p.can_favourite for p in items):
             self.window.toast("Only photos in your own library can have their favourites changed here.")
@@ -884,40 +1034,70 @@ class PhotosView(Gtk.Box):
             self.window.toast("This album is read-only. Editing access is required.")
             return
         epoch, location = self._account_epoch, self._location()
+        scroll_serial = self._scroll_input_serial
+        position = self._scroll_restore_position
+        if position is None: position = self._scrolled.get_vadjustment().get_value()
         operation_id = str(uuid.uuid4())
-        request = {"operationId": operation_id, "action": action, "uids": [p.uid for p in items]}
-        if album: request["albumUid"] = album.uid
-        if favourite is not None: request["favourite"] = favourite
         self._begin_management("Updating your photo library…", operation_id)
-        def refresh():
-            self._finish_management()
-            if self._location() == location:
-                self.reload(preserve=True)
-        def done(result):
-            if epoch != self._account_epoch: return
-            confirmed = {r.uid for r in result.results if r.ok}
+        next_index, finished = 0, False
+        confirmed: set[str] = set()
+        errors: dict[str, str] = {}
+        def current(batch_id=None):
+            return not finished and epoch == self._account_epoch and self._management_busy and (batch_id is None or batch_id == self._management_id)
+        def finish(unattempted=None):
+            nonlocal finished
+            if not current(): return
+            finished = True
+            if unattempted:
+                errors.update((p.uid, unattempted) for p in items[next_index:])
             if action == "add" and self._location() == location:
                 self._selected.difference_update(confirmed)
-            failures = [r for r in result.results if not r.ok]
-            missing = set(request["uids"]) - {r.uid for r in result.results}
-            if failures or missing or result.cancelled:
-                names = {p.uid: p.name for p in items}
-                self._management_errors = [(names.get(r.uid, "Photo"), r.error or "This change could not be confirmed.") for r in failures]
-                self._management_errors.extend((names[uid], "No confirmed result was returned.") for uid in missing)
+                if self._selection_anchor in confirmed:
+                    self._selection_anchor = None
+            self._management_errors = [(p.name, errors[p.uid]) for p in items if p.uid in errors]
+            if errors or self._management_cancelled:
                 self._management_error_banner.set_revealed(bool(self._management_errors))
-                message = failures[0].error if failures else "Some changes could not be confirmed. Reload before trying again."
-                self.window.toast(f"{'Cancelled. ' if result.cancelled else ''}{len(confirmed)} of {len(items)} photos updated. {message}")
+                message = next(iter(errors.values()), "Completed changes are kept.")
+                self.window.toast(f"{'Cancelled. ' if self._management_cancelled else ''}{len(confirmed)} of {len(items)} photos updated. {message}")
             else:
                 self.window.toast({"favourite": "Favourites updated", "add": "Photos are in the album", "remove": "Photos removed from album; originals kept"}[action])
-            refresh()
-        def failed(message):
-            if epoch != self._account_epoch: return
-            self.client.cancel_photo_operation(operation_id, lambda _message: None)
-            self._management_errors = [(p.name, message) for p in items]
-            self._management_error_banner.set_revealed(True)
-            self.window.toast(message)
-            refresh()
-        self.client.manage_photos(request, done, failed)
+            self._finish_management()
+            if self._location() == location:
+                self.reload(preserve=True, scroll_position=position if self._scroll_input_serial == scroll_serial else None)
+        def send_batch():
+            nonlocal next_index
+            if not current(): return
+            if self._management_cancelled:
+                finish("Cancelled before this photo was updated."); return
+            batch = items[next_index:next_index + 100]
+            batch_id = self._management_id
+            request = {"operationId": batch_id, "action": action, "uids": [p.uid for p in batch]}
+            if album: request["albumUid"] = album.uid
+            if favourite is not None: request["favourite"] = favourite
+            self._management_label.set_label(f"Updating photos… {next_index} of {len(items)} processed; {len(confirmed)} confirmed")
+            next_index += len(batch)
+            def done(result):
+                if not current(batch_id): return
+                requested = set(request["uids"])
+                outcomes = {r.uid: r for r in result.results if r.uid in requested}
+                for uid in requested:
+                    outcome = outcomes.get(uid)
+                    if outcome and outcome.ok: confirmed.add(uid)
+                    else: errors[uid] = (outcome.error if outcome else None) or "No confirmed result was returned."
+                self._management_cancelled |= result.cancelled
+                if self._management_cancelled:
+                    finish("Cancelled before this photo was updated.")
+                elif next_index == len(items): finish()
+                else:
+                    self._management_id = str(uuid.uuid4())
+                    send_batch()
+            def failed(message):
+                if not current(batch_id): return
+                self.client.cancel_photo_operation(batch_id, lambda _message: None)
+                errors.update((p.uid, message) for p in batch)
+                finish("Not attempted because an earlier request failed.")
+            self.client.manage_photos(request, done, failed)
+        send_batch()
 
     def show_management_errors(self) -> None:
         if not self._management_errors: return

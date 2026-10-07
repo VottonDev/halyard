@@ -680,8 +680,8 @@ class MockState:
 
 
 def mock_photo(index):
-    month = 10 - index // 32
-    return {"uid": f"photo-{index}", "name": f"IMG_{index % 24:04d}.jpg", "captureTime": int(time.mktime((2026, month, 1 + index % 28, 12, 0, 0, 0, 0, -1)) * 1000),
+    year, month = divmod(2026 * 12 + 9 - index // 32, 12)
+    return {"uid": f"photo-{index}", "name": f"IMG_{index % 24:04d}.jpg", "captureTime": int(time.mktime((year, month + 1, 1 + index % 28, 12, 0, 0, 0, 0, -1)) * 1000),
             "size": 3200000 + index * 7000, "mediaType": "video/webm" if index % 17 == 0 else "image/jpeg", "revisionUid": f"rev-{index}",
             "favourite": index % 5 == 0, "relatedUids": ["photo-related"] if index == 1 else [], "error": None,
             "canFavourite": True, "canTrash": True}
@@ -700,7 +700,7 @@ class MockDaemon:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.bus_name = args.bus_name
-        self.photos = [] if args.no_photos else sorted([mock_photo(i) for i in range(96)], key=lambda p: p["captureTime"], reverse=True)
+        self.photos = [] if args.no_photos else sorted([mock_photo(i) for i in range(args.photo_count)], key=lambda p: p["captureTime"], reverse=True)
         self.photo_revision = 0
         self.photo_timeline = {p["uid"] for p in self.photos}
         self.photo_albums = [{"uid": "album-1", "name": "Summer", "sharedWithMe": False, "canWrite": True, "canDelete": True}] if self.photos else []
@@ -1206,7 +1206,7 @@ class MockDaemon:
             error = None
             if state["cancelled"]: error = "Cancelled before this photo was changed."
             elif not photo: error = "This photo is no longer available."
-            elif self.args.photo_management_errors and uid == "photo-2": error = "Permission denied for this photo."
+            elif self.args.photo_management_errors and uid == self.args.photo_management_error_uid: error = "Permission denied for this photo."
             elif action == "favourite" and not photo["canFavourite"]: error = "Only photos in your own library can have their favourites changed here."
             elif action == "remove" and uid not in self.album_members[data["albumUid"]]: error = "This photo is no longer in the album."
             if not error:
@@ -1223,7 +1223,7 @@ class MockDaemon:
             self._photos_changed()
             self._reply_json(invocation, dict(state, revision=self.photo_revision))
             return False
-        GLib.timeout_add(100, step)
+        GLib.timeout_add(self.args.photo_management_delay, step)
 
     def _do_GetPhoto(self, invocation, uid):
         self._require_photos()
@@ -1415,6 +1415,9 @@ def main() -> int:
     parser.add_argument("--no-photos", action="store_true", help="start with an empty photo gallery")
     parser.add_argument("--photo-management-fixture", action="store_true", help="include shared albums and album-only photos")
     parser.add_argument("--photo-management-errors", action="store_true", help="simulate per-photo and safe album-deletion failures")
+    parser.add_argument("--photo-count", type=int, default=96, help="number of generated photo fixtures")
+    parser.add_argument("--photo-management-delay", type=int, default=100, help="milliseconds per mock management result")
+    parser.add_argument("--photo-management-error-uid", default="photo-2", help="UID rejected when management errors are enabled")
     parser.add_argument("--photo-page-change-once", action="store_true", help="invalidate the first continuation page like a delayed SDK event")
     parser.add_argument("--no-pairs", action="store_true",
                         help="start with no folder pairs (empty state)")

@@ -37,7 +37,7 @@ export type PhotoManagementRequest = { operationId: string; action: 'favourite' 
 export type PhotoManagementResult = { results: PhotoTrashResult[]; cancelled: boolean; revision: number };
 export type PhotoQuery = { albumUid?: string; cursor?: string; limit?: number; search?: string; kind?: string; month?: string; year?: string };
 type Placeholder = { nodeUid: string; captureTime: Date; tags?: number[] };
-type Collection = { entries: Placeholder[]; seen: Set<string>; iterator: AsyncIterator<Placeholder>; done: boolean };
+type Collection = { entries: Placeholder[]; seen: Set<string>; iterator: AsyncIterator<Placeholder>; done: boolean; frontier?: Date };
 export type PhotoTrashResult = { uid: string; ok: boolean; error: string | null };
 export type PhotoPage = { photos: Photo[]; nextCursor: string | null; revision: number };
 
@@ -167,7 +167,16 @@ export class PhotoLibrary {
             // filtered pages can still carry a cursor, keeping calls bounded.
             const result: Photo[] = [];
             let examined = 0;
+            const period = query.month || query.year;
+            const inPeriod = (item: Placeholder) => {
+                const date = item.captureTime.toISOString();
+                return (!query.year || date.startsWith(`${query.year}-`)) && (!query.month || date.startsWith(`${query.month}-`));
+            };
+            const periodEnded = () => !!period && !!collection.frontier &&
+                collection.frontier.toISOString().slice(0, period.length) < period &&
+                !collection.entries.slice(offset).some(inPeriod);
             while (result.length < limit && examined < 600) {
+                if (periodEnded()) break;
                 while (collection.entries.length < offset + 30 && !collection.done) {
                     let next: IteratorResult<Placeholder>;
                     try { next = await collection.iterator.next(); }
@@ -178,10 +187,15 @@ export class PhotoLibrary {
                         // here, instead of mistaking that closure for the end.
                         collection.iterator = key ? client.iterateAlbum(key, signal)[Symbol.asyncIterator]()
                             : client.iterateTimeline(signal)[Symbol.asyncIterator]();
+                        collection.frontier = undefined;
                         throw error;
                     }
                     signal.throwIfAborted();
                     if (next.done) { collection.done = true; break; }
+                    // Both public SDK iterators are capture-time descending.
+                    // Track their frontier separately: events can insert an old
+                    // photo ahead of matching photos not yet yielded by the SDK.
+                    collection.frontier = next.value.captureTime;
                     if (!collection.seen.has(next.value.nodeUid)) {
                         collection.seen.add(next.value.nodeUid);
                         collection.entries.push(next.value);
@@ -191,10 +205,6 @@ export class PhotoLibrary {
                 if (!batch.length) break;
                 // The SDK's timeline/album placeholders already include dates.
                 // Jumping to an older year must not decrypt every newer photo.
-                const inPeriod = (item: Placeholder) => {
-                    const date = item.captureTime.toISOString();
-                    return (!query.year || date.startsWith(`${query.year}-`)) && (!query.month || date.startsWith(`${query.month}-`));
-                };
                 const missing = batch.filter(p => inPeriod(p) && !this.nodes.has(p.nodeUid)).map(p => p.nodeUid);
                 for await (const node of client.iterateNodes(missing, signal)) {
                     signal.throwIfAborted();
@@ -214,7 +224,7 @@ export class PhotoLibrary {
                     result.push(photo);
                 }
             }
-            return { photos: result, nextCursor: collection.done && offset >= collection.entries.length
+            return { photos: result, nextCursor: periodEnded() || collection.done && offset >= collection.entries.length
                 ? null : `${this.revision}:${offset}`, revision: this.revision };
         });
     }
