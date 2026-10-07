@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import traceback
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ui"))
@@ -184,9 +185,30 @@ def scenario(app):
             check("loading cancellation ignores late callbacks", not page._loading and not page._loading_box.get_visible() and not page._listing_id)
             page.activate()
             wait(lambda: not page._loading)
+            # Hold completion callbacks across an account reset. The actual
+            # service's cancellation is covered above; these emulate delayed
+            # replies already queued on the GTK client side.
+            delayed = {}
+            def hold_start(_source, _uids, finished, failed):
+                delayed["start_ok"], delayed["start_error"] = finished, failed
+            def hold_cancel(_uid, finished, failed):
+                delayed["cancel_ok"], delayed["cancel_error"] = finished, failed
+            with patch.object(client, "start_trash_restore", hold_start):
+                page._start_restore("photos", ["live"])
+            cancel_button = Gtk.Button(label="Cancel")
+            with patch.object(client, "cancel_trash_restore", hold_cancel):
+                page._cancel_restore(cancel_button, "delayed-job")
             call(client.logout)
             wait(lambda: not window.account_logged_in)
             check("sign-out returns home and clears Trash state", window._nav.get_visible_page().get_tag() == "main" and not page._items and not page._job_rows)
+            jobs_request = page._jobs_request
+            delayed["start_ok"](None)
+            delayed["cancel_ok"](None)
+            pump()
+            check("late restore and cancellation replies after sign-out do not fetch jobs", page._jobs_request == jobs_request)
+            delayed["start_error"]("Old restore error")
+            delayed["cancel_error"]("Old cancellation error")
+            check("late restore errors after sign-out cannot repopulate the page", not page._message.get_visible() and not cancel_button.get_sensitive())
         finally:
             if window: window.destroy()
             client.stop()

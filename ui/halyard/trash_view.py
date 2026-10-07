@@ -18,6 +18,7 @@ class TrashPage(Adw.NavigationPage):
         self._listing_id = ""
         self._request = 0
         self._jobs_request = 0
+        self._account_generation = 0
         self._loading = False
         self._starting = False
         self._restoring = False
@@ -100,6 +101,7 @@ class TrashPage(Adw.NavigationPage):
         self._update_restore()
 
     def reset(self) -> None:
+        self._account_generation += 1
         self.deactivate()
         self._jobs_request += 1
         if self._dialog: self._dialog.close()
@@ -221,17 +223,18 @@ class TrashPage(Adw.NavigationPage):
 
     def _start_restore(self, source: str, uids: list[str]) -> None:
         if self._starting or self._restoring or self._disposed: return
+        generation = self._account_generation
         self._starting = True
         self._update_restore()
 
         def finished(_job):
-            if self._disposed: return
+            if self._disposed or generation != self._account_generation: return
             self._starting = False
             self._load_jobs()
             self._update_restore()
 
         def failed(message):
-            if self._disposed: return
+            if self._disposed or generation != self._account_generation: return
             self._starting = False
             self._error(message)
             self._update_restore()
@@ -239,6 +242,7 @@ class TrashPage(Adw.NavigationPage):
         self._client.start_trash_restore(source, uids, finished, failed)
 
     def _load_jobs(self) -> None:
+        if self._disposed or not self._window.account_logged_in: return
         self._jobs_request += 1
         request = self._jobs_request
         def finished(jobs):
@@ -248,7 +252,7 @@ class TrashPage(Adw.NavigationPage):
     def _on_jobs(self, _client, jobs) -> None:
         self._jobs_request += 1
         was_running = self._restoring
-        if self._disposed: return
+        if self._disposed or not self._window.account_logged_in: return
         self._render_jobs(jobs)
         if was_running and not self._restoring and self._active and self._window.account_logged_in: self.reload()
 
@@ -292,10 +296,15 @@ class TrashPage(Adw.NavigationPage):
             row.add_row(entry)
 
     def _cancel_restore(self, button, uid: str) -> None:
+        generation = self._account_generation
         button.set_sensitive(False)
         button.set_label("Cancelling…")
+        def finished(_result):
+            if self._disposed or generation != self._account_generation: return
+            self._load_jobs()
         def failed(message):
+            if self._disposed or generation != self._account_generation: return
             button.set_sensitive(True)
             button.set_label("Cancel")
             self._error(message)
-        self._client.cancel_trash_restore(uid, lambda _result: self._load_jobs(), failed)
+        self._client.cancel_trash_restore(uid, finished, failed)

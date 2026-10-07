@@ -83,7 +83,8 @@ with no new plaintext metadata persistence.
 duplicates are removed. It returns promptly while one restore job runs in the
 background. The daemon refreshes/revalidates nodes before mutation, restores
 selected parents before their children, and includes related photo assets
-(up to 1,000 total items). Already-live items are reported `alreadyRestored`.
+(up to 1,000 total items). Selecting a photo companion also follows its main
+photo and that photo's other assets. Already-live items are reported `alreadyRestored`.
 A trashed/missing parent produces a per-item failure: restore the parent
 first, or use the web app if the original location is unavailable. The SDK's
 `restoreNodes` restores to original locations; Halyard does not rename, move,

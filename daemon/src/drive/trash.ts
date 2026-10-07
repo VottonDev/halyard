@@ -178,7 +178,12 @@ export class TrashRecovery {
                     if (!node.trashTime) result.status = 'alreadyRestored';
                     else nodes.set(node.uid, node);
                     if (job.source === 'photos' && node.type === 'photo') {
-                        for (const uid of (node as PhotoNode).photo?.relatedPhotoNodeUids ?? []) {
+                        const photo = (node as PhotoNode).photo;
+                        // Trash may return a companion directly. Follow its
+                        // main photo as well as that photo's other assets.
+                        const family = [...(photo?.relatedPhotoNodeUids ?? []),
+                            ...(photo?.mainPhotoNodeUid ? [photo.mainPhotoNodeUid] : [])];
+                        for (const uid of family) {
                             if (job.results.some(entry => entry.uid === uid)) continue;
                             if (job.results.length >= 1000) throw new Error('This selection has too many related photo assets. Restore fewer photos at once.');
                             related.add(uid);

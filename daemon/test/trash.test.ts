@@ -210,6 +210,17 @@ describe('Trash recovery using public SDK stand-ins', () => {
         expect(after[0].source).toBe('photos');
     });
 
+    test('selecting a photo companion follows its main photo and restores the whole family once', async () => {
+        const main = node('main', 'photo'); main.photo.relatedPhotoNodeUids = ['video', 'still'];
+        const video = node('video', 'photo'); video.photo.mainPhotoNodeUid = 'main';
+        const still = node('still', 'photo'); still.photo.mainPhotoNodeUid = 'main';
+        const { recovery, photos } = fixture([], [main, video, still]);
+        await recovery.list({ source: 'photos', requestId: 'companions' });
+        const job = await run(recovery, 'photos', ['video']);
+        expect(results(job)).toEqual({ video: 'restored', main: 'restored', still: 'restored' });
+        expect(photos!.calls.flat().sort()).toEqual(['main', 'still', 'video']);
+    });
+
     test('a refresh failure does not erase a successful remote restore', async () => {
         const drive = new OfflineTrash([node('file')]);
         const recovery = new TrashRecovery(async () => drive, async () => {}, async () => { throw new Error('offline'); });

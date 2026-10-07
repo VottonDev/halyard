@@ -982,7 +982,9 @@ class MockDaemon:
         if any(job["status"] == "running" for job in self.trash_restores): raise ValueError("Wait for the current restore to finish or cancel it.")
         if source not in self.trash_items or not isinstance(uids, list) or not 1 <= len(uids) <= 100: raise ValueError("Select between 1 and 100 items to restore.")
         chosen = list(dict.fromkeys(uids))
-        if source == "photos" and "live" in chosen and "companion" not in chosen: chosen.append("companion")
+        if source == "photos" and any(uid in chosen for uid in ("live", "companion")):
+            for uid in ("live", "companion"):
+                if uid not in chosen: chosen.append(uid)
         results = []
         for uid in chosen:
             entry = next((entry for entry in self.trash_items[source] if entry["uid"] == uid), None)
