@@ -437,3 +437,73 @@ describe('a path that changed kind on one side', () => {
         expect(conflicts).toHaveLength(1);
     });
 });
+
+describe('indexed moves and protected ancestors', () => {
+    test('nested moves collapse regardless of enumeration order; unrelated destinations survive', () => {
+        const paths = ['A/sub/file', 'A/sub', 'A/elsewhere', 'A', 'AB/file', 'C'];
+        const destinations = ['B/sub/file', 'B/sub', 'outside', 'B', 'AB/renamed', 'D'];
+        const folders = new Set(['A', 'A/sub', 'C']);
+        const base = paths.map((path, i) => baseFile(path, {
+            type: folders.has(path) ? 'folder' : 'file', localInode: i + 10,
+        }));
+        const local = paths.map((path, i) => localFile(path, {
+            type: folders.has(path) ? 'folder' : 'file', inode: i + 10,
+        }));
+        const remote = paths.map((path, i) => remoteFile(destinations[i]!, {
+            type: folders.has(path) ? 'folder' : 'file', uid: `vol~${path}`,
+        }));
+        expect(run(base, local, remote).actions).toEqual([
+            { kind: 'moveLocal', from: 'A/elsewhere', to: 'outside' },
+            { kind: 'moveLocal', from: 'A', to: 'B' },
+            { kind: 'moveLocal', from: 'C', to: 'D' },
+            { kind: 'moveLocal', from: 'AB/file', to: 'AB/renamed' },
+        ]);
+    });
+
+    for (const side of ['local', 'remote'] as const) {
+        test(`${side} edits protect nested ancestors without protecting sibling prefixes`, () => {
+            const folders = ['A', 'A/sub', 'AB', 'untouched'];
+            const base = folders.map(path => baseFile(path, { type: 'folder' }));
+            base.push(baseFile('A/sub/edit', { localInode: 30 }));
+            base.push(baseFile('untouched/file', { localInode: 31 }));
+            const local = folders.map(path => localFile(path, { type: 'folder' }));
+            local.push(localFile('A/sub/edit', { inode: 30, size: 20 }));
+            local.push(localFile('A/sub/new', { inode: 32 }));
+            local.push(localFile('untouched/file', { inode: 31 }));
+            const remote = folders.map(path => remoteFile(path, { type: 'folder' }));
+            remote.push(remoteFile('A/sub/edit', { revisionUid: 'rev2' }));
+            remote.push(remoteFile('A/sub/new'));
+            remote.push(remoteFile('untouched/file'));
+            const { actions } = run(base, side === 'local' ? local : [], side === 'remote' ? remote : []);
+            const resurrect = side === 'local' ? 'createRemoteFolder' : 'createLocalFolder';
+            expect(actions).toContainEqual({ kind: resurrect, path: 'A' });
+            expect(actions).toContainEqual({ kind: resurrect, path: 'A/sub' });
+            for (const path of ['AB', 'untouched']) {
+                expect(actions).toContainEqual(side === 'local'
+                    ? { kind: 'deleteLocal', path, type: 'folder' }
+                    : { kind: 'trashRemote', path, remoteUid: `vol~${path}` });
+            }
+            expect(actions).toContainEqual(side === 'local'
+                ? { kind: 'upload', path: 'A/sub/edit', existingRemoteUid: null }
+                : { kind: 'download', path: 'A/sub/edit', remoteUid: 'vol~A/sub/edit', revisionUid: 'rev2' });
+        });
+    }
+
+    test('hash fallback leaves unchanged descendants eligible for deletion', () => {
+        const base = ['A', 'A/sub'].map(path => baseFile(path, { type: 'folder' }));
+        base.push(baseFile('A/sub/file'));
+        const local = ['A', 'A/sub'].map(path => localFile(path, { type: 'folder' }));
+        local.push(localFile('A/sub/file', { mtime: 2000, hash: undefined }));
+        const queried: string[] = [];
+        const plan = reconcile({
+            base: new Map(base.map(item => [item.path, item])),
+            local: new Map(local.map(item => [item.path, item])),
+            remote: new Map(), now: NOW,
+            localHashOf: path => { queried.push(path); return 'aaa'; },
+        });
+        expect(plan.actions.filter(action => action.kind === 'createRemoteFolder')).toEqual([]);
+        expect(plan.actions).toContainEqual({ kind: 'deleteLocal', path: 'A', type: 'folder' });
+        expect(queried.every(path => path === 'A/sub/file')).toBe(true);
+        expect(queried.length).toBeGreaterThan(0);
+    });
+});

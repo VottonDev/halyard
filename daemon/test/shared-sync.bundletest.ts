@@ -672,3 +672,106 @@ for (const kind of ['upload', 'download'] as const) {
         });
     }
 }
+
+/** Real filesystem deletion races, with no Drive account or requests. */
+async function withDeletionPlan(run: (fixture: {
+    root: string; db: SQLiteDb; pair: Pair; actions: import('../src/engine/types.js').Action[];
+    execute: (client?: ProtonDriveClient) => Promise<import('../src/engine/execute.js').ExecuteResult>;
+}) => Promise<void>): Promise<void> {
+    const { Executor } = await import('../src/engine/execute.js');
+    const { scanLocal } = await import('../src/engine/localScan.js');
+    const { reconcile } = await import('../src/engine/reconcile.js');
+    const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'halyard-delete-race-'));
+    const root = path.join(directory, 'local');
+    await fsp.mkdir(path.join(root, 'folder'), { recursive: true });
+    for (const file of ['folder/file.txt', 'standalone.txt']) await fsp.writeFile(path.join(root, file), 'old');
+    const db = new SyncDatabase(path.join(directory, 'state.sqlite'));
+    const pair: Pair = { id: 'deletion', localPath: root, remoteUid: 'root', remotePath: 'root',
+        enabled: true, excludes: [], treeEventScopeId: null, eventCursor: null,
+        seeded: true, createdAt: 0, lastSyncAt: null };
+    try {
+        db.insertPair(pair);
+        const local = await scanLocal(root);
+        for (const item of local.values()) db.setBaseEntry(pair.id, {
+            path: item.path, type: item.type, localMtime: item.mtime, localSize: item.size,
+            localInode: item.inode, localDevice: item.device,
+            localHash: item.type === 'file' ? createHash('sha1').update('old').digest('hex') : null,
+            remoteUid: `uid-${item.path}`, remoteRevisionUid: 'rev1', remoteHash: null,
+            remoteSize: item.size, remoteMtime: item.mtime,
+        });
+        const remote = new Map();
+        const { actions } = reconcile({ local, base: db.getBase(pair.id), remote, now: 0 });
+        await run({ root, db, pair, actions,
+            execute: (client = {} as ProtonDriveClient) => new Executor({ pair, db, client, local, remote }).run(actions) });
+    } finally {
+        db.close();
+        await fsp.rm(directory, { recursive: true, force: true });
+    }
+}
+
+test('post-scan edits survive parent deletion and retain durable base', async () => {
+    await withDeletionPlan(async ({ root, db, pair, execute }) => {
+        for (const file of ['folder/file.txt', 'standalone.txt']) await fsp.writeFile(path.join(root, file), 'unsynced after scan');
+        assert.deepEqual((await execute()).failed, []);
+        for (const file of ['folder/file.txt', 'standalone.txt']) assert.equal(await fsp.readFile(path.join(root, file), 'utf8'), 'unsynced after scan');
+        assert.deepEqual([...db.getBase(pair.id).keys()].sort(), ['folder', 'folder/file.txt', 'standalone.txt']);
+    });
+});
+
+test('new post-scan child defers its folder without blocking unrelated deletes', async () => {
+    await withDeletionPlan(async ({ root, db, pair, execute }) => {
+        await fsp.writeFile(path.join(root, 'folder/new.txt'), 'new work');
+        assert.deepEqual((await execute()).failed, []);
+        assert.equal(await fsp.readFile(path.join(root, 'folder/new.txt'), 'utf8'), 'new work');
+        assert.deepEqual([...db.getBase(pair.id).keys()], ['folder']);
+        await assert.rejects(fsp.stat(path.join(root, 'standalone.txt')), { code: 'ENOENT' });
+    });
+});
+
+test('failed child deletion preserves parent and base while unrelated deletes finish', async (t) => {
+    await withDeletionPlan(async ({ root, db, pair, execute }) => {
+        const originalRm = fsp.rm;
+        t.mock.method(fsp, 'rm', async (...args: Parameters<typeof fsp.rm>) => {
+            if (args[0] === path.join(root, 'folder/file.txt')) {
+                throw Object.assign(new Error('Permission denied'), { code: 'EACCES' });
+            }
+            return originalRm(...args);
+        });
+        const result = await execute();
+        t.mock.restoreAll();
+        assert.equal(result.failed.length, 1);
+        assert.equal(result.failed[0]!.action.kind, 'deleteLocal');
+        assert.equal(await fsp.readFile(path.join(root, 'folder/file.txt'), 'utf8'), 'old');
+        assert.deepEqual([...db.getBase(pair.id).keys()].sort(), ['folder', 'folder/file.txt']);
+        await assert.rejects(fsp.stat(path.join(root, 'standalone.txt')), { code: 'ENOENT' });
+    });
+});
+
+test('ordinary empty-tree deletion removes tree and durable base', async () => {
+    await withDeletionPlan(async ({ root, db, pair, execute }) => {
+        assert.deepEqual((await execute()).failed, []);
+        assert.deepEqual(await fsp.readdir(root), []);
+        assert.equal(db.getBase(pair.id).size, 0);
+    });
+});
+
+test('failed remote trash retains child and ancestor base without blocking unrelated trash', async () => {
+    await withDeletionPlan(async ({ db, pair, actions, execute }) => {
+        actions.splice(0, actions.length,
+            { kind: 'trashRemote', path: 'folder/file.txt', remoteUid: 'child' },
+            { kind: 'trashRemote', path: 'folder', remoteUid: 'parent' },
+            { kind: 'trashRemote', path: 'standalone.txt', remoteUid: 'other' },
+            { kind: 'dropBase', path: 'folder/file.txt' },
+            { kind: 'dropBase', path: 'folder' },
+            { kind: 'dropBase', path: 'standalone.txt' });
+        const requested: string[] = [];
+        const client = { async *trashNodes(uids: string[]) {
+            requested.push(...uids);
+            if (uids[0] === 'child') yield { ok: false, error: new Error('Permission denied') };
+            else yield { ok: true, uid: uids[0] };
+        } } as unknown as ProtonDriveClient;
+        assert.equal((await execute(client)).failed.length, 1);
+        assert.deepEqual(requested, ['child', 'other']);
+        assert.deepEqual([...db.getBase(pair.id).keys()].sort(), ['folder', 'folder/file.txt']);
+    });
+});
