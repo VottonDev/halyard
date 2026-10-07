@@ -679,7 +679,7 @@ export class PhotoLibrary {
     /** A user-requested restore invalidates gallery views, not the event cursor. */
     async refreshRestored(): Promise<void> {
         await this.exclusive(async () => {
-            this.collections.clear(); this.nodes.clear(); this.albums = null;
+            this.collections.clear(); this.nodes.clear();
             this.thumbnails.clear(); this.thumbnailBytes = 0;
             this.changed(++this.revision);
         });

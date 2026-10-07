@@ -23,7 +23,8 @@ function fixture() {
         getClient() { if (!signedIn) throw new Error('Not signed in to Proton Drive'); return {}; },
         async logout() { await signOut; signedIn = false; },
     } as any, () => {}, photos as any, { stop: async () => {} } as any,
-    { stop: async () => {} } as any, { stop: async () => {} } as any);
+    { stop: async () => {} } as any, { stop: async () => {} } as any,
+    { stop: async () => {} } as any);
     return { iface, calls, album, partial, releaseSignOut };
 }
 

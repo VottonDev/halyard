@@ -53,16 +53,16 @@ describe('photo library', () => {
         const library = new PhotoLibrary(async () => g.client, () => changed++);
         try {
             const first = await library.list({ limit: 10 });
-            g.nodes.set('photo-100', photo(100));
+            g.nodes.set('own~photo-100', photo(100));
             await library.refreshRestored();
             expect(g.walks()).toBe(1); expect(changed).toBe(1);
             await expect(library.list({ cursor: first.nextCursor! })).rejects.toThrow('changed');
             const refreshed = await library.list({ limit: 100 });
-            expect(refreshed.photos.some(p => p.uid === 'photo-100')).toBe(true);
+            expect(refreshed.photos.some(p => p.uid === 'own~photo-100')).toBe(true);
             expect(g.walks()).toBe(2);
-            g.nodes.delete('photo-2');
-            await g.event({ type: 'node_deleted', nodeUid: 'photo-2', eventId: 'restored-followup' });
-            expect((await library.list({ limit: 100 })).photos.some(p => p.uid === 'photo-2')).toBe(false);
+            g.nodes.delete('own~photo-2');
+            await g.event({ type: 'node_deleted', nodeUid: 'own~photo-2', eventId: 'restored-followup' });
+            expect((await library.list({ limit: 100 })).photos.some(p => p.uid === 'own~photo-2')).toBe(false);
             expect(g.walks()).toBe(2);
         } finally { library.reset(); }
     });
