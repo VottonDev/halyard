@@ -412,10 +412,12 @@ type PhotoManagementResult = {
 };
 ```
 
-The UI processes larger selections in sequential calls of at most 100 photos,
+The UI processes larger selections in sequential calls of 25 photos,
 with a unique operation ID per call. It keeps confirmed outcomes across batches,
 stops sending new batches on cancellation or a request error, and refreshes once
-at the end. Only confirmed album additions clear their selection.
+at the end. Management calls allow five minutes for fresh metadata, related
+assets and preservation; cancellation remains available while waiting.
+Only confirmed album additions clear their selection.
 
 Albums include accepted albums shared with the user. `canWrite` reflects the
 highest accessible SDK role, including inherited editor/admin access. Only

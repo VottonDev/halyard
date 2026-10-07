@@ -311,7 +311,7 @@ def run_bulk(app):
         adjustment.set_value((adjustment.get_upper() - adjustment.get_page_size()) * .55); pump(.3)
         position = adjustment.get_value()
         view._manage(view.selected_items(), "add", album=album); finished()
-        check("290-photo selection is added in sequential 100/100/90 requests", [len(r["uids"]) for r in requests] == [100,100,90] and len({r["operationId"] for r in requests}) == 3 and members(album) == {p.uid for p in items})
+        check("290-photo selection is added in sequential 25-photo requests", [len(r["uids"]) for r in requests] == [25]*11+[15] and len({r["operationId"] for r in requests}) == 12 and members(album) == {p.uid for p in items})
         check("bulk add clears successes and refreshes once without losing position", not view._selected and view._selecting and len(refreshes) == 1 and abs(adjustment.get_value() - position) < 2)
         items = photos[:290]
         select(items)
@@ -319,7 +319,7 @@ def run_bulk(app):
         view._tile_clicked(failing); view._tile_clicked(failing)
         album = destination("Partial batch")
         view._manage(view.selected_items(), "add", album=album); finished()
-        check("per-item batch failure continues and retains only the failed selection", len(requests) == 3 and len(refreshes) == 1 and view._selected == {failing.uid} and view._selection_anchor == failing.uid and len(view._management_errors) == 1 and members(album) == {p.uid for p in items} - {failing.uid})
+        check("per-item batch failure continues and retains only the failed selection", len(requests) == 12 and len(refreshes) == 1 and view._selected == {failing.uid} and view._selection_anchor == failing.uid and len(view._management_errors) == 1 and members(album) == {p.uid for p in items} - {failing.uid})
         select(items)
         album = destination("Transport failure")
         def fail_second(query, on_ok, on_err):
@@ -330,7 +330,7 @@ def run_bulk(app):
         client.manage_photos = fail_second
         view._manage(view.selected_items(), "add", album=album); finished()
         successful = set(requests[0]["uids"])
-        check("later request failure keeps earlier additions and unattempted selection", len(requests) == 2 and len(refreshes) == 1 and members(album) == successful and view._selected == {p.uid for p in items} - successful and len(view._management_errors) == 190 and any("100 of 290" in message for message in messages))
+        check("later request failure keeps earlier additions and unattempted selection", len(requests) == 2 and len(refreshes) == 1 and members(album) == successful and view._selected == {p.uid for p in items} - successful and len(view._management_errors) == 265 and any("25 of 290" in message for message in messages))
         select(items)
         album = destination("Cancel between batches")
         def cancel_after_reply(query, on_ok, on_err):
@@ -342,7 +342,7 @@ def run_bulk(app):
         client.manage_photos = cancel_after_reply
         view._manage(view.selected_items(), "add", album=album); finished()
         successful = set(requests[0]["uids"])
-        check("cancel after a completed batch prevents all later batches", len(requests) == 1 and len(refreshes) == 1 and members(album) == successful and view._selected == {p.uid for p in items} - successful and len(view._management_errors) == 190 and any("Cancelled. 100 of 290" in message for message in messages))
+        check("cancel after a completed batch prevents all later batches", len(requests) == 1 and len(refreshes) == 1 and members(album) == successful and view._selected == {p.uid for p in items} - successful and len(view._management_errors) == 265 and any("Cancelled. 25 of 290" in message for message in messages))
     finally:
         if window: window.destroy()
         client.stop(); mock.terminate(); mock.wait(timeout=5); pump(.2)

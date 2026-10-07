@@ -44,6 +44,7 @@ INTERFACE = "io.github.votton.Halyard.Daemon"
 DEFAULT_TIMEOUT_MS = 30_000
 # Remote listings and login handshakes talk to Proton over the network.
 SLOW_TIMEOUT_MS = 120_000
+PHOTO_MANAGEMENT_TIMEOUT_MS = 300_000
 
 OkCallback = Callable[[Any], None]
 ErrCallback = Callable[[str], None]
@@ -271,7 +272,7 @@ class DaemonClient(GObject.Object):
 
     def manage_photos(self, request: dict, on_ok: OkCallback, on_err: ErrCallback) -> None:
         self._call("ManagePhotos", GLib.Variant("(s)", [json.dumps(request)]), parse=PhotoManagementResult.from_json,
-                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+                   on_ok=on_ok, on_err=on_err, timeout_ms=PHOTO_MANAGEMENT_TIMEOUT_MS)
 
     def cancel_photo_operation(self, operation_id: str, on_err: ErrCallback) -> None:
         self._call("CancelPhotoOperation", GLib.Variant("(s)", [operation_id]), on_err=on_err)

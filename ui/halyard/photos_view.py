@@ -1069,7 +1069,9 @@ class PhotosView(Gtk.Box):
             if not current(): return
             if self._management_cancelled:
                 finish("Cancelled before this photo was updated."); return
-            batch = items[next_index:next_index + 100]
+            # Fresh metadata, linked assets and preservation can take several
+            # requests per photo. Keep progress and cancellation responsive.
+            batch = items[next_index:next_index + 25]
             batch_id = self._management_id
             request = {"operationId": batch_id, "action": action, "uids": [p.uid for p in batch]}
             if album: request["albumUid"] = album.uid
