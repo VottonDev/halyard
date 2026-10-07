@@ -157,7 +157,7 @@ def generated_inputs(folder):
     return paths, inputs, expected
 
 
-def gtk_checks(video_name=None):
+def gtk_checks(video_name=None, scroll=False):
     os.environ["HALYARD_BUS_NAME"] = BUS
     from gi.repository import Adw, Gtk
     from halyard.dbus_client import DaemonClient
@@ -201,6 +201,34 @@ def gtk_checks(video_name=None):
         wait(lambda: not view._thumb_idle and not view._thumb_busy and not view._thumb_waiters)
         pictures = [w for w in descendants(view._list) if isinstance(w, Gtk.Picture) and w.get_mapped()]
         check("real thumbnails paint on first load", bool(pictures) and any(p.get_paintable() for p in pictures))
+        if scroll:
+            view._select_button.emit("clicked")
+            view._tile_clicked(view._photos[0])
+            selected = set(view._selected)
+            adjustment = view._scrolled.get_vadjustment()
+            wait(lambda: adjustment.get_page_size() > 0)
+            for index in range(3):
+                if not view._next_cursor: break
+                before = len(view._photos)
+                started = time.monotonic()
+                adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 100)
+                wait(lambda: (len(view._photos) > before and not view._loading) or view._page_error or not view._next_cursor)
+                check(f"real scroll appends page {index + 1}", not view._page_error and len(view._photos) > before and not view._more.get_visible(), f"{len(view._photos)} photos; {time.monotonic() - started:.2f}s")
+                check("real scroll retains unique photos and selection", len({p.uid for p in view._photos}) == len(view._photos) and view._selected == selected and view._selecting)
+                wait(lambda: not view._thumb_idle and not view._thumb_busy and not view._thumb_waiters)
+            view._select_button.emit("clicked")
+            view._date_button.emit("clicked")
+            wait(lambda: window.get_visible_dialog() is not None)
+            alert = window.get_visible_dialog()
+            year = next(w for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.SpinButton))
+            year.set_value(2017)
+            started = time.monotonic()
+            next(w for w in descendants(alert) if isinstance(w, Gtk.Button) and w.get_label() == alert.get_response_label("show")).emit("clicked")
+            wait(lambda: view._year == "2017" and not view._loading)
+            check("real year jump shows only the requested year", not view._page_error and all(datetime.fromtimestamp(p.capture_time / 1000, timezone.utc).year == 2017 for p in view._photos), f"{len(view._photos)} photos; {time.monotonic() - started:.2f}s")
+            view._period_banner.emit("button-clicked")
+            wait(lambda: not view._loading)
+            check("real All dates returns to the timeline", not view._year and not view._month and bool(view._photos))
         still = next((p for p in view._photos if not p.is_video), view._photos[0])
         window.open_photo(still, tuple(view._photos))
         preview = window._preview_page
@@ -307,6 +335,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--writes", action="store_true")
     parser.add_argument("--gtk", action="store_true", help="also check GTK rendering on the available display")
+    parser.add_argument("--scroll", action="store_true", help="read-only GTK scrolling and year-jump checks on the real library")
     parser.add_argument("--video", nargs="?", const="", help="also test GTK video playback and seeking, optionally searching by filename")
     args = parser.parse_args()
     proxy = Gio.DBusProxy.new_for_bus_sync(Gio.BusType.SESSION, Gio.DBusProxyFlags.DO_NOT_AUTO_START, None, BUS, OBJECT, BUS, None)
@@ -318,8 +347,8 @@ def main():
         raise SystemExit("The real daemon is not signed in")
     try:
         read_checks(proxy)
-        if args.gtk or args.video is not None:
-            gtk_checks(args.video)
+        if args.gtk or args.scroll or args.video is not None:
+            gtk_checks(args.video, args.scroll)
         if args.writes:
             write_checks(proxy)
     except Exception as error:

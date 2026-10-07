@@ -52,8 +52,11 @@ class PhotosView(Gtk.Box):
         self._selecting = False
         self._loaded = False
         self._loading = False
+        self._active = False
         self._albums_mode = False
         self._album: PhotoAlbum | None = None
+        self._year: str | None = None
+        self._month: str | None = None
         self._next_cursor: str | None = None
         self._request = 0
         self._revision = -1
@@ -63,6 +66,8 @@ class PhotosView(Gtk.Box):
         self._thumb_busy = False
         self._thumb_idle = 0
         self._search_timeout = 0
+        self._scroll_load_source = 0
+        self._page_error = False
         self._tile_checks: dict[str, list[Gtk.CheckButton]] = {}
         self._updating_checks = False
         self._columns = 5
@@ -77,11 +82,14 @@ class PhotosView(Gtk.Box):
         self._changed_handler = client.connect("photos-changed", self._on_library_changed)
 
         self._changed_banner = Adw.Banner(title="Your photo library changed", button_label="Reload")
-        self._changed_banner.connect("button-clicked", lambda *_: self.reload())
+        self._changed_banner.connect("button-clicked", lambda *_: self.reload(preserve=True))
         self.append(self._changed_banner)
         self._management_error_banner = Adw.Banner(title="Some photo changes could not be completed", button_label="Details")
         self._management_error_banner.connect("button-clicked", lambda *_: self.show_management_errors())
         self.append(self._management_error_banner)
+        self._period_banner = Adw.Banner(button_label="All dates")
+        self._period_banner.connect("button-clicked", lambda *_: self.clear_period())
+        self.append(self._period_banner)
 
         heading = Gtk.Box(spacing=12)
         self._heading = Gtk.Label(label="Photos", xalign=0, hexpand=True)
@@ -90,6 +98,9 @@ class PhotosView(Gtk.Box):
         search = Gtk.ToggleButton(icon_name="system-search-symbolic", tooltip_text="Search by file name")
         search.connect("toggled", lambda button: self._search_bar.set_search_mode(button.get_active()))
         heading.append(search)
+        self._date_button = Gtk.Button(icon_name="x-office-calendar-symbolic", tooltip_text="Jump to year or month…")
+        self._date_button.connect("clicked", lambda *_: self.jump_to_date())
+        heading.append(self._date_button)
         self._upload_button = Gtk.Button(icon_name="document-send-symbolic", tooltip_text="Upload photos…")
         self._upload_button.connect("clicked", self._choose_upload)
         heading.append(self._upload_button)
@@ -149,7 +160,7 @@ class PhotosView(Gtk.Box):
         self._stack.add_named(self._empty, "empty")
         self._error = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Could not load photos")
         retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
-        retry.connect("clicked", lambda *_: self.reload())
+        retry.connect("clicked", lambda *_: self.reload(preserve=True))
         self._error.set_child(retry)
         self._stack.add_named(self._error, "error")
 
@@ -162,8 +173,12 @@ class PhotosView(Gtk.Box):
         self._list.add_css_class("halyard-photo-list")
         self._scrolled = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         self._scrolled.set_child(self._list)
+        adjustment = self._scrolled.get_vadjustment()
+        adjustment.connect("value-changed", self._schedule_scroll_load)
+        adjustment.connect("changed", self._schedule_scroll_load)
+        self._scrolled.connect("map", self._schedule_scroll_load)
         adaptive = Adw.BreakpointBin(child=self._scrolled)
-        adaptive.set_size_request(280, -1)
+        adaptive.set_size_request(280, 200)
         for width, columns in ((850, 4), (650, 3), (450, 2)):
             breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(f"max-width: {width}sp"))
             breakpoint.add_setter(self, "columns", columns)
@@ -184,6 +199,14 @@ class PhotosView(Gtk.Box):
         self._more.set_margin_top(8)
         self._more.set_margin_bottom(8)
         self.append(self._more)
+        self._page_loading = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER, visible=False)
+        spinner = Adw.Spinner()
+        spinner.set_size_request(20, 20)
+        self._page_loading.append(spinner)
+        self._page_loading.append(Gtk.Label(label="Loading more photos…"))
+        self._page_loading.set_margin_top(8)
+        self._page_loading.set_margin_bottom(8)
+        self.append(self._page_loading)
         self._selection_bar = Gtk.ActionBar(revealed=False)
         self._selection_label = Gtk.Label(xalign=0)
         self._selection_bar.pack_start(self._selection_label)
@@ -236,8 +259,15 @@ class PhotosView(Gtk.Box):
         widget.set_margin_bottom(vertical)
 
     def activate(self) -> None:
+        self._active = True
         if not self._loaded:
             self.reload()
+        elif self._year and not self._photos and self._next_cursor and not self._page_error and not self._loading:
+            self._load(more=True)
+        self._schedule_scroll_load()
+
+    def deactivate(self) -> None:
+        self._active = False
 
     def reset(self) -> None:
         if self._management_id and self.client.available:
@@ -254,6 +284,12 @@ class PhotosView(Gtk.Box):
         self._request += 1
         self._loaded = False
         self._loading = False
+        self._page_error = False
+        self._page_loading.set_visible(False)
+        self._more.set_visible(False)
+        if self._scroll_load_source:
+            GLib.source_remove(self._scroll_load_source)
+            self._scroll_load_source = 0
         self._photos.clear()
         self._selected.clear()
         self._textures.clear()
@@ -265,6 +301,8 @@ class PhotosView(Gtk.Box):
         self._album_rows.clear()
         self._albums_mode = False
         self._album = None
+        self._year = None
+        self._month = None
         self._selecting = False
         self._upload_button.set_sensitive(True)
         self._trash_button.set_sensitive(True)
@@ -347,7 +385,7 @@ class PhotosView(Gtk.Box):
         if self._management_id and self.client.available:
             self.client.cancel_photo_operation(self._management_id, lambda _message: None)
         self.client.disconnect(self._changed_handler)
-        for source in (self._thumb_idle, self._search_timeout):
+        for source in (self._thumb_idle, self._search_timeout, self._scroll_load_source):
             if source:
                 GLib.source_remove(source)
         self._request += 1
@@ -379,6 +417,8 @@ class PhotosView(Gtk.Box):
         self._all_button.set_active(not self._albums_mode and self._album is None)
         self._albums_button.set_active(self._albums_mode or self._album is not None)
         self._kind.set_sensitive(not self._albums_mode)
+        self._date_button.set_visible(not self._albums_mode)
+        self._period_banner.set_revealed(bool(self._year) and not self._albums_mode)
         self._select_button.set_sensitive(not self._albums_mode)
         self._create_album_button.set_visible(self._albums_mode)
         self._create_album_button.set_sensitive(not self._management_busy)
@@ -397,12 +437,47 @@ class PhotosView(Gtk.Box):
             return False
         self._search_timeout = GLib.timeout_add(300, run)
 
+    def jump_to_date(self) -> None:
+        request = self._request
+        dialog = Adw.AlertDialog(heading="Jump to date", body="Choose a year and optionally a month to show photos from that period.")
+        group = Adw.PreferencesGroup()
+        year = Gtk.SpinButton.new_with_range(1, 9999, 1)
+        year.set_numeric(True)
+        year.set_value(int(self._year) if self._year else datetime.now().year)
+        year.set_valign(Gtk.Align.CENTER)
+        row = Adw.ActionRow(title="Year")
+        row.add_suffix(year); group.add(row)
+        month = Gtk.DropDown.new_from_strings(["All months"] + [datetime(2000, i, 1).strftime("%B") for i in range(1, 13)])
+        month.set_selected(int(self._month[-2:]) if self._month else 0)
+        month.set_valign(Gtk.Align.CENTER)
+        row = Adw.ActionRow(title="Month")
+        row.add_suffix(month); group.add(row)
+        dialog.set_extra_child(group)
+        dialog.add_response("cancel", "Cancel"); dialog.add_response("show", "Show photos")
+        dialog.set_response_appearance("show", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("show"); dialog.set_close_response("cancel")
+        def respond(_dialog, response):
+            if response != "show" or request != self._request or not self.window.account_logged_in: return
+            year.update()
+            self._year = f"{year.get_value_as_int():04d}"
+            self._month = f"{self._year}-{month.get_selected():02d}" if month.get_selected() else None
+            period = datetime(int(self._year), month.get_selected() or 1, 1).strftime("%B %Y") if self._month else self._year
+            self._period_banner.set_title(f"Showing {period}")
+            self._update_controls(); self.reload()
+        dialog.connect("response", respond); dialog.present(self.window)
+
+    def clear_period(self) -> None:
+        self._year = None; self._month = None
+        self._update_controls(); self.reload()
+
     def reload(self, preserve: bool = False) -> None:
         if not self.client.available or not self.window.account_logged_in:
             return
         self._request += 1
+        self._page_error = False
+        self._page_loading.set_visible(False)
         self._refresh_selection = set(self._selected) if preserve else None
-        self._refresh_position = self._scrolled.get_vadjustment().get_value() if preserve else None
+        self._refresh_position = self._scrolled.get_vadjustment().get_value() if preserve else 0
         self._refresh_count = len(self._photos) if preserve else 0
         self._loading = False
         self._loaded = True
@@ -439,10 +514,36 @@ class PhotosView(Gtk.Box):
         else:
             self._load()
 
+    def _schedule_scroll_load(self, *_args) -> None:
+        if not self._scroll_load_source:
+            # Let GTK finish allocating the appended rows before measuring
+            # the remaining space. This is driven by scrolling/layout events.
+            self._scroll_load_source = GLib.timeout_add(100, self._load_near_bottom)
+
+    def _load_near_bottom(self) -> bool:
+        self._scroll_load_source = 0
+        if (not self._active or not self._loaded or self._loading or self._albums_mode or not self._next_cursor or
+                not self._photos or self._page_error or self._management_busy or
+                not self._scrolled.get_mapped()):
+            return False
+        adjustment = self._scrolled.get_vadjustment()
+        viewport = adjustment.get_page_size()
+        remaining = adjustment.get_upper() - adjustment.get_value() - viewport
+        if viewport > 0 and remaining <= max(260, viewport / 2):
+            if self._latest_revision > self._revision:
+                target = len(self._photos) + 60
+                self.reload(preserve=True)
+                self._refresh_count = target
+            else:
+                self._load(more=True)
+        return False
+
     def _load(self, more: bool = False) -> None:
         if self._loading:
             return
         self._loading = True
+        self._page_error = False
+        self._page_loading.set_visible(more)
         request = self._request
         self._more.set_sensitive(False)
         if not more:
@@ -451,9 +552,25 @@ class PhotosView(Gtk.Box):
             if request != self._request:
                 return
             self._loading = False
-            self._more.set_sensitive(True)
+            self._page_loading.set_visible(False)
+            stale = more and (self._latest_revision > self._revision or
+                              "Your photo library changed." in message or
+                              "The photo page is no longer available." in message)
+            if stale and self._photos and self._refresh_selection is None:
+                # An album mutation's later SDK event can race continuation.
+                # Refresh once and refill the pages plus the requested page.
+                target = len(self._photos) + 60
+                self.reload(preserve=True)
+                self._refresh_count = target
+                return
+            self._page_error = True
             if self._photos:
-                self.window.toast(message)
+                self._display_photos()
+                if stale:
+                    self._changed_banner.set_revealed(True)
+                    self._more.set_visible(False)
+                else:
+                    self.window.toast(message)
             else:
                 self._error.set_description(message)
                 self._stack.set_visible_child_name("error")
@@ -484,39 +601,60 @@ class PhotosView(Gtk.Box):
                  "search": self._search_entry.get_text().strip()}
         if self._album:
             query["albumUid"] = self._album.uid
+        if self._year:
+            query["year"] = self._year
+        if self._month:
+            query["month"] = self._month
         if more and self._next_cursor:
             query["cursor"] = self._next_cursor
         def photos_ok(page: PhotoPage) -> None:
             if request != self._request:
                 return
             self._loading = False
+            self._page_loading.set_visible(False)
             known = {p.uid for p in self._photos}
             self._photos.extend(p for p in page.photos if p.uid not in known)
             self._next_cursor = page.next_cursor
             self._revision = page.revision
+            if self._active and self._year and not self._photos and self._next_cursor and self._latest_revision <= page.revision:
+                # Traverse only date placeholders until reaching the chosen
+                # period. Navigation/account changes stop subsequent requests.
+                self._load(more=True)
+                return
             # Refill only the pages the user had already loaded after a local
             # action. This keeps selection and scroll without a polling loop.
             if self._refresh_selection is not None and self._next_cursor and len(self._photos) < self._refresh_count and self._latest_revision <= page.revision:
                 self._load(more=True)
                 return
-            if self._refresh_selection is not None:
-                self._selected = self._refresh_selection & {p.uid for p in self._photos}
-                self._refresh_selection = None
-            self._rebuild_rows()
-            if self._refresh_position is not None:
-                position = self._refresh_position
-                self._refresh_position = None
-                GLib.idle_add(lambda: (self._scrolled.get_vadjustment().set_value(position), False)[1])
-            self._update_selection()
-            self._more.set_visible(bool(page.next_cursor))
-            self._more.set_sensitive(self._latest_revision <= page.revision)
-            if self._latest_revision > page.revision:
-                self._changed_banner.set_revealed(True)
-            self._empty.set_title("No matching photos" if query["search"] or query["kind"] != "all" else "No photos yet")
-            self._empty.set_description("Try another filter." if query["search"] or query["kind"] != "all" else
-                                        "Upload photos or create an album in Albums. Shared albums appear after your own photo gallery has been set up.")
-            self._stack.set_visible_child_name("photos" if self._photos else "empty")
+            self._display_photos()
         self.client.list_photos(query, photos_ok, error)
+
+    def _display_photos(self) -> None:
+        if self._refresh_selection is not None:
+            self._selected = self._refresh_selection & {p.uid for p in self._photos}
+            self._refresh_selection = None
+        self._rebuild_rows()
+        if self._refresh_position is not None:
+            position = self._refresh_position
+            self._refresh_position = None
+            request = self._request
+            def restore():
+                if request == self._request:
+                    self._scrolled.get_vadjustment().set_value(position)
+                return False
+            GLib.idle_add(restore)
+        self._update_selection()
+        self._more.set_label("Try again" if self._page_error else "Load more photos")
+        self._more.set_visible(bool(self._next_cursor) and (self._page_error or not self._photos))
+        self._more.set_sensitive(self._latest_revision <= self._revision)
+        if self._latest_revision > self._revision:
+            self._changed_banner.set_revealed(True)
+        filtered = bool(self._year or self._search_entry.get_text().strip()) or self._kind.get_selected() != 0
+        self._empty.set_title("No matching photos" if filtered else "No photos yet")
+        self._empty.set_description("Try another filter." if filtered else
+                                   "Upload photos or create an album in Albums. Shared albums appear after your own photo gallery has been set up.")
+        self._stack.set_visible_child_name("photos" if self._photos else "empty")
+        self._schedule_scroll_load()
 
     def _rebuild_rows(self) -> None:
         adjustment = self._scrolled.get_vadjustment()
@@ -701,7 +839,7 @@ class PhotosView(Gtk.Box):
 
     def _location(self):
         return (self._albums_mode, self._album.uid if self._album else None,
-                self._kind.get_selected(), self._search_entry.get_text())
+                self._kind.get_selected(), self._search_entry.get_text(), self._year, self._month)
 
     def _begin_management(self, label: str, operation_id: str | None = None) -> None:
         self._management_errors.clear()
@@ -758,6 +896,8 @@ class PhotosView(Gtk.Box):
         def done(result):
             if epoch != self._account_epoch: return
             confirmed = {r.uid for r in result.results if r.ok}
+            if action == "add" and self._location() == location:
+                self._selected.difference_update(confirmed)
             failures = [r for r in result.results if not r.ok]
             missing = set(request["uids"]) - {r.uid for r in result.results}
             if failures or missing or result.cancelled:
@@ -768,7 +908,7 @@ class PhotosView(Gtk.Box):
                 message = failures[0].error if failures else "Some changes could not be confirmed. Reload before trying again."
                 self.window.toast(f"{'Cancelled. ' if result.cancelled else ''}{len(confirmed)} of {len(items)} photos updated. {message}")
             else:
-                self.window.toast({"favourite": "Favourites updated", "add": "Photos added to album", "remove": "Photos removed from album; originals kept"}[action])
+                self.window.toast({"favourite": "Favourites updated", "add": "Photos are in the album", "remove": "Photos removed from album; originals kept"}[action])
             refresh()
         def failed(message):
             if epoch != self._account_epoch: return
@@ -792,7 +932,14 @@ class PhotosView(Gtk.Box):
         scroll.set_child(details)
         dialog.set_extra_child(scroll)
         dialog.add_response("close", "Close")
+        dialog.add_response("dismiss", "Dismiss warning")
         dialog.set_default_response("close"); dialog.set_close_response("close")
+        def respond(_dialog, response):
+            if response == "dismiss":
+                self._management_errors.clear()
+                self._management_error_banner.set_revealed(False)
+                self.emit("management-changed", self._management_busy, self._management_id is not None)
+        dialog.connect("response", respond)
         dialog.present(self.window)
 
     def set_favourites(self, items: list[Photo], favourite: bool) -> None:

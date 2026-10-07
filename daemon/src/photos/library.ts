@@ -35,7 +35,7 @@ export type PhotoAlbum = { uid: string; name: string; photoCount: number; coverP
 export type PhotoManagementRequest = { operationId: string; action: 'favourite' | 'add' | 'remove';
     uids: string[]; albumUid?: string; favourite?: boolean };
 export type PhotoManagementResult = { results: PhotoTrashResult[]; cancelled: boolean; revision: number };
-export type PhotoQuery = { albumUid?: string; cursor?: string; limit?: number; search?: string; kind?: string; month?: string };
+export type PhotoQuery = { albumUid?: string; cursor?: string; limit?: number; search?: string; kind?: string; month?: string; year?: string };
 type Placeholder = { nodeUid: string; captureTime: Date; tags?: number[] };
 type Collection = { entries: Placeholder[]; seen: Set<string>; iterator: AsyncIterator<Placeholder>; done: boolean };
 export type PhotoTrashResult = { uid: string; ok: boolean; error: string | null };
@@ -169,7 +169,17 @@ export class PhotoLibrary {
             let examined = 0;
             while (result.length < limit && examined < 600) {
                 while (collection.entries.length < offset + 30 && !collection.done) {
-                    const next = await collection.iterator.next();
+                    let next: IteratorResult<Placeholder>;
+                    try { next = await collection.iterator.next(); }
+                    catch (error) {
+                        signal.throwIfAborted();
+                        // A throwing async generator is closed. A user retry
+                        // must be able to resume past the placeholders retained
+                        // here, instead of mistaking that closure for the end.
+                        collection.iterator = key ? client.iterateAlbum(key, signal)[Symbol.asyncIterator]()
+                            : client.iterateTimeline(signal)[Symbol.asyncIterator]();
+                        throw error;
+                    }
                     signal.throwIfAborted();
                     if (next.done) { collection.done = true; break; }
                     if (!collection.seen.has(next.value.nodeUid)) {
@@ -179,13 +189,20 @@ export class PhotoLibrary {
                 }
                 const batch = collection.entries.slice(offset, offset + Math.min(30, limit - result.length));
                 if (!batch.length) break;
-                const missing = batch.filter(p => !this.nodes.has(p.nodeUid)).map(p => p.nodeUid);
+                // The SDK's timeline/album placeholders already include dates.
+                // Jumping to an older year must not decrypt every newer photo.
+                const inPeriod = (item: Placeholder) => {
+                    const date = item.captureTime.toISOString();
+                    return (!query.year || date.startsWith(`${query.year}-`)) && (!query.month || date.startsWith(`${query.month}-`));
+                };
+                const missing = batch.filter(p => inPeriod(p) && !this.nodes.has(p.nodeUid)).map(p => p.nodeUid);
                 for await (const node of client.iterateNodes(missing, signal)) {
                     signal.throwIfAborted();
                     if (!('missingUid' in node)) this.nodes.set(node.uid, node);
                 }
                 for (const item of batch) {
                     offset++; examined++;
+                    if (!inPeriod(item)) continue;
                     const node = this.nodes.get(item.nodeUid);
                     if (!node || node.trashTime) continue;
                     const photo = photoFromNode(node, this.root?.uid);
@@ -494,6 +511,7 @@ export class PhotoLibrary {
             const results = new Map<string, PhotoTrashResult>();
             const touched = new Set<string>();
             let attempted = false;
+            let confirmedExisting = false;
             let client: PhotosClient | null = null;
             const collect = async (iterator: AsyncIterable<NodeResult>, expected: string[]) => {
                 const found = new Map<string, PhotoTrashResult>();
@@ -522,6 +540,17 @@ export class PhotoLibrary {
                         if (node.type !== 'photo' || node.trashTime || node.photo?.mainPhotoNodeUid) throw new Error('This photo is no longer available. Select its main photo.');
                         if (input.action === 'favourite' && !sameVolume(node.uid, this.root!.uid)) throw new Error('Only photos in your own library can have their favourites changed here.');
                         if (input.action === 'remove' && !node.photo?.albums.some(a => a.nodeUid === input.albumUid)) throw new Error('This photo is no longer in the album.');
+                        if (input.action === 'add' && node.photo?.albums.some(a => a.nodeUid === input.albumUid)) {
+                            const related = [...new Set(node.photo.relatedPhotoNodeUids)];
+                            await refreshers.get(client)?.(related);
+                            let complete = true;
+                            for (const assetUid of related) {
+                                const asset = await client.getNode(assetUid);
+                                signal.throwIfAborted();
+                                complete &&= asset.type === 'photo' && !asset.trashTime && !!asset.photo?.albums.some(a => a.nodeUid === input.albumUid);
+                            }
+                            if (complete) { confirmedExisting = true; results.set(uid, { uid, ok: true, error: null }); continue; }
+                        }
                         // Let the SDK batch additions and favourite preparation.
                         // Removal needs preservation confirmed per main photo.
                         if (input.action !== 'remove') continue;
@@ -566,6 +595,7 @@ export class PhotoLibrary {
             } finally {
                 if (this.operations.get(input.operationId) === controller) this.operations.delete(input.operationId);
                 if (attempted && client) await this.invalidateAfterWrite(client, [...touched], lifetime);
+                else if (confirmedExisting && !lifetime.aborted) this.invalidate();
             }
             lifetime.throwIfAborted();
             return { results: uids.map(uid => results.get(uid) ?? { uid, ok: false, error: 'Cancelled before this photo was changed.' }),

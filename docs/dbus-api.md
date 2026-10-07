@@ -340,11 +340,18 @@ access. Opening Folders does not access the photo gallery.
 | `ControlPhotoUpload` | `ss → ()` | job id, action |
 
 `PhotoQuery` accepts `albumUid`, `cursor`, `limit` (1 to 100, default 60),
-`search` (filename substring), `kind` (`all`, `favourites`, `videos`) and `month`
-(`YYYY-MM`, in UTC). Leave `albumUid` absent for the timeline. A cursor is opaque
+`search` (filename substring), `kind` (`all`, `favourites`, `videos`), `year`
+(`YYYY`) and `month` (`YYYY-MM`, in UTC). Leave `albumUid` absent for the
+timeline. A cursor is opaque
 and must be used with the same query. A gallery event invalidates old cursors;
 reload from the first page after `PhotosChanged`. Filtered requests examine at
 most 600 entries, so an empty page can have a non-null `nextCursor`.
+Year/month filtering uses SDK date placeholders before fetching decrypted nodes.
+The UI follows those pages on a date jump and loads further gallery pages near
+the bottom of the viewport. Continuation requests are serialized; a failed
+request exposes a manual retry instead of repeating automatically. A stale
+continuation refreshes once while retaining selection and the requested extent.
+Explicit refresh also retains loaded pages and selection where photos remain.
 
 ```ts
 type Photo = {
@@ -425,6 +432,11 @@ related assets through the SDK. Remove explicitly includes related assets and
 saves album-only photos to the timeline first (copying shared-volume photos).
 If preservation cannot be confirmed, that photo's membership is kept. Removing
 membership does not trash or delete originals.
+Adding a photo already in an album is a confirmed no-op only when fresh metadata
+also confirms its related assets are members. Otherwise SDK errors remain errors.
+After additions the UI clears confirmed items from selection, retaining failed
+or unconfirmed items and keeping selection mode available for the next batch.
+Error details offer dismissal without changing any mutation result.
 
 `DeletePhotoAlbum` permanently deletes the album after UI confirmation. It
 always passes `{saveToTimeline: true}` to the SDK and never `force`. Album-only

@@ -656,7 +656,9 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._update_navigation(self.account_logged_in)
         name = self._views.get_visible_child_name()
         if name == "photos": self._photos_view.activate()
-        elif name == "activity": self._on_activity_tab()
+        else:
+            self._photos_view.deactivate()
+            if name == "activity": self._on_activity_tab()
 
     def _on_activity_tab(self, *_):
         if not self.account_logged_in or self._views.get_visible_child_name() != "activity": return

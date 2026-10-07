@@ -28,6 +28,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import base64
 import struct
 import zlib
@@ -1116,12 +1117,17 @@ class MockDaemon:
     def _do_ListPhotos(self, invocation, raw):
         self._require_photos()
         query = json.loads(raw)
+        if query.get("cursor") and self.args.photo_page_change_once:
+            self.args.photo_page_change_once = False
+            self._photos_changed()
         if query.get("albumUid"):
             self._photo_album(query["albumUid"])
             members = self.album_members.get(query["albumUid"], set())
         else:
             members = self.photo_timeline
         photos = [p for p in self.photos if p["uid"] in members]
+        if query.get("year"): photos = [p for p in photos if datetime.fromtimestamp(p["captureTime"] / 1000, timezone.utc).strftime("%Y") == query["year"]]
+        if query.get("month"): photos = [p for p in photos if datetime.fromtimestamp(p["captureTime"] / 1000, timezone.utc).strftime("%Y-%m") == query["month"]]
         if query.get("kind") == "favourites": photos = [p for p in photos if p["favourite"]]
         if query.get("kind") == "videos": photos = [p for p in photos if p["mediaType"].startswith("video/")]
         if query.get("search"): photos = [p for p in photos if query["search"].lower() in p["name"].lower()]
@@ -1409,6 +1415,7 @@ def main() -> int:
     parser.add_argument("--no-photos", action="store_true", help="start with an empty photo gallery")
     parser.add_argument("--photo-management-fixture", action="store_true", help="include shared albums and album-only photos")
     parser.add_argument("--photo-management-errors", action="store_true", help="simulate per-photo and safe album-deletion failures")
+    parser.add_argument("--photo-page-change-once", action="store_true", help="invalidate the first continuation page like a delayed SDK event")
     parser.add_argument("--no-pairs", action="store_true",
                         help="start with no folder pairs (empty state)")
     parser.add_argument("--bus-name", default=DEFAULT_BUS_NAME,

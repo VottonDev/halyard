@@ -11,6 +11,7 @@ function fixture() {
     const partial = { results: [{ uid: 'one', ok: true, error: null },
         { uid: 'two', ok: false, error: 'Permission denied' }], cancelled: true, revision: 4 };
     const photos = {
+        async list(query: unknown) { calls.push(['list', query]); return { photos: [], nextCursor: null, revision: 0 }; },
         async createAlbum(name: string) { calls.push(['create', name]); return album; },
         async renameAlbum(uid: string, name: string) { calls.push(['rename', uid, name]); return { ...album, name }; },
         async deleteAlbum(uid: string) { calls.push(['delete', uid]); throw new Error('An album-only photo could not be saved.'); },
@@ -27,6 +28,14 @@ function fixture() {
 }
 
 describe('Photos management D-Bus boundary', () => {
+    test('accepts year/month filters and rejects malformed dates before dispatch', async () => {
+        const f = fixture();
+        await f.iface.ListPhotos('{"year":"2017","month":"2017-06"}');
+        expect(f.calls).toEqual([['list', { year: '2017', month: '2017-06' }]]);
+        await expect(f.iface.ListPhotos('{"year":"invalid"}')).rejects.toThrow('valid year');
+        await expect(f.iface.ListPhotos('{"month":"2017-13"}')).rejects.toThrow('valid month');
+        expect(f.calls).toHaveLength(1);
+    });
     test('round-trips capabilities, cancellation, and per-item partial results', async () => {
         const f = fixture();
         expect(JSON.parse(await f.iface.CreatePhotoAlbum('Summer'))).toEqual(f.album);

@@ -106,6 +106,41 @@ describe('photo library', () => {
         await expect(http.fetchJson({ url: 'https://example.test/drive/photos/volumes', method: 'POST' } as any)).rejects.toThrow('No photos');
         expect(requests).toBe(0);
     });
+    test('year/month jumps use placeholders and decrypt only photos in the chosen period', async () => {
+        const g = gallery(650), loaded: string[] = [];
+        for (const [uid, node] of g.nodes) if (Number(uid.split('-').pop()) >= 620) node.photo.captureTime = new Date('2017-06-01');
+        const iterate = g.client.iterateNodes.bind(g.client);
+        (g.client as any).iterateNodes = async function* (uids: string[]) { loaded.push(...uids); yield* iterate(uids); };
+        const library = new PhotoLibrary(async () => g.client);
+        try {
+            const first = await library.list({ year: '2017', limit: 10 });
+            expect(first.photos).toEqual([]); expect(first.nextCursor).not.toBeNull(); expect(loaded).toEqual([]);
+            const second = await library.list({ year: '2017', cursor: first.nextCursor!, limit: 10 });
+            expect(second.photos).toHaveLength(10);
+            expect(loaded.every(uid => Number(uid.split('-').pop()) >= 620)).toBe(true);
+            expect((await library.list({ year: '2017', month: '2017-07' })).photos).toEqual([]);
+            expect(g.walks()).toBe(1);
+        } finally { library.reset(); }
+    });
+    test('a failed SDK page can be retried without silently losing the remaining photos', async () => {
+        const g = gallery(80);
+        let fail = true;
+        (g.client as any).iterateTimeline = async function* () {
+            let index = 0;
+            for (const node of g.nodes.values()) {
+                if (index++ === 30 && fail) { fail = false; throw new Error('Temporary page failure'); }
+                yield { nodeUid: node.uid, captureTime: node.photo.captureTime };
+            }
+        };
+        const library = new PhotoLibrary(async () => g.client);
+        try {
+            const first = await library.list({ limit: 17 });
+            await expect(library.list({ limit: 17, cursor: first.nextCursor! })).rejects.toThrow('Temporary page failure');
+            const retry = await library.list({ limit: 17, cursor: first.nextCursor! });
+            expect(retry.photos).toHaveLength(17); expect(retry.photos[0].uid).toBe('own~photo-17');
+            expect(new Set(retry.photos.map(p => p.uid)).size).toBe(17);
+        } finally { library.reset(); }
+    });
 });
 
 function managementGallery() {
@@ -396,6 +431,7 @@ describe('photo management', () => {
     });
     test('add passes main photos to the SDK, per-item failures continue, missing replies stay unconfirmed', async () => {
         const g = managementGallery(), calls: string[] = [];
+        for (const node of g.nodes.values()) if (node.photo) node.photo.albums = [];
         (g.client as any).addPhotosToAlbum = async function* (_album: string, uids: string[], signal: AbortSignal) {
             expect(signal.aborted).toBe(false); expect(uids).toHaveLength(4); calls.push(...uids);
             for (const uid of uids) {
@@ -408,6 +444,19 @@ describe('photo management', () => {
             const result = await library.manage({ operationId: 'add', action: 'add', uids: ['own~photo-0', 'missing', 'own~photo-1', 'own~photo-2', 'own~photo-3'], albumUid: g.album.uid });
             expect(result.results.map(r => r.ok)).toEqual([true, false, false, false, true]);
             expect(result.results[3].error).toContain('not be confirmed'); expect(calls).toHaveLength(4);
+        } finally { library.reset(); }
+    });
+    test('existing album membership is confirmed only after checking related files', async () => {
+        const g = managementGallery(), main = g.nodes.get('own~photo-1');
+        main.photo.relatedPhotoNodeUids = ['own~photo-2'];
+        const library = new PhotoLibrary(async () => g.client);
+        try {
+            const input = { operationId: 'already-added', action: 'add' as const, uids: [main.uid], albumUid: g.album.uid };
+            expect((await library.manage(input)).results).toEqual([{ uid: main.uid, ok: true, error: null }]);
+            expect(g.writes).toEqual([]);
+            g.nodes.get('own~photo-2').photo.albums = [];
+            (g.client as any).addPhotosToAlbum = async function* () { yield { uid: main.uid, ok: false, error: new Error('Photo already exists in the album.') }; };
+            expect((await library.manage(input)).results[0].ok).toBe(false);
         } finally { library.reset(); }
     });
     test('cancellation retains confirmed work and aborts remaining photos; queued calls cancel before writes', async () => {

@@ -17,7 +17,7 @@ from integration_photos_mock import (ROOT, CALLBACK_ERRORS, RESULTS, call, check
 from halyard.dbus_client import DaemonClient
 from halyard.main import _FallbackSettings
 from halyard.window import HalyardWindow
-from gi.repository import Adw, Gio, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 
 def album_form(window, name):
@@ -32,6 +32,94 @@ def rejected(method, *args):
     method(*args, ok.append, errors.append)
     wait(lambda: ok or errors)
     return errors[0] if errors else ""
+
+
+def run_pagination(app):
+    log = tempfile.TemporaryFile(mode="w+")
+    mock = subprocess.Popen([sys.executable, str(ROOT / "ui/tests/mock_daemon.py"),
+        "--logged-in", "--quiet", "--no-activity", "--photo-management-fixture", "--photo-page-change-once"], stdout=log, stderr=log)
+    client, window = DaemonClient(), None
+    try:
+        client.start(); wait(lambda: client.available)
+        window = HalyardWindow(app, client, _FallbackSettings())
+        window.present(); wait(lambda: window.account_logged_in)
+        view, messages = window._photos_view, []
+        window.toast = messages.append
+        window._views.set_visible_child_name("photos"); loaded(view)
+        view._select_button.emit("clicked")
+        for photo in view._photos[:2]: view._tile_clicked(photo)
+        selected = set(view._selected)
+        view.add_to_album(view.selected_items())
+        respond(dialog(window), "add")
+        wait(lambda: not view._management_busy and not view._loading)
+        check("album add clears confirmed selection and keeps selection mode", not view._selected and view._selecting)
+        for photo in view._photos[2:4]: view._tile_clicked(photo)
+        selected = set(view._selected)
+        messages.clear()
+        adjustment = view._scrolled.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 100)
+        wait(lambda: len(view._photos) > 60 and not view._loading)
+        expected = {p.uid for p in call(client.list_photos, {"limit": 100}).photos}
+        check("late album event refreshes and completes requested next page", {p.uid for p in view._photos} == expected and len(view._photos) == len(expected))
+        check("pagination recovery retains selection without stale-page error", view._selected == selected and view._selecting and not messages and not view._changed_banner.get_revealed())
+        call(client.create_photo_album, "Another album")
+        wait(lambda: view._changed_banner.get_revealed())
+        view._changed_banner.emit("button-clicked"); loaded(view)
+        check("explicit gallery refresh retains loaded pages and selection", view._selected == selected and view._selecting and {p.uid for p in view._photos} == expected)
+        view._date_button.emit("clicked")
+        alert = dialog(window)
+        year = next(w for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.SpinButton))
+        month = next(w for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.DropDown))
+        year.set_value(2017); month.set_selected(0); respond(alert, "show"); loaded(view)
+        check("year jump shows empty result without fetching other years", not view._photos and view._year == "2017" and view._period_banner.get_revealed())
+        view._date_button.emit("clicked")
+        alert = dialog(window)
+        year = next(w for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.SpinButton))
+        month = next(w for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.DropDown))
+        year.set_value(2026); month.set_selected(10); respond(alert, "show"); loaded(view)
+        from datetime import datetime, timezone
+        check("month jump filters capture dates", bool(view._photos) and all(datetime.fromtimestamp(p.capture_time / 1000, timezone.utc).strftime("%Y-%m") == "2026-10" for p in view._photos))
+        view._period_banner.emit("button-clicked"); loaded(view); pump(0.2)
+        check("all dates restores the full timeline", not view._year and not view._month and not view._period_banner.get_revealed() and len(view._photos) == 60)
+        view._select_button.emit("clicked"); view._tile_clicked(view._photos[0])
+        selected = set(view._selected)
+        call(client.create_photo_album, "Album before scrolling")
+        wait(lambda: view._changed_banner.get_revealed())
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 100)
+        wait(lambda: len(view._photos) > 60 and not view._loading)
+        check("scrolling after a library event refreshes without requiring Reload", view._selected == selected and not view._changed_banner.get_revealed())
+        view.reload(); loaded(view); pump(0.2)
+        view._select_button.emit("clicked"); view._tile_clicked(view._photos[0])
+        selected = set(view._selected)
+        original, attempts = client.list_photos, []
+        def transient(query, on_ok, on_err):
+            if query.get("cursor"):
+                attempts.append(query["cursor"])
+                if len(attempts) == 1:
+                    GLib.timeout_add(200, lambda: (on_err("Temporary page failure"), False)[1])
+                    return
+            original(query, on_ok, on_err)
+        client.list_photos = transient
+        window._views.set_visible_child_name("folders")
+        wait(lambda: not view._active)
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 100)
+        pump(0.3)
+        check("hidden gallery does not fetch pages", not attempts)
+        window._views.set_visible_child_name("photos")
+        wait(lambda: view._scrolled.get_mapped() and adjustment.get_page_size() > 0)
+        for _ in range(10): adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 100)
+        wait(lambda: view._page_error)
+        pump(0.4)
+        check("scroll requests serialize and failures stop automatic retries", len(attempts) == 1 and view._more.get_visible() and view._more.get_label() == "Try again" and view._selected == selected)
+        view._more.emit("clicked")
+        wait(lambda: len(view._photos) > 60 and not view._loading)
+        check("manual page retry resumes browsing and retains selection", len(attempts) == 2 and not view._page_error and not view._more.get_visible() and view._selected == selected)
+    finally:
+        if window: window.destroy()
+        client.stop(); mock.terminate(); mock.wait(timeout=5); pump(0.2)
+        log.seek(0)
+        if "Traceback" in log.read(): print("Mock pagination scenario had a traceback", file=sys.stderr)
+        log.close()
 
 
 def run(app, empty=False):
@@ -133,14 +221,16 @@ def run(app, empty=False):
         picker.set_selected(next(i for i, a in enumerate(choices) if a.uid == created.uid))
         respond(alert, "add")
         wait(lambda: not view._management_busy and not view._loading)
-        check("partial add reports failure and retains selection/paging", view._selected == selected and view._selecting and len(view._photos) == count and any("1 of 2" in m and "Permission denied" in m for m in messages))
+        check("partial add clears successes and retains failed selection/paging", view._selected == {"photo-2"} and view._selecting and len(view._photos) == count and any("1 of 2" in m and "Permission denied" in m for m in messages))
         view._management_error_banner.emit("button-clicked")
         alert = dialog(window)
         labels = [w.get_label() for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.Label)]
         check("partial errors identify the failed photo", any(items["photo-2"].name in label and "Permission denied" in label for label in labels))
-        respond(alert, "close")
+        respond(alert, "dismiss")
+        check("warning can be dismissed without changing results", not view._management_errors and not view._management_error_banner.get_revealed())
         members = call(client.list_photos, {"albumUid": created.uid}).photos
         check("partial add reflects only confirmed membership", {p.uid for p in members} == {"photo-1"})
+        view._tile_clicked(items["photo-1"])
         view.set_favourites(view.selected_items(), True)
         wait(lambda: not view._management_busy and not view._loading)
         check("selection favourites handle partial failure", call(client.get_photo, "photo-1").favourite and not call(client.get_photo, "photo-2").favourite and view._selected == selected)
@@ -189,6 +279,7 @@ def main():
     app = Adw.Application(application_id="io.github.votton.Halyard.PhotoManagementTest", flags=Gio.ApplicationFlags.NON_UNIQUE)
     app.register(None)
     try:
+        run_pagination(app)
         run(app, empty=True)
         run(app)
     except Exception:

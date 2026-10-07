@@ -246,6 +246,7 @@ class DaemonClient(GObject.Object):
     # -- account ---------------------------------------------------------
 
     def list_photos(self, query: dict, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        """List a gallery page, optionally filtered by four-digit year or YYYY-MM month."""
         self._call("ListPhotos", GLib.Variant("(s)", [json.dumps(query)]),
                    parse=PhotoPage.from_json, on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
 

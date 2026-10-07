@@ -231,10 +231,11 @@ export class HalyardInterface extends Interface {
             const input = JSON.parse(filter || '{}') as Record<string, unknown>;
             if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('The photo filter is invalid.');
             const query: PhotoQuery = {};
-            for (const field of ['albumUid', 'cursor', 'search', 'month'] as const) {
+            for (const field of ['albumUid', 'cursor', 'search', 'month', 'year'] as const) {
                 if (typeof input[field] === 'string') query[field] = input[field].slice(0, 512);
             }
             if (query.month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(query.month)) throw new Error('Choose a valid month.');
+            if (query.year && !/^\d{4}$/.test(query.year)) throw new Error('Choose a valid year.');
             if (typeof input.limit === 'number' && Number.isFinite(input.limit)) query.limit = input.limit;
             if (input.kind === 'favourites' || input.kind === 'videos') query.kind = input.kind;
             return JSON.stringify(await this.photos.list(query));
