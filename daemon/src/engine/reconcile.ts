@@ -32,8 +32,13 @@ function depth(path: string): number {
     return path.split('/').length;
 }
 
-function isDescendantOf(path: string, ancestor: string): boolean {
-    return path.startsWith(ancestor + '/');
+function* ancestors(path: string): Generator<string> {
+    for (let slash = path.lastIndexOf('/'); slash >= 0; slash = path.lastIndexOf('/', slash - 1)) {
+        yield path.slice(0, slash);
+        if (slash === 0) {
+            break;
+        }
+    }
 }
 
 /**
@@ -215,23 +220,36 @@ function detectMoves(input: ReconcileInput, actions: Action[]): void {
     // the activity log as a bogus failed move. Drop any move already implied by
     // an ancestor's move (same source subtree, same destination subtree); the
     // in-place base/local/remote rewrites above have already relocated it.
-    const moves = actions.filter(
-        (action): action is Extract<Action, { kind: 'moveLocal' | 'moveRemote' }> =>
-            action.kind === 'moveLocal' || action.kind === 'moveRemote',
-    );
-    const carriedByAncestor = (move: { from: string; to: string }): boolean =>
-        moves.some(
-            (other) =>
-                other !== move &&
-                isDescendantOf(move.from, other.from) &&
-                move.to === other.to + move.from.slice(other.from.length),
-        );
-    for (let i = actions.length - 1; i >= 0; i -= 1) {
-        const action = actions[i];
-        if ((action.kind === 'moveLocal' || action.kind === 'moveRemote') && carriedByAncestor(action)) {
-            actions.splice(i, 1);
+    const destinationsBySource = new Map<string, Set<string>>();
+    for (const action of actions) {
+        if (action.kind !== 'moveLocal' && action.kind !== 'moveRemote') {
+            continue;
+        }
+        let destinations = destinationsBySource.get(action.from);
+        if (!destinations) {
+            destinations = new Set();
+            destinationsBySource.set(action.from, destinations);
+        }
+        destinations.add(action.to);
+    }
+    let retained = 0;
+    for (const action of actions) {
+        let carried = false;
+        if (action.kind === 'moveLocal' || action.kind === 'moveRemote') {
+            for (const ancestor of ancestors(action.from)) {
+                const suffix = action.from.slice(ancestor.length);
+                if (action.to.endsWith(suffix) &&
+                    destinationsBySource.get(ancestor)?.has(action.to.slice(0, -suffix.length))) {
+                    carried = true;
+                    break;
+                }
+            }
+        }
+        if (!carried) {
+            actions[retained++] = action;
         }
     }
+    actions.length = retained;
 }
 
 /**
@@ -239,29 +257,26 @@ function detectMoves(input: ReconcileInput, actions: Action[]): void {
  * side has not seen. Deleting an empty-looking folder is cheap; deleting one
  * containing a file the user just edited is data loss.
  */
-function hasProtectedDescendants(
-    folder: string,
+function protectedAncestors(
     base: Map<string, BaseEntry>,
-    local: Map<string, LocalItem>,
-    remote: Map<string, RemoteItem>,
-    side: 'local' | 'remote',
-    hashOf?: (p: string) => string | null,
-): boolean {
-    const candidates = side === 'local' ? local : remote;
+    candidates: Map<string, LocalItem> | Map<string, RemoteItem>,
+    changeOf: (entry: BaseEntry | undefined, path: string) => ChangeState,
+): Set<string> {
+    const protectedFolders = new Set<string>();
     for (const path of candidates.keys()) {
-        if (!isDescendantOf(path, folder)) {
+        // Root-level entries have no folder to protect and need no hash lookup.
+        if (!path.includes('/')) {
             continue;
         }
-        const entry = base.get(path);
-        const change =
-            side === 'local'
-                ? localChange(entry, local.get(path), hashOf)
-                : remoteChange(entry, remote.get(path));
-        if (change === 'created' || change === 'modified') {
-            return true;
+        const change = changeOf(base.get(path), path);
+        if (change !== 'created' && change !== 'modified') {
+            continue;
+        }
+        for (const ancestor of ancestors(path)) {
+            protectedFolders.add(ancestor);
         }
     }
-    return false;
+    return protectedFolders;
 }
 
 export function reconcile(input: ReconcileInput): Plan {
@@ -270,6 +285,20 @@ export function reconcile(input: ReconcileInput): Plan {
     const conflicts: Plan['conflicts'] = [];
 
     detectMoves(input, actions);
+
+    // Build each index only if a folder deletion needs it, after move rebasing.
+    let localProtected: Set<string> | undefined;
+    let remoteProtected: Set<string> | undefined;
+    const hasProtectedDescendants = (path: string, side: 'local' | 'remote'): boolean => {
+        if (side === 'local') {
+            localProtected ??= protectedAncestors(base, local,
+                (entry, child) => localChange(entry, local.get(child), localHashOf));
+            return localProtected.has(path);
+        }
+        remoteProtected ??= protectedAncestors(base, remote,
+            (entry, child) => remoteChange(entry, remote.get(child)));
+        return remoteProtected.has(path);
+    };
 
     const paths = new Set<string>([...base.keys(), ...local.keys(), ...remote.keys()]);
     // Paths already handled as part of a move are not revisited.
@@ -391,7 +420,7 @@ export function reconcile(input: ReconcileInput): Plan {
             if (remoteItem) {
                 if (
                     remoteItem.type === 'folder' &&
-                    hasProtectedDescendants(path, base, local, remote, 'remote', localHashOf)
+                    hasProtectedDescendants(path, 'remote')
                 ) {
                     // Something new lives under here remotely; bring the folder
                     // back locally instead of deleting it.
@@ -408,7 +437,7 @@ export function reconcile(input: ReconcileInput): Plan {
             if (localItem) {
                 if (
                     localItem.type === 'folder' &&
-                    hasProtectedDescendants(path, base, local, remote, 'local', localHashOf)
+                    hasProtectedDescendants(path, 'local')
                 ) {
                     actions.push({ kind: 'createRemoteFolder', path });
                     continue;

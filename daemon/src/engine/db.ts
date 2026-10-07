@@ -288,8 +288,10 @@ export class SyncDatabase {
     /** A node and everything beneath it, without materialising the whole base. */
     getBaseSubtree(pairId: string, entryPath: string): BaseEntry[] {
         const rows = this.prepare(
-            "SELECT * FROM base_entries WHERE pair_id = ? AND (path = ? OR path LIKE ? ESCAPE '\\')",
-        ).all(pairId, entryPath, `${escapeLike(entryPath)}/%`) as Record<string, unknown>[];
+            `SELECT * FROM base_entries WHERE pair_id = ? AND path = ?
+             UNION ALL
+             SELECT * FROM base_entries WHERE pair_id = ? AND path >= ? AND path < ?`,
+        ).all(pairId, entryPath, pairId, `${entryPath}/`, `${entryPath}0`) as Record<string, unknown>[];
         return rows.map(rowToBase);
     }
 
@@ -318,12 +320,20 @@ export class SyncDatabase {
     }
 
     deleteBaseEntry(pairId: string, entryPath: string): void {
-        this.prepare('DELETE FROM base_entries WHERE pair_id = ? AND path = ?').run(pairId, entryPath);
-        // A folder's descendants go with it. Escaped so a literal % or _ in a
-        // folder name does not widen the match to unrelated paths.
-        this.prepare("DELETE FROM base_entries WHERE pair_id = ? AND path LIKE ? ESCAPE '\\'").run(
+        // '/' and '0' are adjacent in the primary key's binary ordering, so
+        // this range contains only descendants (including literal % and _).
+        // Both searches use the primary key; one DELETE keeps removal atomic
+        // even when the caller has not opened a transaction.
+        this.prepare(`DELETE FROM base_entries WHERE rowid IN (
+            SELECT rowid FROM base_entries WHERE pair_id = ? AND path = ?
+            UNION ALL
+            SELECT rowid FROM base_entries WHERE pair_id = ? AND path >= ? AND path < ?
+        )`).run(
             pairId,
-            `${escapeLike(entryPath)}/%`,
+            entryPath,
+            pairId,
+            `${entryPath}/`,
+            `${entryPath}0`,
         );
     }
 
@@ -581,11 +591,6 @@ export type RemoteNodeInput = {
     mtime: number;
     trashed: boolean;
 };
-
-/** Escapes LIKE wildcards so a pattern built from a path matches it literally. */
-function escapeLike(value: string): string {
-    return value.replace(/[\\%_]/g, '\\$&');
-}
 
 /** Tolerant: a malformed value means "no exclusions", never a crash. */
 function parseExcludes(value: unknown): string[] {

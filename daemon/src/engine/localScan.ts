@@ -121,10 +121,11 @@ export async function scanLocal(
 /**
  * Fills in content hashes, but only where a sync decision actually depends on
  * one. Hashing every file on every cycle would make large pairs unusable, so
- * we hash exactly two cases:
+ * we hash these cases:
  *
  *   - a file whose timestamp or size no longer matches the base, where the
- *     hash distinguishes an edit from a timestamp-only change; and
+ *     hash distinguishes an edit from a timestamp-only change, or compares
+ *     competing edits (size-changing unilateral edits need no hash); and
  *   - a file that appeared on both sides at once, where the hash decides
  *     whether it is a conflict at all.
  */
@@ -136,6 +137,23 @@ export async function fillRequiredHashes(
     signal?: AbortSignal,
 ): Promise<void> {
     const needed: LocalItem[] = [];
+    let remoteByUid: Map<string, RemoteItem> | undefined;
+    let baseByIdentity: Map<string, BaseEntry[]> | undefined;
+    const identity = (device: number | null, inode: number | null): string => `${device ?? '?'}:${inode ?? '?'}`;
+    const identityMatches = (item: LocalItem): BaseEntry[] => {
+        if (!baseByIdentity) {
+            baseByIdentity = new Map();
+            for (const entry of base.values()) {
+                if (entry.type === 'file' && entry.localInode !== null) {
+                    const key = identity(entry.localDevice, entry.localInode);
+                    const matches = baseByIdentity.get(key) ?? [];
+                    matches.push(entry);
+                    baseByIdentity.set(key, matches);
+                }
+            }
+        }
+        return baseByIdentity.get(identity(item.device, item.inode)) ?? [];
+    };
 
     for (const item of local.values()) {
         if (item.type !== 'file') {
@@ -144,10 +162,44 @@ export async function fillRequiredHashes(
         const baseEntry = base.get(item.path);
         if (baseEntry) {
             if (item.mtime !== baseEntry.localMtime || item.size !== baseEntry.localSize) {
+                if (baseEntry.type === 'file' && item.size !== baseEntry.localSize) {
+                    const remoteItem = remote.get(item.path);
+                    // A size change already proves a local edit. Skip the hash only
+                    // for ordinary same-path files with no competing remote edit.
+                    // A missing path can be a remote rename: detectMoves rewrites
+                    // paths later, so retain the hash if the uid still exists.
+                    const remoteDeleted = !remoteItem || remoteItem.trashed;
+                    if (!remoteByUid) {
+                        remoteByUid = new Map();
+                        for (const candidate of remote.values()) {
+                            remoteByUid.set(candidate.uid, candidate);
+                        }
+                    }
+                    const uidMoved = remoteByUid.get(baseEntry.remoteUid)?.path !== baseEntry.path
+                        && remoteByUid.has(baseEntry.remoteUid);
+                    const remoteUnchanged = remoteItem?.type === 'file'
+                        && remoteItem.uid === baseEntry.remoteUid
+                        && remoteItem.revisionUid === baseEntry.remoteRevisionUid;
+                    // A local move can replace a deleted destination that still
+                    // has a base row. Its source, rather than this stale row,
+                    // determines equality after detectMoves. Keep all identity
+                    // matches conservative in the presence of hardlinks.
+                    const localMoved = identityMatches(item).some(entry => entry.path !== item.path);
+                    if (!uidMoved && !localMoved && (remoteDeleted || remoteUnchanged)) {
+                        continue;
+                    }
+                }
                 needed.push(item);
             }
         } else if (remote.has(item.path)) {
             needed.push(item);
+        } else {
+            // Local renames also acquire a base/remote entry in detectMoves.
+            // Hash changed moved files now, while their filesystem path is real.
+            const previous = identityMatches(item).at(-1);
+            if (previous && (item.mtime !== previous.localMtime || item.size !== previous.localSize)) {
+                needed.push(item);
+            }
         }
     }
 

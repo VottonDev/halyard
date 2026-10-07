@@ -149,6 +149,21 @@ export class Executor {
             filesDown: 0,
         };
         const events: Array<Omit<SyncEvent, 'id' | 'pairId'>> = [];
+        const retainedBase = new Set<string>();
+        const deferredLocal = new Set<string>();
+        const deferredRemote = new Set<string>();
+        const retainDeletion = (action: Action): void => {
+            if (action.kind !== 'deleteLocal' && action.kind !== 'trashRemote') return;
+            const deferred = action.kind === 'deleteLocal' ? deferredLocal : deferredRemote;
+            let ancestor = action.path;
+            for (;;) {
+                retainedBase.add(ancestor);
+                deferred.add(ancestor);
+                const slash = ancestor.lastIndexOf('/');
+                if (slash < 0) break;
+                ancestor = ancestor.slice(0, slash);
+            }
+        };
 
         for (const action of actions) {
             if (this.context.signal?.aborted) {
@@ -160,7 +175,16 @@ export class Executor {
             // between "downloaded" and "overwritten".
             const described = this.describe(action);
             try {
+                // A skipped/failed child must not be removed indirectly by its
+                // parent, nor lose its durable base through a later dropBase.
+                if ((action.kind === 'dropBase' && retainedBase.has(action.path)) ||
+                    (action.kind === 'deleteLocal' && deferredLocal.has(action.path)) ||
+                    (action.kind === 'trashRemote' && deferredRemote.has(action.path))) {
+                    result.completed += 1;
+                    continue;
+                }
                 const performed = await this.perform(action, result);
+                if (!performed) retainDeletion(action);
                 result.completed += 1;
                 if (described && performed) {
                     events.push({ ...described, at: Date.now(), outcome: 'ok', error: null });
@@ -170,6 +194,7 @@ export class Executor {
                 if (this.context.signal?.aborted) {
                     break;
                 }
+                retainDeletion(action);
                 const failure = describeSyncFailure(error);
                 const message = failure.message;
                 logger.warn(`Action ${action.kind} failed: ${message}`);
@@ -670,8 +695,8 @@ export class Executor {
         // Files only: a folder's mtime is bumped by our own child deletions
         // (which run first), so it cannot distinguish a raced-in write from
         // this very sync's work. Raced-in files inside a folder are still
-        // caught. Each file has its own deleteLocal, ordered before the
-        // folder's, and defers individually.
+        // caught by the file's own deleteLocal. Directories are removed only
+        // when empty, preserving skipped children and files created after scan.
         if (scanned && type === 'file') {
             try {
                 const stats = await fsp.stat(target);
@@ -689,16 +714,18 @@ export class Executor {
 
         try {
             if (type === 'folder') {
-                // Recursive, but the reconciler orders children before parents
-                // and refuses to delete a folder holding unsynced local work,
-                // so by now this should be empty of anything we care about.
-                await fsp.rm(target, { recursive: true, force: true });
+                await fsp.rmdir(target);
             } else {
                 await fsp.rm(target, { force: true });
             }
             logger.info(`Deleted ${relative} (removed on Drive; recoverable from Proton's Trash)`);
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (type === 'folder' && (code === 'ENOTEMPTY' || code === 'EEXIST')) {
+                logger.info(`Skipping deletion of ${relative}: folder is not empty`);
+                return false;
+            }
+            if (code !== 'ENOENT') {
                 throw error;
             }
         }
