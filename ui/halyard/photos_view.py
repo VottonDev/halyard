@@ -145,7 +145,7 @@ class PhotosView(Gtk.Box):
         self._loading_page.set_child(spinner)
         self._stack.add_named(self._loading_page, "loading")
         self._empty = Adw.StatusPage(icon_name="image-x-generic-symbolic", title="No photos yet",
-                                    description="Photos added to your Proton Drive gallery will appear here.")
+                                    description="Upload photos or create an album in Albums. Shared albums appear after your own photo gallery has been set up.")
         self._stack.add_named(self._empty, "empty")
         self._error = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Could not load photos")
         retry = Gtk.Button(label="Try again", halign=Gtk.Align.CENTER)
@@ -476,7 +476,7 @@ class PhotosView(Gtk.Box):
                     self._album_rows.append(row)
                 self._more.set_visible(False)
                 self._empty.set_title("No albums yet")
-                self._empty.set_description("Create an album to organise your photos.")
+                self._empty.set_description("Create an album to organise your photos. Shared albums appear after your own photo gallery has been set up.")
                 self._stack.set_visible_child_name("albums" if albums else "empty")
             self.client.list_photo_albums(albums_ok, error)
             return
@@ -514,7 +514,7 @@ class PhotosView(Gtk.Box):
                 self._changed_banner.set_revealed(True)
             self._empty.set_title("No matching photos" if query["search"] or query["kind"] != "all" else "No photos yet")
             self._empty.set_description("Try another filter." if query["search"] or query["kind"] != "all" else
-                                        "Photos added to your Proton Drive gallery will appear here.")
+                                        "Upload photos or create an album in Albums. Shared albums appear after your own photo gallery has been set up.")
             self._stack.set_visible_child_name("photos" if self._photos else "empty")
         self.client.list_photos(query, photos_ok, error)
 

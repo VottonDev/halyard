@@ -5,6 +5,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { PhotoLibrary, registerPhotoRefresh, type PhotosClient } from '../src/photos/library.js';
 import { PhotoTag } from '@protontech/drive-sdk';
+import { EventScheduler } from '@protontech/drive-sdk/dist/internal/events/eventScheduler.js';
 import { PhotoDownloads } from '../src/photos/downloads.js';
 import { PhotoUploads, type UploadClient } from '../src/photos/uploads.js';
 import { HttpClient } from '../src/drive/httpClient.js';
@@ -276,6 +277,106 @@ describe('photo management', () => {
             expect(removed).toEqual(['other-scope']);
             library.reset(); expect(removed).toEqual(['other-scope', 'scope']);
         } finally { library.reset(); }
+    });
+    test('a failed shared event baseline can be retried without losing its subscription', async () => {
+        const g = managementGallery(), added: string[] = [];
+        const shared = { ...g.album, uid: 'other~album', parentUid: undefined, directRole: 'viewer', treeEventScopeId: 'other-scope' };
+        g.nodes.set(shared.uid, shared);
+        let fail = true;
+        (g.client as any).getEventScheduler = async () => ({ addScope(scope: string) { added.push(scope); }, removeScope() {} });
+        (g.client as any).iterateEvents = async function* (scope: string) {
+            if (scope === 'other-scope' && fail) { fail = false; throw new Error('Temporary event failure'); }
+            yield { type: 'fast_forward', eventId: `${scope}-base` };
+        };
+        const library = new PhotoLibrary(async () => g.client);
+        try {
+            await expect(library.listAlbums()).rejects.toThrow('Temporary event failure');
+            expect(added).toEqual(['scope']);
+            expect((await library.listAlbums()).some(a => a.uid === shared.uid)).toBe(true);
+            expect(added).toEqual(['scope', 'other-scope']);
+        } finally { library.reset(); }
+    });
+    test('revoked scopes notify the gallery and stop the pinned scheduler after it rearms', async () => {
+        const g = managementGallery(), changes: number[] = [], errors: unknown[] = [];
+        const shared = { ...g.album, uid: 'other~album', parentUid: undefined, directRole: 'viewer', treeEventScopeId: 'other-scope' };
+        g.nodes.set(shared.uid, shared);
+        let revoked = false, calls = 0, scheduler: EventScheduler, tick: (scope: string) => Promise<void>;
+        (g.client as any).getEventScheduler = async (callback: typeof tick) => {
+            tick = callback; scheduler = new EventScheduler(callback, 'scope'); return scheduler;
+        };
+        (g.client as any).iterateEvents = async function* (scope: string, cursor?: string) {
+            calls++;
+            if (!cursor) yield { type: 'fast_forward', eventId: `${scope}-base` };
+            else if (scope === 'other-scope' && revoked) {
+                g.nodes.delete(shared.uid);
+                yield { type: 'tree_remove', treeEventScopeId: scope, eventId: 'none' };
+                throw new Error('Volume no longer accessible');
+            }
+        };
+        const library = new PhotoLibrary(async () => g.client, revision => changes.push(revision), error => errors.push(error));
+        try {
+            await library.listAlbums();
+            const page = await library.list({ limit: 1 });
+            await new Promise(resolve => setTimeout(resolve, 10));
+            const state = (scheduler! as any).scopes.get('other-scope');
+            revoked = true; (scheduler! as any).poll(state);
+            await new Promise(resolve => setTimeout(resolve, 10));
+            expect(changes).toHaveLength(1); expect(errors).toEqual([]);
+            expect((scheduler! as any).scopes.has('other-scope')).toBe(false);
+            expect(state.timeoutHandle).toBeUndefined();
+            await expect(library.list({ cursor: page.nextCursor! })).rejects.toThrow('changed');
+            const before = calls; await tick!('other-scope'); expect(calls).toBe(before);
+            expect((await library.listAlbums()).some(a => a.uid === shared.uid)).toBe(false);
+        } finally { library.reset(); await new Promise(resolve => setTimeout(resolve, 10)); }
+    });
+    test('events applied before a later stream failure still invalidate visible pages', async () => {
+        const g = gallery(3), changes: number[] = [], errors: unknown[] = [];
+        let fail = false;
+        (g.client as any).iterateEvents = async function* (_scope: string, cursor?: string) {
+            if (!cursor) yield { type: 'fast_forward', eventId: 'base' };
+            else if (fail) {
+                g.nodes.delete('own~photo-1');
+                yield { type: 'node_deleted', nodeUid: 'own~photo-1', eventId: 'next' };
+                throw new Error('Connection lost');
+            }
+        };
+        const library = new PhotoLibrary(async () => g.client, revision => changes.push(revision), error => errors.push(error));
+        try {
+            const page = await library.list({ limit: 1 }); fail = true;
+            await g.event({});
+            expect(changes).toHaveLength(1); expect(errors).toHaveLength(1);
+            await expect(library.list({ cursor: page.nextCursor! })).rejects.toThrow('changed');
+            expect((await library.list({})).photos.some(p => p.uid === 'own~photo-1')).toBe(false);
+        } finally { library.reset(); }
+    });
+    test('reset during an in-flight event callback cancels the pinned scheduler rearm', async () => {
+        const g = gallery(2), changes: number[] = [], errors: unknown[] = [];
+        let scheduler: EventScheduler, wait = false, release: () => void = () => {}, entered: () => void = () => {};
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const started = new Promise<void>(resolve => { entered = resolve; });
+        (g.client as any).getEventScheduler = async (callback: (scope: string) => Promise<void>) => {
+            scheduler = new EventScheduler(callback, 'scope'); return scheduler;
+        };
+        (g.client as any).iterateEvents = async function* (_scope: string, cursor?: string) {
+            if (!cursor) yield { type: 'fast_forward', eventId: 'base' };
+            else if (wait) {
+                entered();
+                await gate;
+                yield { type: 'node_deleted', nodeUid: 'own~photo-1', eventId: 'next' };
+            }
+        };
+        const library = new PhotoLibrary(async () => g.client, revision => changes.push(revision), error => errors.push(error));
+        try {
+            await library.list({}); await new Promise(resolve => setTimeout(resolve, 10));
+            const state = (scheduler! as any).scopes.get('scope');
+            wait = true; (scheduler! as any).poll(state);
+            await started;
+            library.reset(); release();
+            await new Promise(resolve => setTimeout(resolve, 10));
+            expect(changes).toHaveLength(1); expect(errors).toEqual([]);
+            expect((scheduler! as any).scopes.has('scope')).toBe(false);
+            expect(state.timeoutHandle).toBeUndefined();
+        } finally { release(); library.reset(); await new Promise(resolve => setTimeout(resolve, 10)); }
     });
     test('failed preservation keeps membership and partial linked removal is reported', async () => {
         const g = managementGallery(), main = g.nodes.get('own~photo-1'); main.parentUid = g.album.uid;

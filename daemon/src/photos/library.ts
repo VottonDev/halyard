@@ -63,6 +63,7 @@ export class PhotoLibrary {
     private nodes = new Map<string, PhotoNode>();
     private root?: NodeEntity;
     private scheduler?: EventScheduler;
+    private removeEventScope?: (scope: string) => void;
     private eventCursors = new Map<string, string | undefined>();
     private operations = new Map<string, AbortController>();
     private revision = 0;
@@ -98,18 +99,37 @@ export class PhotoLibrary {
                 signal.throwIfAborted();
                 // Establish the cursor before listing so concurrent uploads
                 // cannot slip between the initial enumeration and events.
+                let cursor: string | undefined;
                 for await (const event of client.iterateEvents(root.treeEventScopeId, undefined, signal)) {
                     signal.throwIfAborted();
-                    this.eventCursors.set(root.treeEventScopeId, event.eventId);
+                    cursor = event.eventId;
                 }
+                this.eventCursors.set(root.treeEventScopeId, cursor);
+                const activeScopes = new Set<string>();
                 const scheduler = await client.getEventScheduler(async (scope) => {
-                    if (signal.aborted) return;
-                    try { await this.exclusive(() => this.pullEvents(client, scope, signal)); }
-                    catch (error) { if (!signal.aborted) this.reportError(error); }
+                    activeScopes.add(scope);
+                    try {
+                        if (signal.aborted || !this.eventCursors.has(scope)) return;
+                        try { await this.exclusive(() => this.pullEvents(client, scope, signal)); }
+                        catch (error) { if (!signal.aborted) this.reportError(error); }
+                    } finally {
+                        activeScopes.delete(scope);
+                        if (signal.aborted || !this.eventCursors.has(scope)) {
+                            // The pinned scheduler rearms in promise.finally,
+                            // even after removal. Keep its scope registered
+                            // until that runs, then cancel the new timer too.
+                            setTimeout(() => {
+                                if (signal.aborted || !this.eventCursors.has(scope)) scheduler.removeScope(scope);
+                            }, 0).unref();
+                        }
+                    }
                 });
                 signal.throwIfAborted();
                 this.root = root;
                 this.scheduler = scheduler;
+                this.removeEventScope = scope => {
+                    if (!activeScopes.has(scope)) scheduler.removeScope(scope);
+                };
                 scheduler.addScope(this.root.treeEventScopeId);
                 return client;
             })().catch((error) => { if (!signal.aborted) this.ready = undefined; throw error; });
@@ -206,16 +226,17 @@ export class PhotoLibrary {
                 albums.push(await this.albumFromNode(client, node, signal));
                 scopes.add(node.treeEventScopeId);
                 if (!this.eventCursors.has(node.treeEventScopeId)) {
-                    this.eventCursors.set(node.treeEventScopeId, undefined);
+                    let cursor: string | undefined;
                     for await (const event of client.iterateEvents(node.treeEventScopeId, undefined, signal)) {
                         signal.throwIfAborted();
-                        this.eventCursors.set(node.treeEventScopeId, event.eventId);
+                        cursor = event.eventId;
                     }
+                    this.eventCursors.set(node.treeEventScopeId, cursor);
                     this.scheduler?.addScope(node.treeEventScopeId);
                 }
             }
             for (const scope of this.eventCursors.keys()) if (!scopes.has(scope)) {
-                this.scheduler?.removeScope(scope); this.eventCursors.delete(scope);
+                this.eventCursors.delete(scope); this.removeEventScope?.(scope);
             }
             return albums.sort((a, b) => a.name.localeCompare(b.name));
         });
@@ -270,13 +291,23 @@ export class PhotoLibrary {
     }
 
     private async pullEvents(client: PhotosClient, scope: string, signal: AbortSignal): Promise<void> {
+        if (signal.aborted || !this.eventCursors.has(scope)) return;
         let changed = false;
-        for await (const event of client.iterateEvents(scope, this.eventCursors.get(scope), signal)) {
-            signal.throwIfAborted();
-            changed = (await this.applyEvent(client, event, signal)) || changed;
-            if (event.eventId !== 'none') this.eventCursors.set(scope, event.eventId);
+        try {
+            for await (const event of client.iterateEvents(scope, this.eventCursors.get(scope), signal)) {
+                signal.throwIfAborted();
+                changed = (await this.applyEvent(client, event, signal)) || changed;
+                if (event.type === 'tree_remove') {
+                    this.eventCursors.delete(scope); this.removeEventScope?.(scope);
+                    // The SDK throws the volume 404 after yielding removal.
+                    // Stop here: removal is already a complete invalidation.
+                    break;
+                }
+                if (event.eventId !== 'none') this.eventCursors.set(scope, event.eventId);
+            }
+        } finally {
+            if (changed && !signal.aborted) this.changed(++this.revision);
         }
-        if (changed) this.changed(++this.revision);
     }
 
     private async applyEvent(client: PhotosClient, event: DriveEvent, signal: AbortSignal): Promise<boolean> {
@@ -596,8 +627,8 @@ export class PhotoLibrary {
 
     reset(): void {
         this.lifetime.abort();
-        for (const scope of this.eventCursors.keys()) this.scheduler?.removeScope(scope);
-        this.scheduler = undefined; this.root = undefined; this.eventCursors.clear();
+        for (const scope of this.eventCursors.keys()) this.removeEventScope?.(scope);
+        this.scheduler = undefined; this.removeEventScope = undefined; this.root = undefined; this.eventCursors.clear();
         this.operations.clear();
         this.lifetime = new AbortController(); this.ready = undefined;
         this.collections.clear(); this.nodes.clear();

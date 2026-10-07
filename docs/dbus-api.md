@@ -412,6 +412,12 @@ copy semantics. Shared album event scopes follow the SDK scheduler's cadence.
 Explicit album listings discover accepted/revoked shares; there is no recurring
 album enumeration.
 
+With the pinned SDK, shared-album metadata access also requires the user's own
+Photos volume. If that volume does not yet exist, browsing returns an empty
+gallery without creating cloud storage. The user can explicitly create an album
+or upload a supported photo to initialise their gallery; accepted shared albums
+then become available on reload.
+
 Favourites use `updatePhotos` with `PhotoTag.Favorites` on the main photo, leaving
 other tags and related-file tags intact. Favouriting an owned album-only photo
 saves it to the timeline while retaining its album membership. Add includes
