@@ -6,7 +6,7 @@ import type { DriveSession } from '../drive/session.js';
 import type { SyncManager } from '../engine/manager.js';
 import type { HistoryFilter, SyncEventAction } from '../engine/types.js';
 import { getLogger } from '../log.js';
-import type { PhotoLibrary, PhotoQuery } from '../photos/library.js';
+import type { PhotoLibrary, PhotoQuery, PhotoManagementRequest } from '../photos/library.js';
 import type { PhotoVideos } from '../photos/videos.js';
 import type { PhotoUploads, UploadInput } from '../photos/uploads.js';
 import type { PhotoDownloads } from '../photos/downloads.js';
@@ -231,10 +231,11 @@ export class HalyardInterface extends Interface {
             const input = JSON.parse(filter || '{}') as Record<string, unknown>;
             if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('The photo filter is invalid.');
             const query: PhotoQuery = {};
-            for (const field of ['albumUid', 'cursor', 'search', 'month'] as const) {
+            for (const field of ['albumUid', 'cursor', 'search', 'month', 'year'] as const) {
                 if (typeof input[field] === 'string') query[field] = input[field].slice(0, 512);
             }
             if (query.month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(query.month)) throw new Error('Choose a valid month.');
+            if (query.year && !/^\d{4}$/.test(query.year)) throw new Error('Choose a valid year.');
             if (typeof input.limit === 'number' && Number.isFinite(input.limit)) query.limit = input.limit;
             if (input.kind === 'favourites' || input.kind === 'videos') query.kind = input.kind;
             return JSON.stringify(await this.photos.list(query));
@@ -249,6 +250,39 @@ export class HalyardInterface extends Interface {
     async GetPhoto(uid: string): Promise<string> {
         try { return JSON.stringify(await this.photos.getPhoto(uid)); }
         catch (error) { return fail(error); }
+    }
+
+    async CreatePhotoAlbum(name: string): Promise<string> {
+        try { this.requirePhotoAccess(); return JSON.stringify(await this.photos.createAlbum(name)); }
+        catch (error) { return fail(error); }
+    }
+
+    async RenamePhotoAlbum(request: string): Promise<string> {
+        try {
+            this.requirePhotoAccess();
+            if (request.length > 4096) throw new Error('Choose an album and a name of at most 255 characters.');
+            const input = JSON.parse(request) as { uid?: unknown; name?: unknown } | null;
+            if (!input || typeof input.uid !== 'string' || typeof input.name !== 'string') throw new Error('Choose an album and enter its new name.');
+            return JSON.stringify(await this.photos.renameAlbum(input.uid, input.name));
+        } catch (error) { return fail(error); }
+    }
+
+    async DeletePhotoAlbum(uid: string): Promise<void> {
+        try { this.requirePhotoAccess(); await this.photos.deleteAlbum(uid); }
+        catch (error) { fail(error); }
+    }
+
+    async ManagePhotos(request: string): Promise<string> {
+        try {
+            this.requirePhotoAccess();
+            if (request.length > 128 * 1024) throw new Error('Choose fewer photos at once.');
+            return JSON.stringify(await this.photos.manage(JSON.parse(request) as PhotoManagementRequest));
+        } catch (error) { return fail(error); }
+    }
+
+    CancelPhotoOperation(id: string): void {
+        try { this.requirePhotoAccess(); this.photos.cancelOperation(id); }
+        catch (error) { fail(error); }
     }
 
     async GetPhotoThumbnails(request: string): Promise<string> {
@@ -432,6 +466,11 @@ HalyardInterface.configureMembers({
         ListPhotos: { inSignature: 's', outSignature: 's' },
         ListPhotoAlbums: { inSignature: '', outSignature: 's' },
         GetPhoto: { inSignature: 's', outSignature: 's' },
+        CreatePhotoAlbum: { inSignature: 's', outSignature: 's' },
+        RenamePhotoAlbum: { inSignature: 's', outSignature: 's' },
+        DeletePhotoAlbum: { inSignature: 's', outSignature: '' },
+        ManagePhotos: { inSignature: 's', outSignature: 's' },
+        CancelPhotoOperation: { inSignature: 's', outSignature: '' },
         GetPhotoThumbnails: { inSignature: 's', outSignature: 's' },
         StartPhotoDownload: { inSignature: 's', outSignature: 's' },
         TrashPhotos: { inSignature: 's', outSignature: 's' },

@@ -145,7 +145,7 @@ def run_scenario(app, flags, scenario):
             check("offline retry remains usable", view._stack.get_visible_child_name() == "error")
             return
 
-        check("first page", len(view._photos) == 60 and view._more.get_visible())
+        check("first page awaits scrolling", len(view._photos) == 60 and view._next_cursor and not view._more.get_visible())
         wait(lambda: len(view._textures) > 0)
         wait(lambda: not view._thumb_busy and not view._thumb_idle and not view._thumb_waiters)
         pictures = [w for w in descendants(view._list) if isinstance(w, Gtk.Picture) and w.get_mapped()]
@@ -153,9 +153,10 @@ def run_scenario(app, flags, scenario):
         missing = [p.get_tooltip_text() for p in pictures if p.get_paintable() is None]
         if missing:
             print(f"Missing mapped previews: {missing}; cached textures={len(view._textures)}", flush=True)
-        view._more.emit("clicked")
-        loaded(view)
-        check("paging: 96 unique items and no more button", len(view._photos) == len({p.uid for p in view._photos}) == 96 and not view._more.get_visible())
+        adjustment = view._scrolled.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 100)
+        wait(lambda: len(view._photos) == 96 and not view._loading)
+        check("scroll paging: 96 unique items and no more button", len(view._photos) == len({p.uid for p in view._photos}) == 96 and not view._more.get_visible())
         adjustment = view._scrolled.get_vadjustment()
         adjustment.set_value(350)
         pump()

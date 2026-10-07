@@ -157,7 +157,7 @@ def generated_inputs(folder):
     return paths, inputs, expected
 
 
-def gtk_checks(video_name=None):
+def gtk_checks(video_name=None, scroll=False):
     os.environ["HALYARD_BUS_NAME"] = BUS
     from gi.repository import Adw, Gtk
     from halyard.dbus_client import DaemonClient
@@ -178,6 +178,11 @@ def gtk_checks(video_name=None):
             yield child
             yield from descendants(child)
             child = child.get_next_sibling()
+    def pump(seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            while context.pending(): context.iteration(False)
+            time.sleep(0.01)
     Adw.init()
     app = Adw.Application(application_id="io.github.votton.Halyard.LivePhotosTest", flags=Gio.ApplicationFlags.NON_UNIQUE)
     app.register(None)
@@ -201,6 +206,76 @@ def gtk_checks(video_name=None):
         wait(lambda: not view._thumb_idle and not view._thumb_busy and not view._thumb_waiters)
         pictures = [w for w in descendants(view._list) if isinstance(w, Gtk.Picture) and w.get_mapped()]
         check("real thumbnails paint on first load", bool(pictures) and any(p.get_paintable() for p in pictures))
+        if scroll:
+            view._select_button.emit("clicked")
+            view._tile_clicked(view._photos[0])
+            selected = set(view._selected)
+            adjustment = view._scrolled.get_vadjustment()
+            wait(lambda: adjustment.get_page_size() > 0)
+            for index in range(3):
+                if not view._next_cursor: break
+                wait(lambda: view._scroll_restore_position is None)
+                before = len(view._photos)
+                started = time.monotonic()
+                adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 100)
+                wait(lambda: (len(view._photos) > before and not view._loading) or view._page_error or not view._next_cursor)
+                check(f"real scroll appends page {index + 1}", not view._page_error and len(view._photos) > before and not view._more.get_visible(), f"{len(view._photos)} photos; {time.monotonic() - started:.2f}s")
+                check("real scroll retains unique photos and selection", len({p.uid for p in view._photos}) == len(view._photos) and view._selected == selected and view._selecting)
+                wait(lambda: not view._thumb_idle and not view._thumb_busy and not view._thumb_waiters)
+            wait(lambda: view._scroll_restore_position is None)
+            view._tile_clicked(view._photos[-10])
+            selected, extent = set(view._selected), len(view._photos)
+            anchor = view._selection_anchor
+            adjustment.set_value((adjustment.get_upper() - adjustment.get_page_size()) * 0.6)
+            pump(0.4)
+            position = adjustment.get_value()
+            view.reload(preserve=True)
+            wait(lambda: not view._loading and view._scroll_restore_position is None)
+            check("real refresh retains deep position and loaded selection", len(view._photos) >= extent and view._selected == selected and view._selection_anchor == anchor and abs(adjustment.get_value() - position) < 2, f"offset {position:.0f} → {adjustment.get_value():.0f}")
+            view._select_button.emit("clicked")
+            view._date_button.emit("clicked")
+            wait(lambda: window.get_visible_dialog() is not None)
+            alert = window.get_visible_dialog()
+            year = next(w for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.SpinButton))
+            year.set_value(2017)
+            started = time.monotonic()
+            next(w for w in descendants(alert) if isinstance(w, Gtk.Button) and w.get_label() == alert.get_response_label("show")).emit("clicked")
+            wait(lambda: view._year == "2017" and not view._loading)
+            check("real year jump shows only the requested year", not view._page_error and all(datetime.fromtimestamp(p.capture_time / 1000, timezone.utc).year == 2017 for p in view._photos), f"{len(view._photos)} photos; {time.monotonic() - started:.2f}s")
+            if view._photos:
+                period = datetime.fromtimestamp(view._photos[0].capture_time / 1000, timezone.utc).strftime("%Y-%m")
+                view._date_button.emit("clicked")
+                wait(lambda: window.get_visible_dialog() is not None)
+                alert = window.get_visible_dialog()
+                next(w for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.SpinButton)).set_value(int(period[:4]))
+                next(w for w in descendants(alert.get_extra_child()) if isinstance(w, Gtk.DropDown)).set_selected(int(period[-2:]))
+                next(w for w in descendants(alert) if isinstance(w, Gtk.Button) and w.get_label() == alert.get_response_label("show")).emit("clicked")
+                wait(lambda: view._month == period and not view._loading)
+                for _ in range(10):
+                    if not view._next_cursor: break
+                    wait(lambda: view._scroll_restore_position is None)
+                    cursor = view._next_cursor
+                    adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+                    view._schedule_scroll_load()
+                    wait(lambda: not view._loading and (view._next_cursor != cursor or view._page_error))
+                    if view._page_error: break
+                check("real month jump includes only the requested month", bool(view._photos) and not view._page_error and all(datetime.fromtimestamp(p.capture_time / 1000, timezone.utc).strftime("%Y-%m") == period for p in view._photos), f"{len(view._photos)} photos in {period}")
+                if not view._next_cursor:
+                    wait(lambda: view._scroll_restore_position is None)
+                    original, requests = client.list_photos, []
+                    def counted(query, on_ok, on_err):
+                        requests.append(query); original(query, on_ok, on_err)
+                    client.list_photos = counted
+                    try:
+                        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+                        view._schedule_scroll_load(); pump(0.6)
+                        check("real month end stays idle when scrolling to the bottom", not requests and not view._loading, f"{len(view._photos)} photos; zero further requests")
+                    finally: client.list_photos = original
+                else:
+                    print("SKIP real month-end idle check: bounded ten-page traversal did not reach end", flush=True)
+            view._period_banner.emit("button-clicked")
+            wait(lambda: not view._loading)
+            check("real All dates returns to the timeline", not view._year and not view._month and bool(view._photos))
         still = next((p for p in view._photos if not p.is_video), view._photos[0])
         window.open_photo(still, tuple(view._photos))
         preview = window._preview_page
@@ -307,6 +382,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--writes", action="store_true")
     parser.add_argument("--gtk", action="store_true", help="also check GTK rendering on the available display")
+    parser.add_argument("--scroll", action="store_true", help="read-only GTK scrolling and year-jump checks on the real library")
     parser.add_argument("--video", nargs="?", const="", help="also test GTK video playback and seeking, optionally searching by filename")
     args = parser.parse_args()
     proxy = Gio.DBusProxy.new_for_bus_sync(Gio.BusType.SESSION, Gio.DBusProxyFlags.DO_NOT_AUTO_START, None, BUS, OBJECT, BUS, None)
@@ -318,8 +394,8 @@ def main():
         raise SystemExit("The real daemon is not signed in")
     try:
         read_checks(proxy)
-        if args.gtk or args.video is not None:
-            gtk_checks(args.video)
+        if args.gtk or args.scroll or args.video is not None:
+            gtk_checks(args.video, args.scroll)
         if args.writes:
             write_checks(proxy)
     except Exception as error:

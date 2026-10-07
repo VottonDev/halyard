@@ -340,11 +340,21 @@ access. Opening Folders does not access the photo gallery.
 | `ControlPhotoUpload` | `ss → ()` | job id, action |
 
 `PhotoQuery` accepts `albumUid`, `cursor`, `limit` (1 to 100, default 60),
-`search` (filename substring), `kind` (`all`, `favourites`, `videos`) and `month`
-(`YYYY-MM`, in UTC). Leave `albumUid` absent for the timeline. A cursor is opaque
+`search` (filename substring), `kind` (`all`, `favourites`, `videos`), `year`
+(`YYYY`) and `month` (`YYYY-MM`, in UTC). Leave `albumUid` absent for the
+timeline. A cursor is opaque
 and must be used with the same query. A gallery event invalidates old cursors;
 reload from the first page after `PhotosChanged`. Filtered requests examine at
 most 600 entries, so an empty page can have a non-null `nextCursor`.
+Year/month filtering uses SDK date placeholders before fetching decrypted nodes.
+Pagination ends once the SDK iterator has passed the chosen period and no
+matching cached placeholders remain. This ends only that query; older dates
+and all-dates browsing still use the same lazy collection.
+The UI follows those pages on a date jump and loads further gallery pages near
+the bottom of the viewport. Continuation requests are serialized; a failed
+request exposes a manual retry instead of repeating automatically. A stale
+continuation refreshes once while retaining selection and the requested extent.
+Explicit refresh also retains loaded pages and selection where photos remain.
 
 ```ts
 type Photo = {
@@ -357,10 +367,13 @@ type Photo = {
   favourite: boolean;
   relatedUids: string[];           // related live/motion assets
   error: string | null;
+  canFavourite: boolean;            // owned Photos volume only
+  canTrash: boolean;                // owned Photos volume only
 };
 type PhotoPage = { photos: Photo[]; nextCursor: string | null; revision: number };
 type PhotoAlbum = {
   uid: string; name: string; photoCount: number; coverPhotoUid: string | null;
+  sharedWithMe: boolean; canWrite: boolean; canDelete: boolean;
 };
 type PhotoThumbnail = { uid: string; data: string | null; error: string | null };
 ```
@@ -373,6 +386,89 @@ gallery state. The initial SDK timeline iterator is retained between pages;
 subsequent remote changes come from the SDK event scheduler. There is no
 periodic recursive gallery walk. Explicit SDK tree refresh events can discard
 that iterator. Browsing an empty gallery never creates a Photos volume.
+
+### Photo and album management
+
+| Method | Signature | Argument / result |
+|---|---|---|
+| `CreatePhotoAlbum` | `s → s` | name / `PhotoAlbum` |
+| `RenamePhotoAlbum` | `s → s` | `{uid: string, name: string}` / `PhotoAlbum` |
+| `DeletePhotoAlbum` | `s → ()` | album uid |
+| `ManagePhotos` | `s → s` | `PhotoManagementRequest` / `PhotoManagementResult` |
+| `CancelPhotoOperation` | `s → ()` | operation id; unknown or completed ids are a no-op |
+
+```ts
+type PhotoManagementRequest = {
+  operationId: string;             // unique per active call, 1..80 letters/digits/_/-
+  action: 'favourite' | 'add' | 'remove';
+  uids: string[];                  // 1..100 main photos; duplicates handled once
+  favourite?: boolean;            // required for favourite
+  albumUid?: string;              // required for add/remove
+};
+type PhotoManagementResult = {
+  results: {uid: string; ok: boolean; error: string | null}[];
+  cancelled: boolean;
+  revision: number;
+};
+```
+
+The UI processes larger selections in sequential calls of 25 photos,
+with a unique operation ID per call. It keeps confirmed outcomes across batches,
+stops sending new batches on cancellation or a request error, and refreshes once
+at the end. Management calls allow five minutes for fresh metadata, related
+assets and preservation; cancellation remains available while waiting.
+Only confirmed album additions clear their selection.
+
+Albums include accepted albums shared with the user. `canWrite` reflects the
+highest accessible SDK role, including inherited editor/admin access. Only
+owned albums have `canDelete`. These flags guide the UI; the daemon checks fresh
+album permissions again before writes. Shared-album photos can be viewed,
+downloaded and added to writable albums; favourites and Trash are restricted
+to the user's own Photos volume. Cross-volume album additions use the SDK's
+copy semantics. Shared album event scopes follow the SDK scheduler's cadence.
+Explicit album listings discover accepted/revoked shares; there is no recurring
+album enumeration.
+
+With the pinned SDK, shared-album metadata access also requires the user's own
+Photos volume. If that volume does not yet exist, browsing returns an empty
+gallery without creating cloud storage. The user can explicitly create an album
+or upload a supported photo to initialise their gallery; accepted shared albums
+then become available on reload.
+
+Favourites use `updatePhotos` with `PhotoTag.Favorites` on the main photo, leaving
+other tags and related-file tags intact. Favouriting an owned album-only photo
+saves it to the timeline while retaining its album membership. Add includes
+related assets through the SDK. Remove explicitly includes related assets and
+saves album-only photos to the timeline first (copying shared-volume photos).
+If preservation cannot be confirmed, that photo's membership is kept. Removing
+membership does not trash or delete originals.
+Adding a photo already in an album is a confirmed no-op only when fresh metadata
+also confirms its related assets are members. Otherwise SDK errors remain errors.
+After additions the UI clears confirmed items from selection, retaining failed
+or unconfirmed items and keeping selection mode available for the next batch.
+Error details offer dismissal without changing any mutation result.
+
+`DeletePhotoAlbum` permanently deletes the album after UI confirmation. It
+always passes `{saveToTimeline: true}` to the SDK and never `force`. Album-only
+photos, including related assets, must be saved successfully before the SDK
+retries deletion. Failure stops deletion; already saved photos remain saved.
+The SDK has no cancellation signal for create, rename or delete; the UI must
+not offer cancellation for those calls. Explicit creation may initialise an
+empty Photos volume. Names must contain 1..255 characters after trimming and
+cannot contain slashes or control characters.
+
+`ManagePhotos` remains pending while cancellable SDK work runs. Cancellation
+aborts supported steps and preserves completed results. Every selected main
+photo has a result; missing SDK results and interrupted requests are errors,
+never fabricated successes. A failed main-photo removal can include partially
+removed linked memberships. Reload before retrying unconfirmed changes.
+The GTK gallery and preview offer details identifying each failed photo.
+Attempted writes invalidate gallery collections and album metadata and emit
+`PhotosChanged`, even when a response fails or a cancellation races a write.
+Affected SDK metadata is evicted too, so a lost reply cannot leave reload using
+the pre-write state. Additions and favourite preparation retain SDK batching.
+Account reset aborts work and suppresses old-account results. Client timeouts
+also mean an outcome is unconfirmed; check the library before retrying.
 
 ```ts
 type PhotoDownloadFile = {

@@ -656,7 +656,9 @@ class HalyardWindow(Adw.ApplicationWindow):
         self._update_navigation(self.account_logged_in)
         name = self._views.get_visible_child_name()
         if name == "photos": self._photos_view.activate()
-        elif name == "activity": self._on_activity_tab()
+        else:
+            self._photos_view.deactivate()
+            if name == "activity": self._on_activity_tab()
 
     def _on_activity_tab(self, *_):
         if not self.account_logged_in or self._views.get_visible_child_name() != "activity": return
@@ -678,7 +680,7 @@ class HalyardWindow(Adw.ApplicationWindow):
 
     def open_photo(self, photo, photos):
         self.close_photo()
-        self._preview_page = PhotoPreviewPage(self._client, self, photo, photos)
+        self._preview_page = PhotoPreviewPage(self._client, self, photo, photos, self._photos_view)
         self._nav.push(self._preview_page)
 
     def close_photo(self):
@@ -692,6 +694,12 @@ class HalyardWindow(Adw.ApplicationWindow):
 
     def trash_photos(self, photos):
         self._photos_view.trash_items(photos)
+
+    def favourite_photos(self, photos, favourite):
+        self._photos_view.set_favourites(photos, favourite)
+
+    def add_photos_to_album(self, photos):
+        self._photos_view.add_to_album(photos)
 
     def download_photos(self, photos):
         self._photos_view.download_items(photos)
