@@ -87,9 +87,26 @@ def respond(dialog, answer):
 
 def select(page, *uids):
     page._selection.unselect_all()
-    for position in range(page._store.get_n_items()):
-        if page._store.get_item(position).item.uid in uids:
+    for position in range(page._sorted.get_n_items()):
+        if page._sorted.get_item(position).item.uid in uids:
             page._selection.select_item(position, False)
+
+
+def ordered_items(page):
+    return [page._sorted.get_item(position).item for position in range(page._sorted.get_n_items())]
+
+
+def visible_anchor(page):
+    header_height = page._table.get_first_child().get_height()
+    positions = []
+    names = {f"Select {item.name}": item.uid for item in page._items.values()}
+    for widget in descendants(page._table):
+        if not isinstance(widget, Gtk.CheckButton) or widget.get_tooltip_text() not in names: continue
+        ok, bounds = widget.compute_bounds(page._scrolled)
+        if ok and header_height <= bounds.get_y() < page._scrolled.get_height():
+            positions.append((bounds.get_y(), names[widget.get_tooltip_text()]))
+    y, uid = min(positions)
+    return uid, y
 
 
 def footer_y(page, window):
@@ -137,6 +154,8 @@ def scenario(app):
             page = window._trash_page
             wait(lambda: not page._loading and len(page._items) == 50)
             check("menu opens a paged Files and folders Trash", page.source == "drive" and page._more.get_visible() and window._nav.get_visible_page() is page)
+            dates = [item.trashed_at for item in ordered_items(page)]
+            check("default order is newest deleted first and partial counts say loaded", dates == sorted(dates, reverse=True) and ordered_items(page)[0].uid == "report" and page._count.get_text() == "50 items loaded")
             report_check = next(w for w in descendants(page._table) if isinstance(w, Gtk.CheckButton) and w.get_tooltip_text() == f"Select {page._items['report'].name}")
             report_check.set_active(True)
             check("file checkbox updates native selection and restore count", page._selected == {"report"} and page._restore.get_label() == "Restore 1")
@@ -160,6 +179,8 @@ def scenario(app):
                 pump(0.3)
                 snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-narrow")))
                 check("narrow window keeps restore controls inside the window", footer_y(page, window) + page._footer.get_height() <= window.get_height() and page._restore.compute_bounds(window)[1].get_x() + page._restore.get_width() <= window.get_width())
+                size_labels = [widget for widget in descendants(page._table) if isinstance(widget, Gtk.Label) and widget.get_tooltip_text() == "2.7 MB"]
+                check("megabyte sizes fit completely in the narrow table", bool(size_labels) and all(label.get_width() >= label.get_layout().get_pixel_size()[0] for label in size_labels))
                 window.set_default_size(1000, 700)
                 pump(0.3)
                 snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-wide")))
@@ -169,6 +190,7 @@ def scenario(app):
             adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 40)
             pump()
             scroll_before, footer_before = adjustment.get_value(), footer_y(page, window)
+            anchor_before = visible_anchor(page)
             # Hold the real mock reply so loading layout can be checked reliably.
             list_trash = client.list_trash
             pending = []
@@ -181,10 +203,28 @@ def scenario(app):
             if screenshot: snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-loading")))
             pending[0][0](pending[0][1])
             wait(lambda: not page._loading and len(page._items) == 56)
-            check("appended rows preserve scroll position and existing selection", abs(adjustment.get_value() - scroll_before) < 1 and page._selected == {"report"} and abs(footer_y(page, window) - footer_before) < 1)
-            bad = next(position for position in range(page._store.get_n_items()) if page._store.get_item(position).item.uid == "unreadable")
+            anchor_after = visible_anchor(page)
+            check("sorted new pages preserve the visible file and existing selection", anchor_before[0] == anchor_after[0] and abs(anchor_before[1] - anchor_after[1]) < 1 and page._selected == {"report"} and abs(footer_y(page, window) - footer_before) < 1)
+            check("later pages join the current sort and missing dates appear last", ordered_items(page)[0].uid == "archived-48" and ordered_items(page)[-1].uid == "unreadable" and page._count.get_text() == "56 items")
+            bad = next(position for position in range(page._sorted.get_n_items()) if page._sorted.get_item(position).item.uid == "unreadable")
             page._selection.select_item(bad, False)
             check("next page appends without duplicates and unverified names cannot be selected", page._store.get_n_items() == 56 and not page._more.get_visible() and not page._selection.is_selected(bad) and "unreadable" not in page._selected)
+
+            select(page, "report", "folder", "archived-48")
+            page._table.sort_by_column(page._name_column, Gtk.SortType.ASCENDING)
+            pump()
+            names = [item.name for item in ordered_items(page)]
+            check("Name sorts naturally, including 9 before 100", names.index("Archived 9.txt") < names.index("Archived 100.txt") and names.index("Budget.xlsx") < names.index("Report.md"))
+            page._table.sort_by_column(page._date_column, Gtk.SortType.ASCENDING)
+            pump()
+            dates = [item.trashed_at for item in ordered_items(page) if item.trashed_at is not None]
+            check("Deleted can also sort oldest first", dates == sorted(dates))
+            page._table.sort_by_column(page._table.get_columns().get_item(2), Gtk.SortType.ASCENDING)
+            pump()
+            sizes = [item.size for item in ordered_items(page) if item.size is not None]
+            check("Size sorts numerically and treats empty files as zero bytes", sizes == sorted(sizes) and sizes[0] == 0)
+            check("all header sorts keep selected file identities", page._selected == {"report", "folder", "archived-48"} and page._restore.get_label() == "Restore 3")
+            page._table.sort_by_column(page._date_column, Gtk.SortType.DESCENDING)
 
             page.reload()
             wait(lambda: not page._loading and len(page._items) == 50)

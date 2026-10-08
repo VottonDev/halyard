@@ -734,10 +734,23 @@ class MockDaemon:
             "photos": [("live", "IMG_2042.jpg", "photo"), ("companion", "IMG_2042.mov", "photo"),
                        ("album", "Summer", "album"), ("photo-folder", "Photo folder", "folder")],
         }.items():
+            deleted_at = minutes_ago(180 * 24 * 60)
             for uid, name, kind in entries:
                 self.trash_items[source].append({"uid": uid, "source": source, "name": name, "type": kind,
                     "size": None if kind in ("folder", "album") else 4096,
-                    "trashedAt": minutes_ago(180), "error": None})
+                    "trashedAt": deleted_at, "error": None})
+        # Deliberately unordered dates and mixed sizes, including a newer item
+        # on the second page, exercise client sorting across SDK pages.
+        overrides = {
+            "report": {"trashedAt": minutes_ago(10), "size": 2_700_000},
+            "folder": {"trashedAt": minutes_ago(20 * 24 * 60)},
+            "collision": {"trashedAt": minutes_ago(60 * 24 * 60), "size": 3_145_728},
+            "missing": {"trashedAt": minutes_ago(120 * 24 * 60)},
+            "unknown": {"trashedAt": minutes_ago(45 * 24 * 60)},
+            "archived-47": {"name": "Archived 100.txt"},
+            "archived-48": {"name": "Archived 9.txt", "trashedAt": minutes_ago(5), "size": 0},
+        }
+        for entry in self.trash_items["drive"]: entry.update(overrides.get(entry["uid"], {}))
         self.trash_items["drive"].append({"uid": "unreadable", "source": "drive", "name": "Unavailable name", "type": "file",
                                          "size": None, "trashedAt": None, "error": "The item name could not be decrypted."})
         self.uploads = []

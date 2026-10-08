@@ -70,6 +70,12 @@ creating one. Items are in SDK order, at most 50 per page; sizes are client
 claims and can be absent. Undecryptable names/unsupported types are visible
 with an error and cannot be selected for restore.
 
+The GTK table sorts the loaded items, initially by deletion time newest first.
+Name, Deleted and Size headings change the sort; newly loaded pages join that
+order. This does not imply the SDK has returned the newest items first: the
+count says "loaded" while more pages remain. Sorting preserves selected item
+identities.
+
 Use a fresh `requestId` (1–80 ASCII letters, digits, underscores or hyphens)
 when refreshing, then pass the returned `nextCursor` with that same ID to load
 more. Cursors expire after five minutes idle and after a restore that may have

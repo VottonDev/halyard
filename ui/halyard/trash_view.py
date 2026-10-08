@@ -16,6 +16,11 @@ class TrashEntry(GObject.Object):
     def __init__(self, item: TrashItem) -> None:
         super().__init__()
         self.item = item
+        self.name_key = (GLib.utf8_collate_key_for_filename(item.name.casefold(), -1), item.uid)
+
+
+def _compare(left, right):
+    return Gtk.Ordering.SMALLER if left < right else Gtk.Ordering.LARGER if left > right else Gtk.Ordering.EQUAL
 
 
 class TrashPage(Adw.NavigationPage):
@@ -69,21 +74,38 @@ class TrashPage(Adw.NavigationPage):
         content.append(controls)
 
         self._store = Gio.ListStore.new(TrashEntry)
-        self._selection = Gtk.MultiSelection.new(self._store)
+        self._sorted = Gtk.SortListModel.new(self._store, None)
+        self._selection = Gtk.MultiSelection.new(self._sorted)
         self._selection.connect("selection-changed", self._selection_changed)
         self._table = Gtk.ColumnView.new(self._selection)
         self._table.set_show_row_separators(True)
+        name_sorter = Gtk.CustomSorter.new(lambda a, b, *_: _compare(a.name_key, b.name_key))
         self._name_column = Gtk.ColumnViewColumn.new("Name", self._name_factory())
+        self._name_column.set_sorter(name_sorter)
         self._name_column.set_expand(True)
         self._name_column.set_resizable(True)
         self._name_column.set_fixed_width(220)
         self._table.append_column(self._name_column)
         self._date_column = Gtk.ColumnViewColumn.new("Deleted", self._metadata_factory("date"))
+        self._date_column.set_sorter(Gtk.CustomSorter.new(lambda a, b, *_: _compare(
+            a.item.trashed_at if a.item.trashed_at is not None else -1,
+            b.item.trashed_at if b.item.trashed_at is not None else -1)))
         self._date_column.set_fixed_width(140)
         self._table.append_column(self._date_column)
         size_column = Gtk.ColumnViewColumn.new("Size", self._metadata_factory("size"))
-        size_column.set_fixed_width(85)
+        size_column.set_sorter(Gtk.CustomSorter.new(lambda a, b, *_: _compare(
+            a.item.size if a.item.size is not None else -1,
+            b.item.size if b.item.size is not None else -1)))
+        size_column.set_fixed_width(115)
+        size_column.set_resizable(True)
         self._table.append_column(size_column)
+        # The SDK pages are unordered. Sort the loaded objects without changing
+        # the daemon cursor or the selection's association with those objects.
+        sorter = Gtk.MultiSorter.new()
+        sorter.append(self._table.get_sorter())
+        sorter.append(name_sorter)
+        self._sorted.set_sorter(sorter)
+        self._table.sort_by_column(self._date_column, Gtk.SortType.DESCENDING)
         self._scrolled = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
         self._scrolled.set_child(self._table)
         frame = Gtk.Frame(child=self._scrolled)
@@ -123,6 +145,7 @@ class TrashPage(Adw.NavigationPage):
         self._loading_box.append(cancel)
         self._footer.append(self._loading_box)
         self._more = Gtk.Button(label="Load more", visible=False)
+        self._more.set_tooltip_text("Load more deleted items and include them in the current sort")
         self._more.connect("clicked", lambda *_: self._load_more() if self._listing_id else self.reload())
         self._footer.append(self._more)
         self._restore = Gtk.Button(label="Restore", sensitive=False)
@@ -175,7 +198,8 @@ class TrashPage(Adw.NavigationPage):
         factory = Gtk.SignalListItemFactory()
         def setup(_factory, cell):
             label = Gtk.Label(xalign=1 if field == "size" else 0,
-                              ellipsize=Pango.EllipsizeMode.END, margin_start=10, margin_end=10)
+                              ellipsize=Pango.EllipsizeMode.NONE if field == "size" else Pango.EllipsizeMode.END,
+                              margin_start=10, margin_end=10)
             label.add_css_class("dim-label")
             cell.set_child(label)
         def bind(_factory, cell):
@@ -183,7 +207,7 @@ class TrashPage(Adw.NavigationPage):
             label = cell.get_child()
             if field == "size":
                 label.set_text(format_size(item.size) if item.size is not None else "—")
-                label.set_tooltip_text(None)
+                label.set_tooltip_text(label.get_text())
             else:
                 when = GLib.DateTime.new_from_unix_local(int(item.trashed_at / 1000)) if item.trashed_at else None
                 label.set_text(when.format("%-d %b %Y") if when else "—")
@@ -205,7 +229,7 @@ class TrashPage(Adw.NavigationPage):
             self._selected.clear()
             for n in range(selected.get_size()):
                 position = selected.get_nth(n)
-                item = self._store.get_item(position).item
+                item = self._sorted.get_item(position).item
                 if item.error:
                     self._selection.unselect_item(position)
                     continue
@@ -312,7 +336,8 @@ class TrashPage(Adw.NavigationPage):
             self._more.set_visible(bool(self._cursor))
             self._more.set_sensitive(True)
             count = len(self._items)
-            self._count.set_text(f"{count} {'item' if count == 1 else 'items'}{' shown' if self._cursor else ''}")
+            self._count.set_text(f"{count} {'item' if count == 1 else 'items'}{' loaded' if self._cursor else ''}")
+            self._count.set_tooltip_text("Only loaded items are sorted. Load more to include additional deleted items." if self._cursor else "All available items are loaded.")
             self._empty.set_description("Deleted photos and albums will appear here." if self.source == "photos" else "Deleted files and folders will appear here.")
             self._stack.set_visible_child_name("list" if self._items else "empty")
             self._update_restore()
