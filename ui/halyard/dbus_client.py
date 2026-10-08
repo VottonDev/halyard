@@ -28,6 +28,7 @@ from .models import (
     RemoteFolder,
     Status,
     Photo, PhotoPage, PhotoAlbum, PhotoThumbnail, PhotoDownload,
+    TrashPage, TrashRestore,
 )
 
 #: The production daemon's bus name, as fixed by docs/dbus-api.md.
@@ -90,6 +91,7 @@ class DaemonClient(GObject.Object):
         "video-preview-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
         "photo-uploads-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
         "photo-downloads-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
+        "trash-restores-changed": (GObject.SIGNAL_RUN_FIRST, None, (object,)),
     }
 
     def __init__(self) -> None:
@@ -189,6 +191,8 @@ class DaemonClient(GObject.Object):
             self.emit("photo-uploads-changed", tuple(PhotoDownload.from_json(j) for j in data) if isinstance(data, list) else ())
         elif signal_name == "PhotoDownloadsChanged":
             self.emit("photo-downloads-changed", tuple(PhotoDownload.from_json(j) for j in data) if isinstance(data, list) else ())
+        elif signal_name == "TrashRestoresChanged":
+            self.emit("trash-restores-changed", tuple(TrashRestore.from_json(j) for j in data) if isinstance(data, list) else ())
 
     # -- the async call plumbing -----------------------------------------
 
@@ -243,6 +247,26 @@ class DaemonClient(GObject.Object):
             None,
             on_done,
         )
+
+    # -- Trash recovery --------------------------------------------------
+
+    def list_trash(self, query: dict, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ListTrash", GLib.Variant("(s)", [json.dumps(query)]), parse=TrashPage.from_json,
+                   on_ok=on_ok, on_err=on_err, timeout_ms=SLOW_TIMEOUT_MS)
+
+    def cancel_trash_listing(self, request_id: str) -> None:
+        self._call("CancelTrashListing", GLib.Variant("(s)", [request_id]))
+
+    def start_trash_restore(self, source: str, uids: list[str], on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("StartTrashRestore", GLib.Variant("(s)", [json.dumps({"source": source, "uids": uids})]),
+                   parse=TrashRestore.from_json, on_ok=on_ok, on_err=on_err)
+
+    def list_trash_restores(self, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("ListTrashRestores", parse=lambda data: tuple(TrashRestore.from_json(j) for j in data) if isinstance(data, list) else (),
+                   on_ok=on_ok, on_err=on_err)
+
+    def cancel_trash_restore(self, restore_id: str, on_ok: OkCallback, on_err: ErrCallback) -> None:
+        self._call("CancelTrashRestore", GLib.Variant("(s)", [restore_id]), on_ok=on_ok, on_err=on_err)
 
     # -- account ---------------------------------------------------------
 

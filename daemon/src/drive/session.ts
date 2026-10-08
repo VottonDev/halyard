@@ -219,6 +219,13 @@ export class DriveSession {
         return this.client;
     }
 
+    /** Targeted SDK metadata refresh; crypto material and sync state are kept. */
+    async refreshNodes(uids: string[]): Promise<void> {
+        this.getClient();
+        // Pinned SDK v0.22.2 uses node-<uid> metadata keys for both volumes.
+        await this.caches!.entitiesCache.removeEntities(uids.map(uid => `node-${uid}`));
+    }
+
     /** Lazy: opening Folders never fetches or initialises the photo gallery. */
     async getPhotosClient(): Promise<ProtonDrivePhotosClient | null> {
         this.getClient(); // Require a signed-in session, including on cache hits.

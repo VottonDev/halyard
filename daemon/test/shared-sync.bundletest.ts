@@ -33,6 +33,127 @@ after(async () => {
     await fsp.rm(testDataHome, { recursive: true, force: true });
 });
 
+test('Trash verifies real pinned SDK batch replies through its cache, with all HTTP writes mocked', async () => {
+    const { DriveSession } = await import('../src/drive/session.js');
+    const { TrashRecovery } = await import('../src/drive/trash.js');
+    const { MemoryCache } = await import('@protontech/drive-sdk/dist/cache/memoryCache.js');
+    const { DriveAPIService } = await import('@protontech/drive-sdk/dist/internal/apiService/apiService.js');
+    const { SDKEvents } = await import('@protontech/drive-sdk/dist/internal/sdkEvents.js');
+    const { PhotosNodesAPIService, PhotosNodesCache, PhotosNodesAccess, PhotosNodesManagement } =
+        await import('@protontech/drive-sdk/dist/internal/photos/nodes.js');
+    type PhotoNode = import('@protontech/drive-sdk/dist/internal/photos/interface.js').DecryptedPhotoNode;
+    const logger = { debug() {}, info() {}, warn() {}, error() {} };
+    const telemetry = { getLogger: () => logger, recordMetric() {} };
+    const entitiesCache = new MemoryCache<string>();
+    const cache = new PhotosNodesCache(logger, entitiesCache);
+    const related = Array.from({ length: 100 }, (_, i) => `photos~asset-${i}`);
+    const makeNode = (uid: string, type = NodeType.Photo) => ({
+        uid, type, parentUid: 'photos~root', name: { ok: true, value: uid },
+        creationTime: new Date('2026-10-01'), modificationTime: new Date('2026-10-01'),
+        trashTime: new Date('2026-10-02'), directRole: MemberRole.Admin,
+        isShared: false, isStale: false,
+        photo: { captureTime: new Date('2026-10-01'), tags: [], albums: [], relatedPhotoNodeUids: [] },
+    } as unknown as PhotoNode);
+    const main = makeNode('photos~main'); main.photo!.relatedPhotoNodeUids = related;
+    const remote = new Map([main, ...related.map(uid => makeNode(uid))].map(node => [node.uid, node]));
+    const root = makeNode('photos~root', NodeType.Folder); root.trashTime = undefined;
+    remote.set(root.uid, root);
+    const requests: string[][] = [];
+    const http = {
+        async fetchJson(request: import('@protontech/drive-sdk').ProtonDriveHTTPClientJsonRequest) {
+            assert.equal(request.method, 'PUT');
+            assert.equal(request.url, 'https://offline.invalid/drive/v2/volumes/photos/trash/restore_multiple');
+            request.signal?.throwIfAborted();
+            const ids = (request.json as { LinkIDs: string[] }).LinkIDs;
+            requests.push(ids);
+            for (const id of ids) if (!['asset-0', 'asset-99'].includes(id)) remote.get(`photos~${id}`)!.trashTime = undefined;
+            // Deliberately omit successful responses, including an unapplied
+            // item in the second batch. The SDK synthesises ok for these.
+            return Response.json({ Code: 1000, Responses: ids.includes('asset-0')
+                ? [{ LinkID: 'asset-0', Response: { Code: 2001, Error: 'Permission denied' } }] : [] });
+        },
+        async fetchBlob(): Promise<Response> { throw new Error('Unexpected blob request'); },
+    };
+    const api = new PhotosNodesAPIService(logger, new DriveAPIService(telemetry,
+        new SDKEvents(telemetry), http, 'https://offline.invalid', 'en'), undefined);
+    const access = new PhotosNodesAccess(telemetry, api, cache, {} as never, {} as never, {} as never);
+    // Only metadata decryption/loading is a fixture. The SDK's cache reads,
+    // stale-node handling, management, batching and HTTP response mapping run.
+    (access as unknown as { loadNode(uid: string): Promise<{ node: PhotoNode }> }).loadNode = async uid => {
+        const node = structuredClone(remote.get(uid)!);
+        assert.ok(node, `Missing fixture ${uid}`);
+        await cache.setNode(node);
+        return { node };
+    };
+    const management = new PhotosNodesManagement(api, {} as never, {} as never, access);
+    const client = {
+        async *iterateTrashedNodes() {
+            for (const node of remote.values()) if (node.trashTime) { await cache.setNode(node); yield node; }
+        },
+        getNode: (uid: string) => access.getNode(uid),
+        restoreNodes: (uids: string[], signal?: AbortSignal) => management.restoreNodes(uids, signal),
+    };
+    const session = { getClient: () => client, caches: { entitiesCache } } as unknown as DriveSession;
+    const recovery = new TrashRecovery(async () => client,
+        uids => DriveSession.prototype.refreshNodes.call(session, uids), async () => {});
+    try {
+        await recovery.list({ source: 'photos', requestId: 'sdk' });
+        // An old live cache entry must not bypass restoration of this freshly
+        // listed trashed node, or hide its companions.
+        await cache.setNode({ ...main, trashTime: undefined, photo: { ...main.photo!, relatedPhotoNodeUids: [] } });
+        recovery.start('photos', [main.uid]);
+        for (let i = 0; i < 500 && recovery.listRestores()[0].status === 'running'; i++) {
+            await new Promise(resolve => setTimeout(resolve, 2));
+        }
+        const job = recovery.listRestores()[0];
+        assert.equal(job.status, 'completed');
+        assert.deepEqual(requests.map(ids => ids.length), [100, 1]);
+        assert.equal(job.results.filter(result => result.status === 'restored').length, 99);
+        assert.equal(job.results.find(result => result.uid === 'photos~asset-0')!.status, 'failed');
+        assert.equal(job.results.find(result => result.uid === 'photos~asset-99')!.status, 'unknown');
+        assert.match(job.results.find(result => result.uid === 'photos~asset-99')!.error!, /still in Trash/);
+        const stillCached = await Array.fromAsync(entitiesCache.iterateEntitiesByTag('nodeTrashed'));
+        assert.deepEqual(stillCached.map(row => row.key), ['node-photos~asset-0']);
+    } finally { await recovery.stop(true); }
+});
+
+test('the D-Bus Trash boundary rejects malformed requests and blocks new work throughout sign-out', async () => {
+    const { HalyardInterface } = await import('../src/ipc/dbus.js');
+    const { TrashRecovery } = await import('../src/drive/trash.js');
+    let loggedIn = true, writes = 0, stopped = false;
+    let release!: () => void;
+    const cleanup = new Promise<void>(resolve => { release = resolve; });
+    const client = {
+        async *iterateTrashedNodes() {
+            yield { uid: 'drive~file', name: { ok: true, value: 'notes.txt' }, type: 'file', trashTime: new Date() } as NodeEntity;
+        },
+        async getNode() { throw new Error('Unexpected lookup'); },
+        async *restoreNodes() { writes++; },
+    };
+    const trash = new TrashRecovery(async () => client, async () => {}, async () => {});
+    const session = {
+        getClient() { if (!loggedIn) throw new Error('Not signed in to Proton Drive'); return client; },
+        async logout() { loggedIn = false; },
+    };
+    const downloads = { async stop() { await cleanup; stopped = true; } };
+    const iface = new HalyardInterface({ onSignedOut() {} } as never, session as never, () => {},
+        { reset() {} } as never, downloads as never, { async stop() {} } as never, { async stop() {} } as never, trash);
+    const page = JSON.parse(await iface.ListTrash(JSON.stringify({ source: 'drive', requestId: 'ipc' })));
+    assert.equal(page.items[0].name, 'notes.txt');
+    for (const raw of ['null', '[]', '{}', '{"source":"drive","uids":"drive~file"}', '{"source":"other","uids":["drive~file"]}']) {
+        assert.throws(() => iface.StartTrashRestore(raw));
+    }
+    await assert.rejects(iface.ListTrash('{"source":"drive","requestId":"../bad"}'), /invalid/);
+    const signingOut = iface.Logout();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(loggedIn, true, 'the session remains valid while transfer cleanup is pending');
+    assert.throws(() => iface.StartTrashRestore('{"source":"drive","uids":["drive~file"]}'), /sign-out/);
+    await assert.rejects(iface.ListTrash('{"source":"drive","requestId":"blocked"}'), /sign-out/);
+    release(); await signingOut;
+    assert.equal(stopped, true); assert.equal(loggedIn, false); assert.equal(writes, 0);
+    assert.deepEqual(JSON.parse(iface.ListTrashRestores()), []);
+});
+
 const SHARED_ROOT = 'shared~trips';
 function folder(uid: string, parentUid: string | undefined, name: string,
     role?: MemberRole, mtime = 1_000): NodeEntity {
@@ -325,6 +446,32 @@ test('shared-root deletion, trash, and lost volume access preserve local files a
             }
         });
     }
+});
+
+test('a restored folder enters through events and keeps an unsynced local file as a conflict copy', async () => {
+    await withPair(async (db, pair, drive, syncer) => {
+        drive.putFile('shared~anchor', 'anchor.txt', 'keep the local root nonempty', 2_000);
+        const restored = { ...folder('shared~restored', SHARED_ROOT, 'Recovered'), trashTime: new Date() };
+        drive.nodes.set(restored.uid, restored);
+        drive.putFile('shared~old', 'notes.txt', 'recovered remote contents', 2_000, 'old-revision', restored.uid);
+        await syncer.sync();
+        assert.deepEqual(drive.enumerated, [SHARED_ROOT]);
+        const local = path.join(pair.localPath, 'Recovered');
+        await fsp.mkdir(local);
+        await fsp.writeFile(path.join(local, 'notes.txt'), 'unsynced local edit');
+        const live = { ...restored, trashTime: undefined };
+        drive.nodes.set(live.uid, live);
+        drive.nodeEvent(live);
+        await syncer.sync();
+        assert.equal(syncer.status, 'idle', syncer.error ?? 'restored folder reconciled');
+        assert.equal(await fsp.readFile(path.join(local, 'notes.txt'), 'utf8'), 'recovered remote contents');
+        const conflict = (await fsp.readdir(local)).find(name => name.includes('(conflict '));
+        assert.ok(conflict, 'local edits were preserved as a conflict copy');
+        assert.equal(await fsp.readFile(path.join(local, conflict), 'utf8'), 'unsynced local edit');
+        assert.deepEqual(drive.enumerated, [SHARED_ROOT, restored.uid], 'only the restored subtree is enumerated');
+        assert.ok(db.getBase(pair.id).has('Recovered/notes.txt'));
+        assert.deepEqual(drive.trashed, []);
+    });
 });
 
 test('missing or unexpectedly empty shared-pair local roots never trash remote copies', async () => {

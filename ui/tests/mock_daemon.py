@@ -104,6 +104,13 @@ INTROSPECTION = f"""
       <arg type="s" name="folder" direction="out"/>
     </method>
 
+    <method name="ListTrash"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="CancelTrashListing"><arg type="s" direction="in"/></method>
+    <method name="StartTrashRestore"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="ListTrashRestores"><arg type="s" direction="out"/></method>
+    <method name="CancelTrashRestore"><arg type="s" direction="in"/></method>
+    <signal name="TrashRestoresChanged"><arg type="s" name="payload"/></signal>
+
     <method name="TrashPhotos"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
     <method name="CreatePhotoAlbum"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
     <method name="RenamePhotoAlbum"><arg type="s" direction="in"/><arg type="s" direction="out"/></method>
@@ -716,6 +723,36 @@ class MockDaemon:
             self.photo_timeline.discard("photo-1")
             self.album_members["album-1"].add("photo-1")
         self.downloads = []
+        self.trash_listings = {}
+        self.trash_restores = []
+        self.trash_items = {source: [] for source in ("drive", "photos")}
+        for source, entries in {
+            "drive": [("report", "Report.md", "file"), ("folder", "Project notes", "folder"),
+                      ("collision", "Budget.xlsx", "file"), ("missing", "Orphan.txt", "file"),
+                      ("child", "Old notes.txt", "file"), ("unknown", "Interrupted.pdf", "file")]
+                     + [(f"archived-{n}", f"Archived {n:02d}.txt", "file") for n in range(49)],
+            "photos": [("live", "IMG_2042.jpg", "photo"), ("companion", "IMG_2042.mov", "photo"),
+                       ("album", "Summer", "album"), ("photo-folder", "Photo folder", "folder")],
+        }.items():
+            deleted_at = minutes_ago(180 * 24 * 60)
+            for uid, name, kind in entries:
+                self.trash_items[source].append({"uid": uid, "source": source, "name": name, "type": kind,
+                    "size": None if kind in ("folder", "album") else 4096,
+                    "trashedAt": deleted_at, "error": None})
+        # Deliberately unordered dates and mixed sizes, including a newer item
+        # on the second page, exercise client sorting across SDK pages.
+        overrides = {
+            "report": {"trashedAt": minutes_ago(10), "size": 2_700_000},
+            "folder": {"trashedAt": minutes_ago(20 * 24 * 60)},
+            "collision": {"trashedAt": minutes_ago(60 * 24 * 60), "size": 3_145_728},
+            "missing": {"trashedAt": minutes_ago(120 * 24 * 60)},
+            "unknown": {"trashedAt": minutes_ago(45 * 24 * 60)},
+            "archived-47": {"name": "Archived 100.txt"},
+            "archived-48": {"name": "Archived 9.txt", "trashedAt": minutes_ago(5), "size": 0},
+        }
+        for entry in self.trash_items["drive"]: entry.update(overrides.get(entry["uid"], {}))
+        self.trash_items["drive"].append({"uid": "unreadable", "source": "drive", "name": "Unavailable name", "type": "file",
+                                         "size": None, "trashedAt": None, "error": "The item name could not be decrypted."})
         self.uploads = []
         self.video_server = None
         self.video_sessions = {}
@@ -908,12 +945,104 @@ class MockDaemon:
     def _do_Logout(self, invocation) -> None:
         self.state.logged_in = False
         self.downloads.clear(); self.uploads.clear(); self.video_sessions.clear()
+        self.trash_listings.clear(); self.trash_restores.clear()
+        self.emit("TrashRestoresChanged", [])
         self.emit("PhotoDownloadsChanged", []); self.emit("PhotoUploadsChanged", [])
         self.state.activity = None
         self._reply_void(invocation, delay_ms=300)
         GLib.timeout_add(350, lambda: (self.emit_status(), False)[1])
 
     # -- pairs -----------------------------------------------------------
+
+    def _do_ListTrash(self, invocation, raw):
+        query = json.loads(raw)
+        source, uid = query.get("source"), query.get("requestId")
+        if not self.state.logged_in: raise ValueError("Not signed in to Proton Drive")
+        if source not in self.trash_items or not uid: raise ValueError("The Trash listing request is invalid.")
+        cursor = query.get("cursor")
+        if cursor:
+            listing = self.trash_listings.get(uid)
+            if not listing or listing[0] != source or cursor != f"{uid}:{listing[1]}":
+                raise ValueError("This Trash page has expired. Refresh to continue.")
+            offset = listing[1]
+        else:
+            offset = 0
+            self.trash_listings[uid] = (source, offset)
+        items = self.trash_items[source][offset:offset + 50]
+        offset += len(items)
+        next_cursor = f"{uid}:{offset}" if offset < len(self.trash_items[source]) else None
+
+        def finish():
+            if uid not in self.trash_listings:
+                invocation.return_dbus_error(ERROR_FAILED, "Trash loading was cancelled.")
+            else:
+                if next_cursor: self.trash_listings[uid] = (source, offset)
+                else: self.trash_listings.pop(uid, None)
+                self._reply_json(invocation, {"items": items, "nextCursor": next_cursor})
+            return False
+        GLib.timeout_add(180, finish)
+
+    def _do_CancelTrashListing(self, invocation, uid):
+        self.trash_listings.pop(uid, None)
+        self._reply_void(invocation)
+
+    def _do_ListTrashRestores(self, invocation): self._reply_json(invocation, self.trash_restores)
+
+    def _do_StartTrashRestore(self, invocation, raw):
+        request = json.loads(raw)
+        source, uids = request.get("source"), request.get("uids")
+        if not self.state.logged_in: raise ValueError("Not signed in to Proton Drive")
+        if any(job["status"] == "running" for job in self.trash_restores): raise ValueError("Wait for the current restore to finish or cancel it.")
+        if source not in self.trash_items or not isinstance(uids, list) or not 1 <= len(uids) <= 100: raise ValueError("Select between 1 and 100 items to restore.")
+        chosen = list(dict.fromkeys(uids))
+        if source == "photos" and any(uid in chosen for uid in ("live", "companion")):
+            for uid in ("live", "companion"):
+                if uid not in chosen: chosen.append(uid)
+        results = []
+        for uid in chosen:
+            entry = next((entry for entry in self.trash_items[source] if entry["uid"] == uid), None)
+            if not entry: raise ValueError("This Trash item is no longer listed. Refresh and select it again.")
+            if entry["error"]: raise ValueError(entry["error"])
+            results.append({**entry, "status": "pending"})
+        results.sort(key=lambda r: r["type"] != "folder")
+        job = {"id": uuid.uuid4().hex, "source": source, "createdAt": now_ms(), "status": "running", "results": results, "refreshError": None}
+        self.trash_restores.insert(0, job)
+        self.emit("TrashRestoresChanged", self.trash_restores)
+        self._reply_json(invocation, job)
+
+        def step():
+            if job not in self.trash_restores or job["status"] != "running": return False
+            pending = next((entry for entry in results if entry["status"] == "pending"), None)
+            if not pending:
+                job["status"] = "completed"
+                self.trash_listings.clear()
+                if source == "photos": self.photo_revision += 1; self.emit("PhotosChanged", {"revision": self.photo_revision})
+                self.emit("TrashRestoresChanged", self.trash_restores)
+                return False
+            uid = pending["uid"]
+            errors = {"collision": "An item with this name already exists in the original folder.",
+                      "missing": "The original parent is unavailable. Restore this item using Proton Drive on the web.",
+                      "child": "The original parent folder is in Trash. Restore that folder first, then retry this item."}
+            if uid == "child" and any(r["uid"] == "folder" and r["status"] == "restored" for r in results): errors.pop("child")
+            if uid in errors: pending.update(status="failed", error=errors[uid])
+            elif uid == "unknown": pending.update(status="unknown", error="Could not confirm the restore. Refresh Trash before retrying.")
+            else:
+                pending["status"] = "restored"
+                self.trash_items[source] = [entry for entry in self.trash_items[source] if entry["uid"] != uid]
+            self.emit("TrashRestoresChanged", self.trash_restores)
+            return True
+        GLib.timeout_add(220, step)
+
+    def _do_CancelTrashRestore(self, invocation, uid):
+        job = next((job for job in self.trash_restores if job["id"] == uid), None)
+        if not job: raise ValueError("This restore request is no longer available.")
+        if job["status"] == "running":
+            job["status"] = "cancelled"
+            for entry in job["results"]:
+                if entry["status"] == "pending": entry["status"] = "cancelled"
+            self.trash_listings.clear()
+            self.emit("TrashRestoresChanged", self.trash_restores)
+        self._reply_void(invocation)
 
     def _do_ListPairs(self, invocation) -> None:
         self._reply_json(invocation, self.state.pairs, delay_ms=150)

@@ -675,4 +675,13 @@ export class PhotoLibrary {
         this.thumbnails.clear(); this.thumbnailBytes = 0;
         this.changed(++this.revision);
     }
+
+    /** A user-requested restore invalidates gallery views, not the event cursor. */
+    async refreshRestored(): Promise<void> {
+        await this.exclusive(async () => {
+            this.collections.clear(); this.nodes.clear();
+            this.thumbnails.clear(); this.thumbnailBytes = 0;
+            this.changed(++this.revision);
+        });
+    }
 }

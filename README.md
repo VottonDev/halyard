@@ -18,6 +18,17 @@ pair. Add as many pairs as you like. Halyard leaves unpaired folders alone.
 
 ![Halyard's Folders view with Photos and Activity tabs and folder sync progress](docs/screenshots/halyard.png)
 
+## File recovery
+
+Open **Trash** from the main menu to browse deleted files and folders, or
+switch to **Photos** for deleted photos and albums. Select items and choose
+**Restore** to return them to their original locations in Drive. Files in
+paired folders sync normally, with conflicting local edits kept as copies.
+The results show each item's outcome; cancelling stops remaining work without
+undoing completed restores. Missing parents and name collisions may require
+restoring the parent first or resolving the original location on the web.
+Version history remains available through Proton Drive on the web.
+
 ## Photos
 
 Browse your Proton Drive gallery and albums, preview photos, play videos,

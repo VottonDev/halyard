@@ -33,6 +33,104 @@ human-readable message; the UI shows it verbatim.
 
 ## Methods
 
+### Trash recovery
+
+| Method | Signature | Returns |
+|---|---|---|
+| `ListTrash` | `(s query) → s` | `TrashPage` |
+| `CancelTrashListing` | `(s requestId) → ()` | |
+| `StartTrashRestore` | `(s request) → s` | `TrashRestore` |
+| `ListTrashRestores` | `() → s` | `TrashRestore[]`, newest first |
+| `CancelTrashRestore` | `(s id) → ()` | |
+
+```typescript
+type TrashSource = 'drive' | 'photos';
+type TrashQuery = { source: TrashSource; requestId: string; cursor?: string };
+type TrashItem = {
+  uid: string; source: TrashSource; name: string; type: string;
+  size: number | null; trashedAt: number | null; error: string | null;
+};
+type TrashPage = { items: TrashItem[]; nextCursor: string | null };
+type TrashRestoreRequest = { source: TrashSource; uids: string[] };
+type TrashRestoreResult = TrashItem & {
+  status: 'pending' | 'restored' | 'alreadyRestored' | 'failed' | 'unknown' | 'cancelled';
+};
+type TrashRestore = {
+  id: string; source: TrashSource; createdAt: number;
+  status: 'running' | 'completed' | 'cancelled';
+  results: TrashRestoreResult[]; refreshError: string | null;
+};
+```
+
+Trash is account-scoped and fetched only on demand, through the public SDK's
+`iterateTrashedNodes`. Files/folders and Photos have separate listings and
+clients. The Photos source also supports albums and folders where returned by
+the public Photos SDK. A missing Photos volume gives an empty listing without
+creating one. Items are in SDK order, at most 50 per page; sizes are client
+claims and can be absent. Undecryptable names/unsupported types are visible
+with an error and cannot be selected for restore.
+
+The GTK table sorts the loaded items, initially by deletion time newest first.
+Name, Deleted and Size headings change the sort; newly loaded pages join that
+order. This does not imply the SDK has returned the newest items first: the
+count says "loaded" while more pages remain. Sorting preserves selected item
+identities.
+
+Use a fresh `requestId` (1–80 ASCII letters, digits, underscores or hyphens)
+when refreshing, then pass the returned `nextCursor` with that same ID to load
+more. Cursors expire after five minutes idle and after a restore that may have
+changed Trash. At most eight listings are retained. `CancelTrashListing`
+aborts network work and releases the cursor. The UI also cancels on source
+changes, navigation away and window destruction. Superseded replies are
+discarded. Listings and up to 20,000 recently listed identities are in memory,
+with no new plaintext metadata persistence.
+
+`StartTrashRestore` requires 1–100 recently listed item UIDs from one source;
+duplicates are removed. It returns promptly while one restore job runs in the
+background. The daemon refreshes/revalidates nodes before mutation, restores
+selected parents before their children, and includes related photo assets
+(up to 1,000 total items). Selecting a photo companion also follows its main
+photo and that photo's other assets. Already-live items are reported `alreadyRestored`.
+A trashed/missing parent produces a per-item failure: restore the parent
+first, or use the web app if the original location is unavailable. The SDK's
+`restoreNodes` restores to original locations; Halyard does not rename, move,
+overwrite, or offer another destination to bypass name collisions. SDK
+per-item errors are retained verbatim. The UI confirms restoration and
+explains ordinary sync and conflict-copy behaviour before submitting.
+
+`TrashRestoresChanged(s)` carries the complete `TrashRestore[]` list after
+state changes, throttling intermediate per-item updates to 250 ms. Up to 20
+recent jobs are kept in memory, cleared at sign-out.
+`completed` means the attempt finished, not that all items succeeded; inspect
+each result. Cancellation aborts remaining work, retains confirmed results,
+and does not undo restored items. An interrupted submitted batch or a missing
+SDK result is `unknown`; refresh Trash before retrying. `cancelled` on an item
+means it was not submitted. Cancelling a finished job is a no-op. Sign-out and
+shutdown cancel and await outstanding work. A daemon crash can leave remote
+outcomes unknown; refresh Trash after restarting rather than assuming failure.
+
+The pinned SDK can synthesise successful results for omitted per-link response
+entries. For every SDK success, Halyard performs one targeted fresh node read
+to confirm the item has left Trash. A failed confirmation or an item still in
+Trash is `unknown`, rather than a claimed success. No confirmation polling is
+added.
+
+Successful/already-live/unconfirmed results invalidate affected SDK metadata.
+For Drive, a normal sync cycle requests actual Drive events; the existing SDK
+scheduler handles later events. Restored folders enter through the usual
+event-driven catch-up path. Recovery never writes the durable sync base or
+manufactures events. Photos invalidate the gallery's disposable views while
+retaining its event cursor/scheduler, then reload on demand. Local edits and
+root-loss guards remain governed by ordinary reconciliation. A refresh failure
+is reported separately in `refreshError` and never changes successful restore
+results. `Notify` reports completion and partial failures.
+
+Permanent deletion and Empty Trash are not exposed. Version history stays in
+the web app: pinned SDK `restoreRevision` acknowledges asynchronous acceptance
+without a returned confirmation identity, warns that it may not apply, and
+only marks its SDK node cache stale. Historical revision downloads exist,
+but are outside this Trash feature by user preference. No SDK upgrade is used.
+
 ### Account
 
 | Method | Signature | Returns |

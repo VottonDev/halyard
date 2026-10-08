@@ -3,6 +3,7 @@ import * as dbus from 'dbus-next';
 import { VERSION } from '../config.js';
 import { createRemoteFolder, listRemoteFolders } from '../drive/folders.js';
 import type { DriveSession } from '../drive/session.js';
+import type { TrashRecovery, TrashSource } from '../drive/trash.js';
 import type { SyncManager } from '../engine/manager.js';
 import type { HistoryFilter, SyncEventAction } from '../engine/types.js';
 import { getLogger } from '../log.js';
@@ -70,6 +71,7 @@ export class HalyardInterface extends Interface {
         private readonly downloads: PhotoDownloads,
         private readonly uploads: PhotoUploads,
         private readonly videos: PhotoVideos,
+        private readonly trash: TrashRecovery,
     ) {
         super(INTERFACE_NAME);
     }
@@ -101,6 +103,7 @@ export class HalyardInterface extends Interface {
         if (this.signingOut) fail(new Error('Sign-out is already in progress.'));
         this.signingOut = true;
         try {
+            await this.trash.stop(true);
             await this.downloads.stop(true);
             await this.uploads.stop(true);
             await this.videos.stop();
@@ -374,6 +377,38 @@ export class HalyardInterface extends Interface {
         }
     }
 
+    // ---- Trash recovery
+
+    async ListTrash(request: string): Promise<string> {
+        try {
+            if (this.signingOut) throw new Error('Wait for sign-out to finish before opening Trash.');
+            this.session.getClient();
+            const input = JSON.parse(request) as Record<string, unknown>;
+            if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('The Trash listing request is invalid.');
+            if (input.source !== 'drive' && input.source !== 'photos') throw new Error('Choose Files or Photos Trash.');
+            if (typeof input.requestId !== 'string' || (input.cursor !== undefined && typeof input.cursor !== 'string')) throw new Error('The Trash listing request is invalid.');
+            return JSON.stringify(await this.trash.list({ source: input.source, requestId: input.requestId, cursor: input.cursor as string | undefined }));
+        } catch (error) { return fail(error); }
+    }
+
+    CancelTrashListing(id: string): void { this.trash.cancelListing(id); }
+
+    StartTrashRestore(request: string): string {
+        try {
+            if (this.signingOut) throw new Error('Wait for sign-out to finish before restoring Trash.');
+            this.session.getClient();
+            const input = JSON.parse(request) as Record<string, unknown>;
+            if (!input || typeof input !== 'object' || Array.isArray(input) || !Array.isArray(input.uids)) throw new Error('Choose the Trash items to restore.');
+            return JSON.stringify(this.trash.start(input.source as TrashSource, input.uids as string[]));
+        } catch (error) { return fail(error); }
+    }
+
+    ListTrashRestores(): string { return JSON.stringify(this.trash.listRestores()); }
+
+    CancelTrashRestore(id: string): void {
+        try { this.trash.cancelRestore(id); } catch (error) { fail(error); }
+    }
+
     // ---- Activity log
 
     ListHistory(filter: string): string {
@@ -445,6 +480,7 @@ export class HalyardInterface extends Interface {
     PhotoDownloadsChanged(downloads: string): string { return downloads; }
     PhotoUploadsChanged(uploads: string): string { return uploads; }
     VideoPreviewChanged(preview: string): string { return preview; }
+    TrashRestoresChanged(restores: string): string { return restores; }
 }
 
 HalyardInterface.configureMembers({
@@ -486,6 +522,11 @@ HalyardInterface.configureMembers({
         ListConflicts: { inSignature: 's', outSignature: 's' },
         ResolveConflict: { inSignature: 'ss', outSignature: '' },
         ListHistory: { inSignature: 's', outSignature: 's' },
+        ListTrash: { inSignature: 's', outSignature: 's' },
+        CancelTrashListing: { inSignature: 's', outSignature: '' },
+        StartTrashRestore: { inSignature: 's', outSignature: 's' },
+        ListTrashRestores: { inSignature: '', outSignature: 's' },
+        CancelTrashRestore: { inSignature: 's', outSignature: '' },
         ClearHistory: { inSignature: 's', outSignature: '' },
         GetVersion: { inSignature: '', outSignature: 's' },
         Quit: { inSignature: '', outSignature: '' },
@@ -498,5 +539,6 @@ HalyardInterface.configureMembers({
         PhotoDownloadsChanged: { signature: 's' },
         PhotoUploadsChanged: { signature: 's' },
         VideoPreviewChanged: { signature: 's' },
+        TrashRestoresChanged: { signature: 's' },
     },
 });
