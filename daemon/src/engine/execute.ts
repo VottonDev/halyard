@@ -7,6 +7,7 @@ import { finished } from 'node:stream/promises';
 
 import { PARTIAL_DOWNLOAD_SUFFIX } from '../config.js';
 import { getLogger } from '../log.js';
+import { downloadSlots, MAX_CONCURRENT_DOWNLOADS } from '../drive/downloadSlots.js';
 import type { SyncDatabase } from './db.js';
 import { hashFile } from './localScan.js';
 import { describeSyncFailure } from './syncError.js';
@@ -115,6 +116,7 @@ export type ExecuteResult = {
 export class Executor {
     /** Maps a relative path to its remote node uid, updated as we create nodes. */
     private pathToUid = new Map<string, string>();
+    private downloadProgress = new Map<string, Progress>();
 
     constructor(private readonly context: ExecuteContext) {
         for (const [itemPath, item] of context.remote) {
@@ -165,10 +167,9 @@ export class Executor {
             }
         };
 
-        for (const action of actions) {
-            if (this.context.signal?.aborted) {
-                break;
-            }
+        let halted = false;
+        const executeAction = async (action: Action): Promise<void> => {
+            if (halted || this.context.signal?.aborted) return;
             // Described before the action runs: afterwards the local and
             // remote snapshots no longer say what the file looked like when
             // we decided, and "was it already here?" is the whole difference
@@ -181,7 +182,7 @@ export class Executor {
                     (action.kind === 'deleteLocal' && deferredLocal.has(action.path)) ||
                     (action.kind === 'trashRemote' && deferredRemote.has(action.path))) {
                     result.completed += 1;
-                    continue;
+                    return;
                 }
                 const performed = await this.perform(action, result);
                 if (!performed) retainDeletion(action);
@@ -192,7 +193,8 @@ export class Executor {
             } catch (error) {
                 // User cancellation is not a failed sync operation.
                 if (this.context.signal?.aborted) {
-                    break;
+                    halted = true;
+                    return;
                 }
                 retainDeletion(action);
                 const failure = describeSyncFailure(error);
@@ -205,10 +207,50 @@ export class Executor {
                 // A service outage affects the whole batch. Continuing would
                 // repeat the same doomed request for every planned action and
                 // push the shared SDK session into its circuit breaker.
-                if (failure.transient) {
-                    break;
-                }
+                if (failure.transient) halted = true;
             }
+        };
+
+        // Only adjacent, independent downloads overlap. Every other action is
+        // a barrier: folder creation, conflicts, moves and deletion retain the
+        // reconciler's exact order. Ancestor/duplicate paths are barriers too.
+        for (let index = 0; index < actions.length && !halted && !this.context.signal?.aborted;) {
+            const action = actions[index];
+            if (action.kind !== 'download') {
+                await executeAction(action);
+                index++;
+                continue;
+            }
+            const downloads: Extract<Action, { kind: 'download' }>[] = [];
+            const paths = new Set<string>();
+            const ancestors = new Set<string>();
+            while (index < actions.length && actions[index].kind === 'download') {
+                const next = actions[index];
+                if (next.kind !== 'download') break;
+                const parents: string[] = [];
+                let parent = next.path;
+                while (parent.includes('/')) {
+                    parent = parent.slice(0, parent.lastIndexOf('/'));
+                    parents.push(parent);
+                }
+                if (paths.has(next.path) || ancestors.has(next.path) || parents.some(value => paths.has(value))) break;
+                paths.add(next.path);
+                parents.forEach(value => ancestors.add(value));
+                downloads.push(next);
+                index++;
+            }
+            let cursor = 0;
+            const worker = async () => {
+                while (cursor < downloads.length && !halted && !this.context.signal?.aborted) {
+                    const next = downloads[cursor++];
+                    try {
+                        await downloadSlots.run(() => executeAction(next), this.context.signal);
+                    } catch (error) {
+                        if (!this.context.signal?.aborted) throw error;
+                    }
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_DOWNLOADS, downloads.length) }, worker));
         }
 
         // One batch per cycle: a large sync can produce thousands of these and
@@ -375,8 +417,13 @@ export class Executor {
             }
 
             case 'download':
-                await this.download(action.path, action.remoteUid, result);
-                return true;
+                try {
+                    await this.download(action.path, action.remoteUid, result);
+                    return true;
+                } finally {
+                    this.downloadProgress.delete(action.path);
+                    this.context.onProgress?.(this.downloadProgress.values().next().value ?? null);
+                }
 
             case 'upload':
                 return await this.upload(action.path, action.existingRemoteUid, result);
@@ -515,37 +562,35 @@ export class Executor {
         await fsp.mkdir(path.dirname(target), { recursive: true });
         this.context.signal?.throwIfAborted();
 
-        const downloader = await client.getFileDownloader(remoteUid, this.context.signal);
-        this.context.signal?.throwIfAborted();
-        const total = downloader.getClaimedSizeInBytes() ?? remote.get(relative)?.size ?? 0;
-
         const fileStream = fs.createWriteStream(temporary);
-        // The SDK aborts its Web writer on failure. Also consume the Node
-        // stream error, then wait for it to close before removing the partial.
         fileStream.on('error', () => {});
-        const controller = downloader.downloadToStream(Writable.toWeb(fileStream) as WritableStream, (done) => {
-            this.context.onProgress?.({ kind: 'download', path: relative, bytesDone: done, bytesTotal: total });
-        });
-
         try {
+            const writable = Writable.toWeb(fileStream) as WritableStream;
+            this.context.signal?.throwIfAborted();
+            const downloader = await client.getFileDownloader(remoteUid, this.context.signal);
+            // Starting the returned downloader is required to release SDK
+            // capacity, including an abort during its metadata preparation.
+            const total = downloader.getClaimedSizeInBytes() ?? remote.get(relative)?.size ?? 0;
+            this.downloadProgress.set(relative, { kind: 'download', path: relative, bytesDone: 0, bytesTotal: total });
+            this.context.onProgress?.(this.downloadProgress.values().next().value ?? null);
+            const controller = downloader.downloadToStream(writable, (done) => {
+                this.downloadProgress.set(relative, { kind: 'download', path: relative, bytesDone: done, bytesTotal: total });
+                this.context.onProgress?.(this.downloadProgress.values().next().value ?? null);
+            });
             await controller.completion();
             this.context.signal?.throwIfAborted();
+            if (controller.isDownloadCompleteWithSignatureIssues()) {
+                throw new Error('The downloaded file could not be verified.');
+            }
             // The SDK releases its writer without closing the caller's stream.
             if (!fileStream.writableEnded) fileStream.end();
             await finished(fileStream);
             this.context.signal?.throwIfAborted();
         } catch (error) {
-            // The SDK can reject after writing every byte when a signature
-            // fails to verify. Treat that as a real failure: we cannot vouch
-            // for the contents, so the partial file is discarded.
             fileStream.destroy();
             await finished(fileStream).catch(() => undefined);
             await fsp.rm(temporary, { force: true });
             throw error;
-        }
-
-        if (controller.isDownloadCompleteWithSignatureIssues()) {
-            logger.warn(`Downloaded ${relative} but its signature could not be verified`);
         }
 
         await fsp.rename(temporary, target);

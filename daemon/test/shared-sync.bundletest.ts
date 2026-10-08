@@ -737,7 +737,7 @@ for (const kind of ['upload', 'download'] as const) {
                 const getDownloader = client.getFileDownloader.bind(client);
                 client.getFileDownloader = async (uid, signal) => {
                     const downloader = await getDownloader(uid, signal);
-                    if (uid !== 'shared~b') return downloader;
+                    if (typeof uid !== 'string' || !['shared~b', 'shared~c', 'shared~d', 'shared~e', 'shared~f', 'shared~g'].includes(uid)) return downloader;
                     return { ...downloader, downloadToStream: (stream, progress) => ({
                         completion: async () => {
                             const writer = stream.getWriter();
@@ -766,7 +766,7 @@ for (const kind of ['upload', 'download'] as const) {
                 await waitUntil(() => manager.listPairs().find(item => item.id === pair.id)?.seeded === true &&
                     manager.getStatus().pairs.find(item => item.id === pair.id)?.status === 'idle');
                 const lastSyncAt = db.getPair(pair.id)!.lastSyncAt;
-                for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+                for (const name of kind === 'download' ? ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt', 'f.txt', 'g.txt'] : ['a.txt', 'b.txt', 'c.txt']) {
                     if (kind === 'upload') await fsp.writeFile(path.join(pair.localPath, name), name);
                     else drive.nodeEvent(drive.putFile(`shared~${name[0]}`, name, name, 2_000), DriveEventType.NodeCreated);
                 }
@@ -774,6 +774,7 @@ for (const kind of ['upload', 'download'] as const) {
                 await Promise.race([gate.started, new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('offline transfer never started')), 2_000).unref())]);
                 assert.equal(manager.getStatus().activity?.pairId, pair.id);
+                await waitUntil(() => db.getBase(pair.id).has('a.txt'));
                 assert.ok(db.getBase(pair.id).has('a.txt'), 'finished transfer has durable state');
 
                 let removed = false;
@@ -791,7 +792,7 @@ for (const kind of ['upload', 'download'] as const) {
                 assert.equal(manager.listPairs().some(item => item.id === pair.id), false);
                 assert.equal(manager.getStatus().activity, null);
                 assert.deepEqual(notices, []);
-                assert.equal(db.getBase(pair.id).has('c.txt'), false, 'queued transfer never runs');
+                assert.equal(db.getBase(pair.id).has(kind === 'download' ? 'g.txt' : 'c.txt'), false, 'queued transfer never runs');
                 const history = manager.listHistory({ pairId: pair.id });
                 assert.deepEqual(history.map(event => event.path), forget ? [] : ['a.txt']);
                 assert.ok(history.every(event => event.outcome === 'ok'), 'cancellation is not an Activity error');
