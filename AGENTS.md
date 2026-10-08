@@ -67,10 +67,11 @@ Each of these cost real debugging time. Do not "simplify" them away.
   cannot resolve the `.js` specifiers the `src/` tree uses, so that script
   loads `test/support/register.mjs`, which rewrites them to `.ts` and erases
   types with esbuild (distro Node builds can omit native type stripping). Pure logic
-  stays in `*.test.ts` under Bun. The crypto-cache and shared-sync regressions
-  need both `node:sqlite` and bundled SDK dependencies, so they are named
-  `*.bundletest.ts`. `bun run test:crypto` and `bun run test:shared` bundle them
-  before running them with Node. Source builds/tests require Node 22.15+ for the module hooks; the
+  stays in `*.test.ts` under Bun. The crypto-cache, shared-sync and
+  download-concurrency regressions need both `node:sqlite` and bundled SDK dependencies, so they are
+  named `*.bundletest.ts`. `bun run test:crypto`, `bun run test:shared` and
+  `bun run test:downloads` bundle them before running them with Node. Source
+  builds/tests require Node 22.15+ for the module hooks; the
   installed daemon can run on Node 22.13+.
 - The `proton-sdk` submodule (pinned at tag `js/v0.22.2`) lives at the repo root
   — `../proton-sdk` from `daemon/` — and `client/js` must be built

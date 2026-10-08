@@ -614,7 +614,15 @@ Upload may initialise a missing Photos volume. Local files remain in place.
 
 Control actions are `pause`, `resume`, `cancel` and `retry`. Invalid transitions
 fail with a user-facing error. Retry skips completed files and skipped uploads.
-The daemon runs one download job and one upload job at a time. These queues are
+The daemon runs one download job and one upload job at a time. A download job
+can transfer five files concurrently. Original downloads share a five-file
+limit with folder sync across all pairs. Pause stops every active photo transfer and releases its capacity; resume
+restarts unfinished files from the beginning, retaining completed files.
+Cancellation returns promptly; the queue awaits all active files stopping
+before retry or processing another job. Folder sync overlaps
+independent downloads, keeping other actions ordered. Sync activity continues
+to show one representative active file, switching when it finishes.
+These queues are
 separate from folder reconciliation, the sync base and sync history. Jobs and
 previews are not persisted as plaintext. Jobs continue after the UI closes,
 but do not survive daemon restart. Sign-out cancels jobs and clears their state.

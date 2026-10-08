@@ -4,10 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Writable } from 'node:stream';
-import type { DownloadController } from '@protontech/drive-sdk';
 
 import { PARTIAL_DOWNLOAD_SUFFIX } from '../config.js';
+import { downloadSlots, MAX_CONCURRENT_DOWNLOADS } from '../drive/downloadSlots.js';
 import { photoFromNode, type PhotosClient } from './library.js';
+
+const DOWNLOAD_PAUSED = Symbol('download paused');
 
 export type DownloadFile = {
     uid: string; name: string; size: number | null; bytesDone: number;
@@ -75,7 +77,7 @@ async function publish(temporary: string, destination: string, name: string): Pr
 export class PhotoDownloads {
     private jobs: PhotoDownload[] = [];
     private running?: Promise<void>;
-    private active?: { job: PhotoDownload; abort: AbortController; controller?: DownloadController };
+    private active?: { job: PhotoDownload; abort: AbortController; transfers: Set<AbortController> };
     private preparing = new AbortController();
     private signalTimer?: ReturnType<typeof setTimeout>;
 
@@ -144,10 +146,9 @@ export class PhotoDownloads {
         if (!job) throw new Error('This photo download is no longer available.');
         if (action === 'pause' && ['queued', 'downloading'].includes(job.status)) {
             job.status = 'paused';
-            if (this.active?.job === job) this.active.controller?.pause();
+            if (this.active?.job === job) this.active.transfers.forEach(transfer => transfer.abort(DOWNLOAD_PAUSED));
         } else if (action === 'resume' && job.status === 'paused') {
             job.status = this.active?.job === job ? 'downloading' : 'queued';
-            if (this.active?.job === job) this.active.controller?.resume();
             this.pump();
         } else if (action === 'cancel' && ['queued', 'downloading', 'paused'].includes(job.status)) {
             job.status = 'cancelled';
@@ -176,29 +177,54 @@ export class PhotoDownloads {
         while (true) {
             const job = this.jobs.find(j => j.status === 'queued');
             if (!job) return;
-            const active = { job, abort: new AbortController(), controller: undefined as DownloadController | undefined };
+            const active = { job, abort: new AbortController(), transfers: new Set<AbortController>() };
             this.active = active;
             job.status = 'downloading'; this.emit();
-            for (const file of job.files) {
-                if (file.status === 'completed') continue;
-                if (this.state(job) === 'cancelled') { file.status = 'cancelled'; continue; }
-                while (this.state(job) === 'paused' && !active.abort.signal.aborted) {
-                    // No remote requests while paused. Resume is local state.
-                    await new Promise<void>(resolve => {
-                        const finish = () => { clearTimeout(timer); active.abort.signal.removeEventListener('abort', finish); resolve(); };
-                        const timer = setTimeout(finish, 100);
-                        active.abort.signal.addEventListener('abort', finish, { once: true });
-                    });
+            let cursor = 0;
+            const worker = async () => {
+                while (cursor < job.files.length) {
+                    const file = job.files[cursor++];
+                    if (file.status === 'completed') continue;
+                    let saved = false;
+                    while (!saved && !active.abort.signal.aborted) {
+                        // A paused worker does not reserve unused global capacity.
+                        while (this.state(job) === 'paused' && !active.abort.signal.aborted) {
+                            await new Promise<void>(resolve => {
+                                const finish = () => { clearTimeout(timer); active.abort.signal.removeEventListener('abort', finish); resolve(); };
+                                const timer = setTimeout(finish, 100);
+                                active.abort.signal.addEventListener('abort', finish, { once: true });
+                            });
+                        }
+                        if (active.abort.signal.aborted) break;
+                        const transfer = new AbortController();
+                        const abort = () => transfer.abort(active.abort.signal.reason);
+                        active.abort.signal.addEventListener('abort', abort, { once: true });
+                        active.transfers.add(transfer);
+                        try {
+                            saved = await downloadSlots.run(async () => {
+                                if (this.state(job) === 'paused') return false;
+                                return this.saveFile(job, file, transfer.signal);
+                            }, transfer.signal);
+                        } catch (error) {
+                            if (transfer.signal.reason === DOWNLOAD_PAUSED && !active.abort.signal.aborted) {
+                                file.status = 'queued'; file.bytesDone = 0; file.error = null;
+                            } else {
+                                file.status = active.abort.signal.aborted ? 'cancelled' : 'failed';
+                                file.error = active.abort.signal.aborted ? null : error instanceof Error ? error.message : String(error);
+                                file.bytesDone = 0;
+                                break;
+                            }
+                        } finally {
+                            active.transfers.delete(transfer);
+                            active.abort.signal.removeEventListener('abort', abort);
+                        }
+                    }
+                    if (!saved && active.abort.signal.aborted) file.status = 'cancelled';
+                    this.emit();
+                    if (active.abort.signal.aborted) return;
                 }
-                if (active.abort.signal.aborted) { file.status = 'cancelled'; continue; }
-                try { await this.saveFile(job, file, active); }
-                catch (error) {
-                    file.status = active.abort.signal.aborted ? 'cancelled' : 'failed';
-                    file.error = active.abort.signal.aborted ? null : error instanceof Error ? error.message : String(error);
-                    file.bytesDone = 0;
-                }
-                active.controller = undefined; this.emit();
-            }
+            };
+            await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_DOWNLOADS, job.files.length) }, worker));
             if (this.state(job) !== 'cancelled') {
                 job.status = job.files.some(f => f.status === 'failed') ? 'failed' : 'completed';
                 const saved = job.files.filter(f => f.status === 'completed').length;
@@ -211,30 +237,31 @@ export class PhotoDownloads {
 
     private state(job: PhotoDownload): PhotoDownload['status'] { return job.status; }
 
-    private async saveFile(job: PhotoDownload, file: DownloadFile, active: NonNullable<PhotoDownloads['active']>): Promise<void> {
-        const signal = active.abort.signal;
+    private async saveFile(job: PhotoDownload, file: DownloadFile, signal: AbortSignal): Promise<boolean> {
         // Revalidate the real directory on every file. It may have been moved
         // or replaced by a symlink since the destination chooser was used.
         const destination = await downloadDestination(job.destination, this.home);
         const client = await this.getClient();
         signal.throwIfAborted();
         if (!client) throw new Error('Your photo library is no longer available.');
+        if (this.state(job) === 'paused') return false;
         const temporary = path.join(destination, `.halyard-photo-${randomUUID()}${PARTIAL_DOWNLOAD_SUFFIX}`);
         let stream: fs.WriteStream | undefined;
         try {
-            const downloader = await client.getFileDownloader(file.uid, signal);
-            signal.throwIfAborted();
-            file.size = downloader.getClaimedSizeInBytes() ?? file.size;
-            file.status = 'downloading';
             stream = fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
             // The SDK consumes the writable stream's errors and aborts it on
             // failure. Keep a Node listener too, avoiding an unhandled event.
             stream.on('error', () => {});
-            const controller = downloader.downloadToStream(Writable.toWeb(stream) as WritableStream, (done) => {
+            const writable = Writable.toWeb(stream) as WritableStream;
+            signal.throwIfAborted();
+            const downloader = await client.getFileDownloader(file.uid, signal);
+            // Even if aborted during SDK metadata loading, start and await the
+            // returned downloader so the SDK releases its reserved capacity.
+            const controller = downloader.downloadToStream(writable, (done) => {
                 file.bytesDone = done; this.emit(false);
             });
-            active.controller = controller;
-            if (job.status === 'paused') controller.pause();
+            file.size = downloader.getClaimedSizeInBytes() ?? file.size;
+            file.status = 'downloading';
             await controller.completion();
             signal.throwIfAborted();
             if (controller.isDownloadCompleteWithSignatureIssues()) throw new Error('The downloaded photo could not be verified.');
@@ -243,9 +270,11 @@ export class PhotoDownloads {
             if (!stream.writableEnded) stream.end();
             await this.closeStream(stream);
             if (stream.errored) throw stream.errored;
+            signal.throwIfAborted();
             file.path = await publish(temporary, destination, file.name);
             file.bytesDone = (await fsp.stat(file.path)).size;
             file.status = 'completed'; file.error = null;
+            return true;
         } finally {
             if (stream) { stream.destroy(); await this.closeStream(stream); }
             await fsp.rm(temporary, { force: true });

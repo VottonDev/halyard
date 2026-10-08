@@ -11,9 +11,10 @@
         "start": "node dist/halyard-daemon.cjs",
         "check-types": "tsc --noEmit",
         "doctor": "node scripts/build.mjs --entry=src/probe.ts --out=dist/doctor.cjs && node dist/doctor.cjs",
-        "test": "bun test && bun run test:node && bun run test:crypto && bun run test:shared",
+        "test": "bun test && bun run test:node && bun run test:crypto && bun run test:shared && bun run test:downloads",
         "test:node": "node --import ./test/support/register.mjs --test 'test/**/*.nodetest.ts'",
         "test:crypto": "node scripts/build.mjs --entry=test/crypto-cache.bundletest.ts --out=dist/crypto-cache.bundletest.cjs && node --test dist/crypto-cache.bundletest.cjs",
+        "test:downloads": "node scripts/build.mjs --entry=test/download-concurrency.bundletest.ts --out=dist/download-concurrency.bundletest.cjs && node --test dist/download-concurrency.bundletest.cjs",
         "test:shared": "node scripts/build.mjs --entry=test/shared-sync.bundletest.ts --out=dist/shared-sync.bundletest.cjs && node --test dist/shared-sync.bundletest.cjs"
     },
     "dependencies": {
