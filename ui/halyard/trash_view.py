@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import uuid
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango
 
 from .models import TrashItem
 from .util import format_absolute_time, format_size
+
+
+class TrashEntry(GObject.Object):
+    """GTK list wrapper around the daemon's immutable item."""
+
+    def __init__(self, item: TrashItem) -> None:
+        super().__init__()
+        self.item = item
 
 
 class TrashPage(Adw.NavigationPage):
@@ -27,58 +35,183 @@ class TrashPage(Adw.NavigationPage):
         self._cursor = None
         self._items: dict[str, TrashItem] = {}
         self._selected: set[str] = set()
-        self._rows = []
         self._job_rows = []
         self._expanded: set[str] = set()
         self._dialog = None
+        self._results_dialog = None
+        self._jobs_group = None
+        self._jobs = ()
+        self._changing_selection = False
 
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        self._source = Gtk.DropDown.new_from_strings(["Files and folders", "Photos"])
-        self._source.connect("notify::selected", lambda *_: self.reload())
-        header.pack_start(self._source)
-        self._restore = Gtk.Button(label="Restore", sensitive=False)
-        self._restore.add_css_class("suggested-action")
-        self._restore.connect("clicked", lambda *_: self._confirm_restore())
-        header.pack_end(self._restore)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh Trash")
         refresh.connect("clicked", lambda *_: self.reload())
         header.pack_end(refresh)
         toolbar.add_top_bar(header)
 
-        self._page = Adw.PreferencesPage()
-        self._group = Adw.PreferencesGroup(title="Deleted items", description=(
-            "Restore items to their original locations in Drive. Files in paired folders will sync normally. "
-            "Use Proton Drive on the web for version history."
-        ))
-        self._page.add(self._group)
-        self._message = Gtk.Label(wrap=True, xalign=0, visible=False)
-        self._message.add_css_class("error")
-        self._group.add(self._message)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._message = Adw.Banner(button_label="Reload")
+        self._message.connect("button-clicked", lambda *_: self.reload())
+        outer.append(self._message)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                          margin_top=12, margin_bottom=16, margin_start=16, margin_end=16)
+        outer.append(content)
+
+        controls = Gtk.Box(spacing=12)
+        self._source = Gtk.DropDown.new_from_strings(["Files and folders", "Photos"])
+        self._source.set_tooltip_text("Choose which Trash to browse")
+        self._source.connect("notify::selected", lambda *_: self.reload())
+        controls.append(self._source)
+        self._count = Gtk.Label(xalign=1, hexpand=True)
+        self._count.add_css_class("dim-label")
+        controls.append(self._count)
+        content.append(controls)
+
+        self._store = Gio.ListStore.new(TrashEntry)
+        self._selection = Gtk.MultiSelection.new(self._store)
+        self._selection.connect("selection-changed", self._selection_changed)
+        self._table = Gtk.ColumnView.new(self._selection)
+        self._table.set_show_row_separators(True)
+        self._name_column = Gtk.ColumnViewColumn.new("Name", self._name_factory())
+        self._name_column.set_expand(True)
+        self._name_column.set_resizable(True)
+        self._name_column.set_fixed_width(220)
+        self._table.append_column(self._name_column)
+        self._date_column = Gtk.ColumnViewColumn.new("Deleted", self._metadata_factory("date"))
+        self._date_column.set_fixed_width(140)
+        self._table.append_column(self._date_column)
+        size_column = Gtk.ColumnViewColumn.new("Size", self._metadata_factory("size"))
+        size_column.set_fixed_width(85)
+        self._table.append_column(size_column)
+        self._scrolled = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
+        self._scrolled.set_child(self._table)
+        frame = Gtk.Frame(child=self._scrolled)
+        self._stack = Gtk.Stack(vexpand=True, hhomogeneous=False, vhomogeneous=False)
+        self._stack.add_named(frame, "list")
+        self._empty = Adw.StatusPage(icon_name="user-trash-symbolic", title="Trash is empty")
+        self._stack.add_named(self._empty, "empty")
+        self._placeholder = Adw.StatusPage(icon_name="user-trash-symbolic", title="Loading Trash…")
+        self._stack.add_named(self._placeholder, "loading")
+        content.append(self._stack)
+
+        self._job_bar = Gtk.Box(spacing=8, visible=False)
+        self._job_icon = Gtk.Image(icon_name="object-select-symbolic")
+        self._job_bar.append(self._job_icon)
+        self._job_status = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        self._job_bar.append(self._job_status)
+        self._cancel_job = Gtk.Button(label="Cancel", visible=False)
+        self._cancel_job.connect("clicked", lambda button: self._cancel_restore(button, self._jobs[0].id) if self._jobs else None)
+        self._job_bar.append(self._cancel_job)
+        details = Gtk.Button(label="Details")
+        details.connect("clicked", lambda *_: self._show_results())
+        self._job_bar.append(details)
+        content.append(self._job_bar)
+
+        self._footer = Gtk.Box(spacing=8)
+        self._selection_label = Gtk.Label(label="Select items to restore", xalign=0,
+                                        hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        self._selection_label.add_css_class("dim-label")
+        self._footer.append(self._selection_label)
         self._loading_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, halign=Gtk.Align.CENTER, visible=False)
         spinner = Adw.Spinner()
-        spinner.set_size_request(32, 32)
+        spinner.set_size_request(20, 20)
         self._loading_box.append(spinner)
-        cancel = Gtk.Button(label="Cancel loading")
-        cancel.connect("clicked", lambda *_: self.deactivate())
+        cancel = Gtk.Button(icon_name="process-stop-symbolic", tooltip_text="Cancel loading")
+        cancel.add_css_class("flat")
+        cancel.connect("clicked", lambda *_: self._cancel_loading())
         self._loading_box.append(cancel)
-        self._group.add(self._loading_box)
-        self._empty = Adw.ActionRow(title="Trash is empty", visible=False)
-        self._group.add(self._empty)
-
-        more_group = Adw.PreferencesGroup()
-        self._more = Gtk.Button(label="Load more", visible=False, halign=Gtk.Align.CENTER)
-        self._more.connect("clicked", lambda *_: self._load_more())
-        more_group.add(self._more)
-        self._page.add(more_group)
-        self._jobs_group = Adw.PreferencesGroup(title="Restore results", visible=False, description=(
-            "A cancelled request can still have restored items. Unconfirmed results need a Trash refresh before retrying. "
-            "If an original parent is missing or a name is taken, restore the parent first or resolve it on the web."
-        ))
-        self._page.add(self._jobs_group)
-        toolbar.set_content(self._page)
+        self._footer.append(self._loading_box)
+        self._more = Gtk.Button(label="Load more", visible=False)
+        self._more.connect("clicked", lambda *_: self._load_more() if self._listing_id else self.reload())
+        self._footer.append(self._more)
+        self._restore = Gtk.Button(label="Restore", sensitive=False)
+        self._restore.add_css_class("suggested-action")
+        self._restore.set_tooltip_text("Restore selected items to their original locations")
+        self._restore.connect("clicked", lambda *_: self._confirm_restore())
+        self._footer.append(self._restore)
+        content.append(self._footer)
+        toolbar.set_content(outer)
         self.set_child(toolbar)
         self._handler = client.connect("trash-restores-changed", self._on_jobs)
+
+    def _name_factory(self):
+        factory = Gtk.SignalListItemFactory()
+        def setup(_factory, cell):
+            box = Gtk.Box(spacing=10, margin_start=10, margin_end=10)
+            check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+            icon = Gtk.Image(pixel_size=20)
+            name = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.MIDDLE)
+            box.append(check); box.append(icon); box.append(name)
+            cell.set_child(box)
+            check.connect("toggled", self._toggle_cell, cell)
+            cell.connect("notify::selected", lambda item, _spec: check.set_active(item.get_selected()))
+        def bind(_factory, cell):
+            entry = cell.get_item().item
+            box = cell.get_child()
+            check = box.get_first_child()
+            icon = check.get_next_sibling()
+            name = icon.get_next_sibling()
+            check.set_sensitive(not bool(entry.error))
+            check.set_tooltip_text(entry.error or f"Select {entry.name}")
+            check.set_active(cell.get_selected())
+            name.set_text(entry.name)
+            box.set_tooltip_text(entry.error or entry.name)
+            if entry.error:
+                icon.set_from_icon_name("dialog-warning-symbolic")
+                icon.add_css_class("warning")
+            else:
+                icon.remove_css_class("warning")
+                if entry.type in ("folder", "album"):
+                    icon.set_from_icon_name("folder-symbolic" if entry.type == "folder" else "folder-pictures-symbolic")
+                else:
+                    content_type, _ = Gio.content_type_guess(entry.name, None)
+                    icon.set_from_gicon(Gio.content_type_get_symbolic_icon(content_type))
+        factory.connect("setup", setup)
+        factory.connect("bind", bind)
+        return factory
+
+    def _metadata_factory(self, field):
+        factory = Gtk.SignalListItemFactory()
+        def setup(_factory, cell):
+            label = Gtk.Label(xalign=1 if field == "size" else 0,
+                              ellipsize=Pango.EllipsizeMode.END, margin_start=10, margin_end=10)
+            label.add_css_class("dim-label")
+            cell.set_child(label)
+        def bind(_factory, cell):
+            item = cell.get_item().item
+            label = cell.get_child()
+            if field == "size":
+                label.set_text(format_size(item.size) if item.size is not None else "—")
+                label.set_tooltip_text(None)
+            else:
+                when = GLib.DateTime.new_from_unix_local(int(item.trashed_at / 1000)) if item.trashed_at else None
+                label.set_text(when.format("%-d %b %Y") if when else "—")
+                label.set_tooltip_text(format_absolute_time(item.trashed_at))
+        factory.connect("setup", setup)
+        factory.connect("bind", bind)
+        return factory
+
+    def _toggle_cell(self, check, cell):
+        if cell.get_item() is None or check.get_active() == cell.get_selected(): return
+        if check.get_active(): self._selection.select_item(cell.get_position(), False)
+        else: self._selection.unselect_item(cell.get_position())
+
+    def _selection_changed(self, *_):
+        if self._changing_selection: return
+        self._changing_selection = True
+        try:
+            selected = self._selection.get_selection()
+            self._selected.clear()
+            for n in range(selected.get_size()):
+                position = selected.get_nth(n)
+                item = self._store.get_item(position).item
+                if item.error:
+                    self._selection.unselect_item(position)
+                    continue
+                self._selected.add(item.uid)
+        finally: self._changing_selection = False
+        self._update_restore()
 
     @property
     def source(self) -> str:
@@ -100,18 +233,30 @@ class TrashPage(Adw.NavigationPage):
         self._more.set_visible(False)
         self._update_restore()
 
+    def _cancel_loading(self) -> None:
+        self.deactivate()
+        self._active = True
+        self._more.set_label("Reload")
+        self._more.set_visible(True)
+        self._more.set_sensitive(True)
+        if not self._items:
+            self._placeholder.set_title("Loading cancelled")
+            self._placeholder.set_description("Refresh Trash to try again.")
+            self._stack.set_visible_child_name("loading")
+
     def reset(self) -> None:
         self._account_generation += 1
         self.deactivate()
         self._jobs_request += 1
         if self._dialog: self._dialog.close()
         self._dialog = None
+        if self._results_dialog: self._results_dialog.close()
         self._starting = False
         self._restoring = False
         self._expanded.clear()
         self._clear_items()
         self._render_jobs(())
-        self._message.set_visible(False)
+        self._message.set_revealed(False)
 
     def dispose(self) -> None:
         self.reset()
@@ -119,15 +264,15 @@ class TrashPage(Adw.NavigationPage):
         self._client.disconnect(self._handler)
 
     def _error(self, message: str) -> None:
-        self._message.set_text(message)
-        self._message.set_visible(True)
+        self._message.set_title(message)
+        self._message.set_tooltip_text(message)
+        self._message.set_revealed(True)
 
     def _clear_items(self) -> None:
-        for row in self._rows: self._group.remove(row)
-        self._rows.clear()
+        self._store.remove_all()
         self._items.clear()
         self._selected.clear()
-        self._empty.set_visible(False)
+        self._count.set_text("")
         self._update_restore()
 
     def reload(self) -> None:
@@ -135,7 +280,7 @@ class TrashPage(Adw.NavigationPage):
         self._clear_items()
         if self._disposed or not self._window.account_logged_in: return
         self._active = True
-        self._message.set_visible(False)
+        self._message.set_revealed(False)
         self._listing_id = uuid.uuid4().hex
         self._load_more()
 
@@ -147,7 +292,12 @@ class TrashPage(Adw.NavigationPage):
         if self._cursor: query["cursor"] = self._cursor
         self._loading = True
         self._loading_box.set_visible(True)
+        self._more.set_label("Loading…")
         self._more.set_sensitive(False)
+        if not self._items:
+            self._placeholder.set_title("Loading Trash…")
+            self._placeholder.set_description("Fetching deleted photos and albums." if self.source == "photos" else "Fetching deleted files and folders.")
+            self._stack.set_visible_child_name("loading")
 
         def finished(page):
             if request != self._request or self._disposed: return
@@ -158,48 +308,41 @@ class TrashPage(Adw.NavigationPage):
                 if item.uid in self._items: continue
                 self._items[item.uid] = item
                 self._add_item(item)
+            self._more.set_label("Load more")
             self._more.set_visible(bool(self._cursor))
             self._more.set_sensitive(True)
-            self._empty.set_visible(not self._items and not self._cursor)
+            count = len(self._items)
+            self._count.set_text(f"{count} {'item' if count == 1 else 'items'}{' shown' if self._cursor else ''}")
+            self._empty.set_description("Deleted photos and albums will appear here." if self.source == "photos" else "Deleted files and folders will appear here.")
+            self._stack.set_visible_child_name("list" if self._items else "empty")
             self._update_restore()
 
         def failed(message):
             if request != self._request or self._disposed: return
             self.deactivate()
+            self._active = True
             self._error(message)
+            if not self._items:
+                self._placeholder.set_title("Could not load Trash")
+                self._placeholder.set_description("Refresh Trash to try again.")
+                self._stack.set_visible_child_name("loading")
 
         self._client.list_trash(query, finished, failed)
 
     def _add_item(self, item: TrashItem) -> None:
-        details = [{"file": "File", "folder": "Folder", "photo": "Photo or video", "album": "Album"}.get(item.type, item.type)]
-        if item.size is not None: details.append(format_size(item.size))
-        if item.trashed_at: details.append(f"Deleted {format_absolute_time(item.trashed_at)}")
-        if item.error: details.append(item.error)
-        row = Adw.ActionRow(title=GLib.markup_escape_text(item.name), subtitle=GLib.markup_escape_text(" · ".join(details)), subtitle_lines=0)
-        check = Gtk.CheckButton(valign=Gtk.Align.CENTER, sensitive=not bool(item.error))
-        check.set_tooltip_text(f"Select {item.name}")
-        check.connect("toggled", lambda widget, uid=item.uid: self._toggle(widget, uid))
-        row.add_prefix(check)
-        row.set_activatable_widget(check)
-        if item.error: row.add_css_class("warning")
-        self._group.add(row)
-        self._rows.append(row)
-
-    def _toggle(self, check, uid: str) -> None:
-        if check.get_active(): self._selected.add(uid)
-        else: self._selected.discard(uid)
-        self._update_restore()
+        self._store.append(TrashEntry(item))
 
     def _update_restore(self) -> None:
         count = len(self._selected)
         self._restore.set_label(f"Restore {count}" if count else "Restore")
         self._restore.set_sensitive(0 < count <= 100 and not self._starting and not self._restoring)
-        if count > 100: self._error("Select at most 100 items to restore at once.")
+        self._selection_label.set_text("Select up to 100 items" if count > 100 else f"{count} selected" if count else "Select items to restore")
 
     def _confirm_restore(self) -> None:
         if not self._restore.get_sensitive() or self._dialog or not self._window.account_logged_in: return
         uids = list(self._selected)
         source = self.source
+        generation = self._account_generation
         dialog = Adw.AlertDialog(heading="Restore selected items?", body=(
             f"Restore {len(uids)} selected {'item' if len(uids) == 1 else 'items'} to their original locations in Drive?\n\n"
             "Restored folders include their contents. Photos include related image and video assets where available. "
@@ -215,7 +358,7 @@ class TrashPage(Adw.NavigationPage):
 
         def response(_dialog, answer):
             self._dialog = None
-            if answer == "restore" and source == self.source and self._window.account_logged_in:
+            if answer == "restore" and source == self.source and generation == self._account_generation and self._window.account_logged_in:
                 self._start_restore(source, uids)
 
         dialog.connect("response", response)
@@ -257,12 +400,55 @@ class TrashPage(Adw.NavigationPage):
         if was_running and not self._restoring and self._active and self._window.account_logged_in: self.reload()
 
     def _render_jobs(self, jobs) -> None:
+        self._jobs = jobs
         self._restoring = any(job.status == "running" for job in jobs)
         self._update_restore()
+        self._job_bar.set_visible(bool(jobs))
+        if jobs:
+            job = jobs[0]
+            restored = sum(result.status == "restored" for result in job.results)
+            problems = sum(result.status in ("failed", "unknown") for result in job.results)
+            title = "Restoring…" if job.status == "running" else "Restore cancelled" if job.status == "cancelled" else "Restore finished"
+            summary = f"{title} · {restored} restored" + (f" · {problems} need attention" if problems else "")
+            if job.refresh_error: summary += " · refresh needed"
+            self._job_status.set_text(summary)
+            self._job_status.set_tooltip_text(summary)
+            self._job_icon.set_from_icon_name("dialog-warning-symbolic" if problems or job.refresh_error else "document-revert-symbolic" if job.status == "running" else "object-select-symbolic")
+            self._cancel_job.set_visible(job.status == "running")
+            self._cancel_job.set_sensitive(True)
+            self._cancel_job.set_label("Cancel")
+        if self._results_dialog: self._render_job_details()
+
+    def _show_results(self) -> None:
+        if self._results_dialog:
+            self._results_dialog.present(self._window)
+            return
+        if not self._jobs: return
+        dialog = Adw.Dialog(title="Restore results", content_width=560, content_height=480)
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(Adw.HeaderBar())
+        page = Adw.PreferencesPage()
+        self._jobs_group = Adw.PreferencesGroup(description=(
+            "Unconfirmed items need a Trash refresh before retrying. "
+            "If a parent is missing or a name is taken, restore the parent first or resolve it on the web."
+        ))
+        page.add(self._jobs_group)
+        toolbar.set_content(page)
+        dialog.set_child(toolbar)
+        self._results_dialog = dialog
+        def closed(current):
+            if self._results_dialog is current:
+                self._results_dialog = None
+                self._jobs_group = None
+                self._job_rows.clear()
+        dialog.connect("closed", closed)
+        self._render_job_details()
+        dialog.present(self._window)
+
+    def _render_job_details(self) -> None:
         for row in self._job_rows: self._jobs_group.remove(row)
         self._job_rows.clear()
-        self._jobs_group.set_visible(bool(jobs))
-        for job in jobs:
+        for job in self._jobs:
             restored = sum(result.status == "restored" for result in job.results)
             problems = sum(result.status in ("failed", "unknown") for result in job.results)
             title = "Restoring…" if job.status == "running" else "Restore cancelled" if job.status == "cancelled" else "Restore finished"

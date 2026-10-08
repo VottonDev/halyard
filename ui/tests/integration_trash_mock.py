@@ -10,6 +10,7 @@ All restore operations only change the mock's in-memory fixtures.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
@@ -85,9 +86,14 @@ def respond(dialog, answer):
 
 
 def select(page, *uids):
-    names = [page._items[uid].name for uid in uids]
-    for row in page._rows:
-        row.get_activatable_widget().set_active(row.get_title() in names)
+    page._selection.unselect_all()
+    for position in range(page._store.get_n_items()):
+        if page._store.get_item(position).item.uid in uids:
+            page._selection.select_item(position, False)
+
+
+def footer_y(page, window):
+    return page._footer.compute_bounds(window)[1].get_y()
 
 
 def restore(page, *uids):
@@ -131,11 +137,69 @@ def scenario(app):
             page = window._trash_page
             wait(lambda: not page._loading and len(page._items) == 50)
             check("menu opens a paged Files and folders Trash", page.source == "drive" and page._more.get_visible() and window._nav.get_visible_page() is page)
-            if os.environ.get("HALYARD_TEST_SCREENSHOT"): snapshot(window, os.environ["HALYARD_TEST_SCREENSHOT"])
+            report_check = next(w for w in descendants(page._table) if isinstance(w, Gtk.CheckButton) and w.get_tooltip_text() == f"Select {page._items['report'].name}")
+            report_check.set_active(True)
+            check("file checkbox updates native selection and restore count", page._selected == {"report"} and page._restore.get_label() == "Restore 1")
+            screenshot = os.environ.get("HALYARD_TEST_SCREENSHOT")
+            if screenshot:
+                snapshot(window, screenshot)
+                # Long names must fit the name column, with their full text
+                # available on hover, rather than expanding the whole window.
+                entry = page._store.get_item(0)
+                item = entry.item
+                page._store.splice(0, 1, [type(entry)(replace(item, name="Quarterly report <final> & supporting documents " * 5 + ".md"))])
+                select(page, "report")
+                style = Adw.StyleManager.get_default()
+                previous_scheme = style.get_color_scheme()
+                style.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT)
+                snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-light-long-name")))
+                page._store.splice(0, 1, [entry])
+                select(page, "report")
+                style.set_color_scheme(previous_scheme)
+                window.set_default_size(600, 640)
+                pump(0.3)
+                snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-narrow")))
+                check("narrow window keeps restore controls inside the window", footer_y(page, window) + page._footer.get_height() <= window.get_height() and page._restore.compute_bounds(window)[1].get_x() + page._restore.get_width() <= window.get_width())
+                window.set_default_size(1000, 700)
+                pump(0.3)
+                snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-wide")))
+                window.set_default_size(760, 850)
+                pump(0.3)
+            adjustment = page._scrolled.get_vadjustment()
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() - 40)
+            pump()
+            scroll_before, footer_before = adjustment.get_value(), footer_y(page, window)
+            # Hold the real mock reply so loading layout can be checked reliably.
+            list_trash = client.list_trash
+            pending = []
+            def hold_listing(query, finished, failed):
+                list_trash(query, lambda reply: pending.append((finished, reply)), failed)
+            with patch.object(client, "list_trash", hold_listing):
+                page._more.emit("clicked")
+            wait(lambda: pending)
+            check("pagination keeps rows and footer stable while loading", page._stack.get_visible_child_name() == "list" and page._loading_box.get_visible() and abs(footer_y(page, window) - footer_before) < 1 and abs(adjustment.get_value() - scroll_before) < 1)
+            if screenshot: snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-loading")))
+            pending[0][0](pending[0][1])
+            wait(lambda: not page._loading and len(page._items) == 56)
+            check("appended rows preserve scroll position and existing selection", abs(adjustment.get_value() - scroll_before) < 1 and page._selected == {"report"} and abs(footer_y(page, window) - footer_before) < 1)
+            bad = next(position for position in range(page._store.get_n_items()) if page._store.get_item(position).item.uid == "unreadable")
+            page._selection.select_item(bad, False)
+            check("next page appends without duplicates and unverified names cannot be selected", page._store.get_n_items() == 56 and not page._more.get_visible() and not page._selection.is_selected(bad) and "unreadable" not in page._selected)
+
+            page.reload()
+            wait(lambda: not page._loading and len(page._items) == 50)
+            select(page, "report")
+            pending.clear()
+            with patch.object(client, "list_trash", hold_listing):
+                page._more.emit("clicked")
+            wait(lambda: pending)
+            next(w for w in descendants(page._loading_box) if isinstance(w, Gtk.Button)).emit("clicked")
+            pending[0][0](pending[0][1])
+            check("cancel loading keeps loaded rows and selection and ignores the delayed page", not page._loading and len(page._items) == 50 and page._selected == {"report"} and page._more.get_label() == "Reload" and page._more.get_sensitive())
+            page._more.emit("clicked")
+            wait(lambda: not page._loading and len(page._items) == 50)
             page._more.emit("clicked")
             wait(lambda: not page._loading and len(page._items) == 56)
-            bad = next(row for row in page._rows if row.get_title() == "Unavailable name")
-            check("next page appends without duplicates and unverified names cannot be selected", len(page._rows) == 56 and not page._more.get_visible() and not bad.get_activatable_widget().get_sensitive())
 
             select(page, "report", "collision", "missing")
             page._restore.emit("clicked")
@@ -146,9 +210,14 @@ def scenario(app):
             restore(page, "report", "collision", "missing")
             job = settled(client)
             check("partial failure preserves success and exposes name-collision/missing-parent reasons", [r.status for r in job.results].count("restored") == 1 and [r.status for r in job.results].count("failed") == 2 and any("name already exists" in (r.item.error or "") for r in job.results) and any("parent is unavailable" in (r.item.error or "") for r in job.results))
+            check("restore summary stays compact until details are requested", page._job_bar.get_visible() and "2 need attention" in page._job_status.get_text() and not page._job_rows)
+            page._show_results()
             page._job_rows[0].set_expanded(True)
             page._on_jobs(client, (job,))
             check("expanded results show individual errors and stay open across signals", page._job_rows[0].get_expanded() and any(isinstance(w, Adw.ActionRow) and "name already exists" in (w.get_subtitle() or "") for w in descendants(page._job_rows[0])))
+            if screenshot: snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-results")))
+            page._results_dialog.close()
+            wait(lambda: page._results_dialog is None)
             wait(lambda: not page._loading and "report" not in page._items)
             check("completed restore refreshes Trash", "report" not in page._items and "collision" in page._items)
 
@@ -177,12 +246,13 @@ def scenario(app):
             job = settled(client)
             check("Photos restore includes its video companion, albums and folders", {r.item.uid for r in job.results} == {"live", "companion", "album", "photo-folder"} and all(r.status == "restored" for r in job.results))
             wait(lambda: not page._loading and not page._items)
-            check("empty Photos Trash has a clear empty state", page._empty.get_visible())
+            check("empty Photos Trash has a clear empty state", page._stack.get_visible_child_name() == "empty")
+            if screenshot: snapshot(window, str(Path(screenshot).with_stem(Path(screenshot).stem + "-empty")))
 
             page.reload()
-            page.deactivate()
+            page._cancel_loading()
             pump(0.3)
-            check("loading cancellation ignores late callbacks", not page._loading and not page._loading_box.get_visible() and not page._listing_id)
+            check("loading cancellation ignores late callbacks and offers reload", not page._loading and not page._loading_box.get_visible() and not page._listing_id and page._more.get_visible() and page._more.get_label() == "Reload" and page._placeholder.get_title() == "Loading cancelled")
             page.activate()
             wait(lambda: not page._loading)
             # Hold completion callbacks across an account reset. The actual
@@ -198,8 +268,10 @@ def scenario(app):
             cancel_button = Gtk.Button(label="Cancel")
             with patch.object(client, "cancel_trash_restore", hold_cancel):
                 page._cancel_restore(cancel_button, "delayed-job")
+            page._show_results()
             call(client.logout)
             wait(lambda: not window.account_logged_in)
+            wait(lambda: page._results_dialog is None)
             check("sign-out returns home and clears Trash state", window._nav.get_visible_page().get_tag() == "main" and not page._items and not page._job_rows)
             jobs_request = page._jobs_request
             delayed["start_ok"](None)
@@ -208,7 +280,7 @@ def scenario(app):
             check("late restore and cancellation replies after sign-out do not fetch jobs", page._jobs_request == jobs_request)
             delayed["start_error"]("Old restore error")
             delayed["cancel_error"]("Old cancellation error")
-            check("late restore errors after sign-out cannot repopulate the page", not page._message.get_visible() and not cancel_button.get_sensitive())
+            check("late restore errors after sign-out cannot repopulate the page", not page._message.get_revealed() and not cancel_button.get_sensitive())
         finally:
             if window: window.destroy()
             client.stop()
