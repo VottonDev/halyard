@@ -4,8 +4,8 @@
 
 ## Folder sync
 
-Select the + button to add a folder pair. Choose a folder on this computer,
-then select or create its Proton Drive folder. Sync starts at once.
+Select the + button to add a folder pair. Choose a folder on this computer.
+Then select or create its Proton Drive folder. Sync starts at once.
 
 Closing the window does not stop syncing. Open Preferences and select
 **Stop service**, or run `systemctl --user stop halyard-daemon`.
@@ -16,9 +16,10 @@ Select **Conflicts** from the app menu to review files that changed in both
 places, or were edited in one place and deleted in the other.
 
 For files edited in both places, Halyard keeps both versions under different
-names. Select **Use this computer’s version** to restore your version to the
-original name. Select **Use Proton Drive’s version** to remove the preserved
-local copy. Select **Keep both** to leave both files and clear the entry.
+names. Select **Use this computer’s version** to replace the file at the
+original path with your preserved version.
+Select **Use Proton Drive’s version** to remove the preserved local copy.
+Select **Keep both** to leave both files and clear the entry.
 
 If a file was edited in one place and deleted in the other, Halyard keeps the
 edited version. Select **Keep edited file** to clear the entry. Check Activity
@@ -67,7 +68,8 @@ Open **Trash** from the app menu to browse deleted files and folders, or
 switch to **Photos** for deleted photos and albums. Select items and choose
 **Restore** to return them to their original locations in Drive. Files in
 paired folders sync normally, with conflicting local edits kept as copies.
-The results show each item's outcome; cancelling stops remaining work without
+
+The results show each item's outcome. Cancelling stops remaining work without
 undoing completed restores. Missing parents and name collisions may require
 restoring the parent first or resolving the original location on the web.
 Version history remains available through Proton Drive on the web.
@@ -81,17 +83,21 @@ from folder sync.
 
 ## Troubleshooting
 
-Run the doctor first. It checks local dependencies without touching account
-data.
-
-```bash
-cd daemon && bun run doctor
-```
-
-Then check the service log:
+Check the service log first:
 
 ```bash
 journalctl --user -u halyard-daemon -f
+```
+
+Press **Ctrl+C** to stop following the log.
+
+For source checkouts, run the doctor from the repository root.
+It requires Bun and the prepared source-build dependencies.
+It checks local dependencies without accessing account data or making network calls.
+
+```bash
+cd daemon
+bun run doctor
 ```
 
 | Symptom | Likely cause |
@@ -99,7 +105,7 @@ journalctl --user -u halyard-daemon -f
 | "No usable secret service found" at startup | `gnome-keyring` is not running, or the login keyring is locked. Unlock it and restart the daemon. |
 | The app sits on "connecting" | Start the daemon with `systemctl --user start halyard-daemon`. |
 | A pair shows an error and stalls | Read the error for details. Halyard retries failed items on the next sync cycle. One failed file does not stop the others. |
-| Notifications never appear | GNOME only shows them once the `.desktop` file is installed in `XDG_DATA_DIRS`, which `install.sh` does. |
+| Notifications never appear | GNOME needs the installed `.desktop` file to show notifications. Reinstall Halyard with your package manager or `packaging/install.sh`. |
 | Nothing syncs after sign-in | Check that the folder pair is switched on and syncing is not paused. |
 
 You can safely delete `~/.cache/halyard/`. Do not delete
@@ -133,11 +139,23 @@ rm -f ~/.config/systemd/user/halyard-daemon.service \
       ~/.local/share/applications/io.github.votton.Halyard.desktop
 rm -rf ~/.local/lib/halyard ~/.local/share/doc/halyard
 systemctl --user daemon-reload
+```
 
-# Optional: remove sync state, cache, and logs
+Your synced files, saved sync state and credentials stay in place.
+
+### Optional: delete saved data
+
+After uninstalling, use this command only if you also want to delete Halyard's
+sync state, cache and logs. Deleting sync state removes Halyard's record of
+previously synced files. A later installation cannot resume from that state.
+
+```bash
 rm -rf ~/.local/share/halyard ~/.cache/halyard ~/.local/state/halyard
 ```
 
-Your synced files are left alone. Remove the keyring entry "Halyard — Proton
-Drive session" in Passwords and Keys to drop the stored session.
+Your synced files stay in place. These paths assume the default XDG directories.
+If you changed them, use the corresponding `halyard` directories there instead.
+
+To delete the stored session, remove the keyring entry "Halyard — Proton Drive
+session" in Passwords and Keys.
 

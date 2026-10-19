@@ -1,8 +1,8 @@
 # AGENTS.md
 
 Working notes for Halyard — an unofficial two-way Proton Drive sync client for
-GNOME. Read this before changing anything; several constraints here are not
-discoverable from the code alone.
+GNOME. Read this before changing anything. The code alone does not explain
+several constraints here.
 
 ## Layout
 
@@ -16,22 +16,28 @@ packaging/         D-Bus activation, systemd user unit, installer.
 debian/            Debian/Ubuntu debhelper packaging metadata.
 ```
 
-The split exists because the Drive SDK is TypeScript (its crypto package ships
-raw ESM `.ts`), so the engine must run on Node — while a GNOME app should be
-GTK, not a browser. Do not try to merge them.
+The engine runs on Node because the Drive SDK uses TypeScript. Its crypto
+package ships raw ESM `.ts` files. The GNOME interface uses GTK.
+Keep the daemon and UI as separate processes.
 
 ## Commands
+
+Run these commands from the repository root:
 
 ```bash
 cd daemon
 bun install                    # bun, not npm — see below
 node scripts/build.mjs         # → dist/halyard-daemon.cjs (this is what runs)
-bun run test                   # both suites (see below)
+bun run test                   # all offline suites (see below)
 bun test                       # pure logic only: reconciler, ignore, exclude
 bun run test:node              # anything touching node:sqlite
 ./node_modules/.bin/tsc --noEmit
 HALYARD_LOG_LEVEL=debug HALYARD_LOG_STDERR=1 node dist/halyard-daemon.cjs
+```
 
+For UI development, start from the repository root:
+
+```bash
 cd ui
 ./run-dev.sh                   # mock daemon + UI
 python3 -m halyard             # against the real daemon
@@ -51,40 +57,44 @@ Each of these cost real debugging time. Do not "simplify" them away.
   `proton-drive-sdk-account` publish raw TypeScript — crypto's package exports
   point directly at `.ts` files. Node cannot load either directly.
 - **`preserveSymlinks` is required** in both `tsconfig.json` and the esbuild
-  config. The SDK packages arrive via `file:` deps, so they are symlinks;
-  without it, resolution happens from the SDK's real path in `../proton-sdk`
-  where our `node_modules` does not exist, and every import fails.
+  config. The SDK packages use `file:` dependencies, which create symlinks.
+  Without this setting, resolution starts from the SDK's real path in
+  `../proton-sdk`. Our `node_modules` directory is absent there, so imports fail.
 - **`import.meta.url` needs the banner** in `scripts/build.mjs`. openpgp calls
   `createRequire(import.meta.url)` internally, which is `undefined` once bundled
   to CJS.
 - **`x11` is aliased to a stub.** `dbus-next` optionally requires it in an
-  unreachable X11 fallback; the stub exports `null`, which is what dbus-next
-  itself checks for.
-- **Tests are split across two runners, and that is not optional.** Bun does
-  not implement `node:sqlite`, so anything touching `SyncDatabase` cannot run
-  under `bun test` — those files are named `*.nodetest.ts` (so Bun's `*.test.ts`
-  glob skips them) and run under Node via `bun run test:node`. Node in turn
-  cannot resolve the `.js` specifiers the `src/` tree uses, so that script
-  loads `test/support/register.mjs`, which rewrites them to `.ts` and erases
-  types with esbuild (distro Node builds can omit native type stripping). Pure logic
-  stays in `*.test.ts` under Bun. The crypto-cache, shared-sync and
-  download-concurrency regressions need both `node:sqlite` and bundled SDK dependencies, so they are
-  named `*.bundletest.ts`. `bun run test:crypto`, `bun run test:shared` and
-  `bun run test:downloads` bundle them before running them with Node. Source
-  builds/tests require Node 22.15+ for the module hooks; the
-  installed daemon can run on Node 22.13+.
-- The `proton-sdk` submodule (pinned at tag `js/v0.22.2`) lives at the repo root
-  — `../proton-sdk` from `daemon/` — and `client/js` must be built
-  (`./scripts/build-proton-sdk.sh`) before this will compile. `git submodule update --init`
-  fetches it; `packaging/install.sh` runs both the fetch and the build. It is a
-  submodule of `github.com/ProtonDriveApps/sdk`, not a sibling checkout — the
-  daemon no longer depends on anything outside this repo.
+  unreachable X11 fallback. The stub exports `null`, which dbus-next checks for.
+- **Keep both test runners.** Bun does not implement `node:sqlite`.
+  Tests that use `SyncDatabase` must run under Node. Name these files
+  `*.nodetest.ts` so Bun's `*.test.ts` glob skips them. Run them with
+  `bun run test:node`. Keep pure logic tests in `*.test.ts` under Bun.
+
+  Node cannot resolve the `.js` specifiers used in `src/` to the TypeScript sources.
+  The Node test command loads `test/support/register.mjs` to rewrite these
+  specifiers to `.ts` and erase types with esbuild.
+  Distribution builds of Node can omit native type stripping.
+
+  Crypto-cache, shared-sync and download-concurrency tests require both
+  `node:sqlite` and bundled SDK dependencies. Name these files `*.bundletest.ts`.
+  Their commands bundle each suite before running it under Node:
+  `bun run test:crypto`, `bun run test:shared` and `bun run test:downloads`.
+  Source builds and tests require Node 22.15+ for module hooks.
+  The installed daemon can run on Node 22.13+.
+- **Build the SDK submodule before compiling the daemon.** `proton-sdk` is
+  pinned at tag `js/v0.22.2`. It lives at the repository root, or
+  `../proton-sdk` from `daemon/`. Run `git submodule update --init` to fetch it.
+  Run `./scripts/build-proton-sdk.sh` from the repository root to build `client/js`.
+  `packaging/install.sh` fetches and builds it automatically.
+
+  The submodule comes from `github.com/ProtonDriveApps/sdk`.
+  The daemon does not depend on a checkout outside this repository.
 
 ## Proton's rules — do not break these
 
-Proton permits personal, non-commercial use of the SDK under conditions. Halyard
-complies; changes must keep complying, or the account gets rate-limited or
-blocked.
+Proton permits personal, non-commercial use of the SDK under conditions.
+Halyard complies with these conditions. Preserve compliance in every change
+to avoid account rate limits or blocking.
 
 - **`x-pm-appversion` must stay honest** — `external-drive-halyard@<v>-alpha`,
   set in `daemon/src/config.ts`. Making it look first-party is explicitly
@@ -99,8 +109,8 @@ blocked.
 ## Sync engine invariants
 
 `daemon/src/engine/reconcile.ts` is a pure three-way merge (local × base ×
-remote) with no I/O. Keep it that way — it is the only part that is exhaustively
-testable, and every sync decision goes through it.
+remote) with no I/O. Keep it free of I/O. Every sync decision passes through
+this function. It is the only part that can be tested exhaustively.
 
 - **The base is durable state, not a cache.** It is the last state at which both
   sides agreed. Losing it means deletions cannot be told apart from
@@ -108,67 +118,80 @@ testable, and every sync decision goes through it.
 - **A deletion never beats an edit.** Remote deletions are applied locally only
   when the local copy is *unchanged* — so an identical copy is recoverable from
   Proton's Trash. Unsynced local edits are re-uploaded instead. If you touch the
-  decision matrix, preserve this asymmetry. The executor re-checks it too:
-  `deleteLocal` re-stats the file just before removing and defers if a write
-  landed after the scan — the scan-time judgement alone is a TOCTOU hole.
-- **Type swaps are explicit, not emergent.** A path that is a file on one side
-  and a folder on the other gets its own branch in the matrix: an *unchanged*
-  file is replaced outright (its bytes are Trash-recoverable); anything else
-  keeps both copies via the conflict rename. Do not let these fall through to
-  the single-sided branches — that path either loops forever or aims file
-  operations at a folder uid.
-- **A vanished or empty local root pauses the pair; it never reconciles.**
-  `runOnce` (`daemon/src/engine/pair.ts`) refuses to sync when the local folder
-  is missing, or exists but scans empty, while the base is non-empty — that
-  means the folder was moved, deleted, or unmounted out from under us, and
-  reconciling would read the whole tree as deleted and trash the Drive copies.
-  This mirrors the half-enumerated-remote guard. Do not remove it, and do not
-  let the `mkdir -p` at the top recreate a missing root when there is state to
-  lose (it would also mask a bare mountpoint with a phantom folder).
-- **Conflicts keep both copies.** Remote takes the canonical path; the local
-  version is renamed `file (conflict YYYY-MM-DD).ext` and uploaded.
+  decision matrix, preserve this asymmetry.
+
+  The executor checks the file again immediately before deletion.
+  `deleteLocal` reads its current metadata and defers deletion if a write
+  occurred after the scan. Preserve this check to prevent a time-of-check to
+  time-of-use (TOCTOU) race.
+- **Handle file/folder type swaps in a separate decision branch.** If the file
+  is *unchanged*, replace it outright. Its bytes remain recoverable from Trash.
+  Otherwise, use the conflict rename to keep both copies.
+  Do not let type swaps reach the single-sided branches.
+  Those branches can loop forever or apply file operations to a folder UID.
+- **Pause a pair if its local root disappears or scans empty while the base is non-empty.**
+  `runOnce` (`daemon/src/engine/pair.ts`) enforces this guard. Do not reconcile
+  the pair in this state. The folder could be moved, deleted or unmounted.
+  Reconciliation would interpret the missing local files as deletions and trash
+  their Drive copies. This mirrors the guard against an incomplete remote enumeration.
+
+  Preserve both guards. Do not let the initial `mkdir -p` recreate a missing
+  root when durable state exists. Recreating it could also put a phantom folder
+  at a bare mountpoint.
+- **Conflicts keep both copies.** The remote version keeps the original path.
+  Rename the local version to `file (conflict YYYY-MM-DD).ext` and upload it.
 - **Never re-transfer on rename.** Moves are detected by node uid (remote) and
   `(device, inode)` (local).
-- **btrfs:** inode numbers are unique only per subvolume, so move detection must
-  key on `(device, inode)` — inode alone renames the wrong file. And `rename(2)`
-  fails with `EXDEV` across subvolumes, so moves fall back to copy+delete with
-  `COPYFILE_FICLONE`. Both have regression tests; the dev machine is btrfs with
-  an `@`/`@home` layout, so these paths are live, not theoretical.
+- **btrfs:** inode numbers are unique only per subvolume.
+  Use `(device, inode)` for move detection. An inode-only key can rename the
+  wrong file. `rename(2)` fails with `EXDEV` across subvolumes.
+  Preserve the fallback that copies with `COPYFILE_FICLONE` and then deletes the source.
+
+  Both cases have regression tests. The development machine uses btrfs with an
+  `@`/`@home` layout, so these cases occur during normal use.
 - Downloads land on a `.halyard-part` temp file and are renamed into place. That
   suffix **must** stay in the ignore list, or a scan racing a download uploads
   half-written files to Drive.
-- **The activity log is the opposite of the base: disposable.** `sync_events`
-  records what the executor actually did, for the UI's Activity screen, and is
-  pruned at 90 days / 20 000 rows. Nothing may ever read it back to make a sync
-  decision — losing it costs the user an explanation, not their data. It is
-  written once per cycle in one transaction, because a commit per file cost
-  more than the sync itself.
+- **The activity log is disposable.** `sync_events` records completed and failed
+  executor actions for the UI's Activity screen. Entries expire after 90 days
+  or 20 000 rows. Never use this log to make a sync decision.
+  Losing it must only remove explanations, not affect user data.
+
+  Write the log once per cycle in one transaction.
+  A separate commit for each file cost more than the sync itself.
 
 ## The daemon is a user service — never add elevation
 
-Nothing in Halyard requires root, and nothing should start doing so. The daemon
-runs as the user, stores its session in the user's keyring, writes only under
-`$HOME`, registers on the **session** bus, and installs to `~/.local` and
-`~/.config`. `ui/halyard/daemon_control.py` starts and enables it through
-`systemctl --user`, D-Bus activation, or a direct spawn — in that order, and
-none of them prompt for a password.
+Nothing in Halyard requires root. Do not add a root requirement.
+The daemon runs as the user and stores its session in the user's keyring.
+It writes only under `$HOME` and registers on the **session** bus.
+The manual installer uses `~/.local` and `~/.config`.
+
+`ui/halyard/daemon_control.py` tries these startup methods in order:
+
+1. `systemctl --user`
+2. D-Bus activation
+3. A direct spawn
+
+None of these methods prompts for a password.
 
 Distribution packages use apt/pacman to install read-only program files under
 `/usr/lib/halyard` and a user unit under `/usr/lib/systemd/user`. Only the package
-manager needs administrator access; the daemon still runs as the logged-in
+manager needs administrator access. The daemon still runs as the logged-in
 user. Package hooks must never start a system daemon, enable sync globally, or
 alter user credentials, paired folders or sync state. The manual installer
 continues to use `~/.local` and `~/.config` without elevation.
 
-If a change here appears to need `sudo`, the change is wrong. A sync tool that
-asks for root to move the user's own files is teaching them a bad habit, and
-Proton's own clients do not do it either.
+If a change here appears to need `sudo`, revise the change.
+Moving the user's own files must not require root.
+Proton's own clients do not require root for this either.
 
 The systemd unit has one source of truth: `packaging/halyard-daemon.service.in`.
-`ui/halyard/daemon_control.py` reads that template when a checkout provides it
-and carries a byte-identical embedded fallback for installed UIs — both write
-the same file and last-writer-wins, so a change to one must be mirrored in the
-other (an earlier inline copy silently dropped the entire hardening block).
+`ui/halyard/daemon_control.py` reads that template when a checkout provides it.
+Installed UIs use a byte-identical embedded fallback.
+Both sources write the same file, and the last write determines its contents.
+Mirror every template change in the fallback.
+An earlier inline copy silently omitted the entire hardening block.
 
 ## GNOME specifics
 
@@ -179,11 +202,12 @@ other (an earlier inline copy silently dropped the entire hardening block).
   `ui/halyard/tray.py` implements both protocols with Gio because
   AppIndicator3 is GTK3 and cannot be loaded into the GTK4 process. Watch the
   watcher at runtime so the icon appears and disappears with the extension.
-  The app must remain usable without a tray; keep status in the window and use
-  notifications for background events.
+
+  The app must remain usable without a tray. Keep status in the window.
+  Use notifications for background events.
 - Autostart goes through `org.freedesktop.portal.Background`, never a
   hand-written `~/.config/autostart` file.
-- Notifications use `Gio.Application.send_notification`; no libnotify
+- Notifications use `Gio.Application.send_notification`. Do not add a libnotify
   dependency. GNOME only renders them once the `.desktop` file is installed.
 
 ## Testing against a real account — read first
@@ -204,14 +228,14 @@ data.
 ## Versioning
 
 - `daemon/package.json` is the only application version source. The daemon and
-  checkout UI read it; installers generate the UI's `data/version.json`.
+  checkout UI read it. Installers generate the UI's `data/version.json`.
   `packaging/versioning.py` generates ignored `debian/changelog` and
   `packaging/arch/PKGBUILD` from their `.in` templates. Do not add another version
   constant or hand-edit generated metadata. Release tags must match `v<version>`.
-- An SDK upgrade requires a Halyard version bump in the same change. Increment
-  the final component for an SDK update that remains compatible with Halyard's
-  public behaviour, for example `0.1.1` to `0.1.2`, even if Proton labels an
-  internal SDK change as breaking.
+- An SDK upgrade requires a Halyard version bump in the same change.
+  For an SDK update compatible with Halyard's public behaviour, increment the
+  final component, for example `0.1.1` to `0.1.2`.
+  Apply this rule even if Proton labels an internal SDK change as breaking.
 - Increment the middle component for a user-facing breaking change while
   Halyard is pre-1.0, for example `0.1.x` to `0.2.0`.
 - Increment the leading component for a whole-product refactor or another major
@@ -224,7 +248,7 @@ data.
   shape means updating `docs/dbus-api.md`, the daemon, the UI models, and the
   mock — all four.
 - Daemon errors surface to the user verbatim, so their wording is UI text.
-- UI models are frozen dataclasses; collections come back as tuples.
-- Secrets never touch disk unencrypted. The session lives in the keyring; the
-  metadata cache is AES-256-GCM encrypted under a key from the same keyring.
+- UI models are frozen dataclasses. Return collections as tuples.
+- Secrets never touch disk unencrypted. The session lives in the keyring.
+  The metadata cache uses AES-256-GCM encryption with a key from the same keyring.
   `daemon/src/log.ts` redacts tokens centrally — do not log request bodies.

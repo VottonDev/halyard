@@ -1,8 +1,8 @@
 # Distribution packages
 
 Halyard provides conventional Debian/Ubuntu `debian/` metadata and Arch
-`PKGBUILD` recipes. Both packages contain the bundled daemon and Python UI;
-Node, GTK and the other runtime dependencies are managed by apt or pacman.
+`PKGBUILD` recipes. Both packages contain the bundled daemon and Python UI.
+The package manager, apt or pacman, manages Node, GTK and the other runtime dependencies.
 End users do not need Bun, the SDK checkout, or a compiler.
 
 ## Install a release package
@@ -40,7 +40,7 @@ and rejects an installation whose repositories cannot provide them.
 | Ubuntu 26.04 | Satisfy the runtime requirements. |
 | Ubuntu 24.04 | libadwaita 1.5 and Node 18 are too old. The standard repositories do not satisfy the runtime requirements. |
 | Debian 13 | GTK and libadwaita are sufficient. Node 20 is too old. Enable a trusted Node 22.13 or newer apt repository first. |
-| Ubuntu 22.04 / Debian 12 | GTK/libadwaita are too old; these releases are unsupported. |
+| Ubuntu 22.04 / Debian 12 | GTK/libadwaita are too old. These releases are unsupported. |
 | Current Arch Linux | Satisfies the runtime requirements. |
 
 Node repository versions: [Ubuntu 26.04](https://packages.ubuntu.com/source/resolute/nodejs),
@@ -79,16 +79,16 @@ Keep `~/.local/share/halyard`, the keyring, and paired folders. They hold sync
 state, credentials and your files, and belong to the user rather than the
 package. The commands preserve the startup preference by recreating an enabled
 service's link against the package unit after removing the old override.
-Uninstalling a package also
-preserves user data; quit Halyard before removing it.
+Uninstalling a package also preserves user data. Quit Halyard before removing it.
 
 ## Build packages
 
 Build prerequisites are Node 22.15+, Bun 1.3.11+, Python 3 and Git. The test
-loader needs Node 22.15's module hooks; the installed daemon needs only 22.13.
-Bun is a
-build tool, required for the crypto patch; Debian/Ubuntu do not provide it in
-all standard repositories, so install it in the build environment separately.
+loader needs Node 22.15's module hooks. The installed daemon needs only 22.13.
+
+Bun is a build tool, required for the crypto patch.
+Not all Debian/Ubuntu standard repositories provide Bun.
+Install Bun separately in the build environment.
 `debian/rules` checks this through the shared build script. Production runtime
 dependencies never include Bun.
 
@@ -107,9 +107,9 @@ The standard debhelper rules build the pinned SDK with Bun, bundle the daemon,
 run offline tests and stage files. The wrapper generates `debian/changelog`
 from the application version, then calls `dpkg-buildpackage --build=binary
 --no-sign`. The resulting `.deb` is written to the parent directory.
-Builds currently download JS dependencies using the daemon lockfile and SDK
-dependency pins; this is upstream packaging,
-not a claim that the source is ready for admission to Debian's official archive.
+Builds currently download JS dependencies using the daemon lockfile and SDK dependency pins.
+These are upstream packages.
+This guide does not claim that the source is ready for Debian's official archive.
 
 ### Arch source build
 
@@ -124,14 +124,18 @@ makepkg -s
 The `halyard` recipe builds Halyard and the Proton SDK from specific Git commits.
 It fetches only the SDK submodule, then builds and tests Halyard.
 The selected commits are preserved in release archives, which have no Git
-metadata. Bun is a build dependency; its dependency cache stays inside
+metadata. Bun is a build dependency. Its dependency cache stays inside
 `$srcdir`. No live-account tests run.
 
 ### Build both downloadable packages
 
-The release process bundles the daemon, includes the application source,
-SDK source, exact bundled dependency inputs, source map and complete licence
-notices, and creates a checksummed release archive:
+The release process creates an archive with these contents:
+
+- The bundled daemon and application source.
+- SDK source and the exact dependency inputs used in the bundle.
+- The source map and complete licence notices.
+
+The process also creates checksums for the archive:
 
 ```sh
 ./packaging/build.sh
@@ -168,22 +172,24 @@ It then publishes the GitHub release.
 Assets are attached while the release is still a draft so a failure cannot
 expose a partial release.
 Reruns never replace assets of an already published release.
+
 For each release, edit **only `version` in `daemon/package.json`**, commit the
 change and push a matching `v<version>` tag. The daemon, UI, archive and package
 filenames all derive their version from that manifest. Debian's changelog and
-Arch's source PKGBUILD are generated from version-free `.in` templates; the
+Arch's source PKGBUILD are generated from version-free `.in` templates. The
 generated files are ignored by Git. `python3 packaging/versioning.py` refreshes
 them locally without building the application.
 
 Release workflow actions are pinned to commit hashes. Dependabot checks for
 GitHub Actions updates weekly and proposes updates to those pins.
 
-The Debian job uses the ordinary source build with a pinned Bun binary in its
-build environment and verifies its rebuilt daemon and licence inventory match
-the release archive. The Arch Git/submodule `prepare()` hook is also exercised
+The Debian job uses the ordinary source build with a pinned Bun binary.
+It checks that the rebuilt daemon and licence inventory match the release archive.
+The Arch Git/submodule `prepare()` hook is also exercised
 offline against the real pinned SDK before the binary recipe is tested.
+
 The Arch job checks both exported recipes and the installed package with
-`namcap`; errors fail CI. Review the dependency warnings from `namcap`, Arch's
+`namcap`. Errors fail CI. Review the dependency warnings from `namcap`, Arch's
 package checker. Some warnings occur because it cannot detect how Halyard uses
 a dependency. Examples include Node modules, session-bus services, the keyring,
 portals and optional media decoders. The source recipe's
@@ -191,13 +197,14 @@ stronger Node build requirement also intentionally overlaps its runtime dependen
 
 ### Export recipes for the Arch User Repository (AUR)
 
-Releases remain on GitHub; CI does not submit packages to the AUR. It produces
+Releases remain on GitHub. CI does not submit packages to the AUR. It produces
 separate `halyard-aur-<version>-<pkgrel>.tar.gz` and
 `halyard-bin-aur-<version>-<pkgrel>.tar.gz` exports. Each archive contains a folder
 with the build recipe (`PKGBUILD`), package metadata (`.SRCINFO`) and the recipe's
 MIT licence (`LICENSE`). Application binaries and local build output are excluded.
+
 The MIT licence covers these
-packaging sources; the packages separately declare and install their bundled
+packaging sources. The packages separately declare and install their bundled
 dependencies' licences.
 
 On Arch, first create the release archive using the commands in
@@ -214,12 +221,15 @@ namcap dist/aur/halyard/PKGBUILD dist/aur/halyard-bin/PKGBUILD
 
 These follow the [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines)
 and [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines):
-stable source packages use the unsuffixed name, prebuilt variants use `-bin`,
-sources have an immutable commit or archive checksum, and metadata is generated
-from the recipe rather than maintained separately. Review the exports before
-any future submission. Package names, dependency licences, commit pins and
-archive checksums update automatically; the application version still has one
-source of truth in `daemon/package.json`.
+
+- Stable source packages use the unsuffixed name.
+- Prebuilt variants use `-bin`.
+- Sources use an immutable commit or archive checksum.
+- The export script generates metadata from the recipe.
+
+Review the exports before any future submission.
+Package names, dependency licences, commit pins and archive checksums update automatically.
+The application version still has one source of truth in `daemon/package.json`.
 
 ## Installed layout
 

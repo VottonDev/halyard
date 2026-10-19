@@ -38,7 +38,7 @@ sudo apt install ./halyard_*_all.deb
 sudo pacman -U ./halyard-bin-*-any.pkg.tar.zst
 ```
 
-Open Halyard from the application menu. Packages install runtime dependencies;
+Open Halyard from the application menu. Packages install runtime dependencies.
 Bun and an SDK build are only needed when building from source.
 
 ### Requirements
@@ -55,7 +55,7 @@ repositories do not provide the required libadwaita version. See the
 ### From source
 
 Source builds require Node 22.15+ and Bun. Bun applies a required crypto package
-patch; npm is not supported.
+patch. npm is not supported.
 
 ```bash
 git clone --recurse-submodules https://github.com/VottonDev/halyard
@@ -88,8 +88,8 @@ resolution, troubleshooting and uninstall instructions.
 
 ## Limitations
 
-- Linux and GNOME only; one account at a time
-- No resumable transfers; interrupted uploads restart
+- Linux and GNOME only. One account at a time.
+- No resumable transfers. Interrupted uploads restart.
 - Symlinks are skipped
 - Shared-with-me sync requires editing access
 
@@ -120,6 +120,6 @@ account and require the account owner's permission before running.
 ## Licence
 
 Halyard is licensed under the [MIT License](LICENSE). It bundles Proton Drive
-SDK code under its own MIT licence; see the
+SDK code under its own MIT licence. See the
 [third-party notices](THIRD_PARTY_NOTICES.md). Use of Proton's hosted services
 remains subject to Proton's terms.

@@ -5,15 +5,16 @@ Proton or makes Drive API calls.
 
 ## Pull-request checks
 
-`.github/workflows/ci.yml` is the merge gate. It builds the Proton SDK revision
-pinned by the `proton-sdk` submodule, then runs Halyard's type checks, both test
-runners, the production bundle build and a strict offline environment probe.
+`.github/workflows/ci.yml` is the merge gate.
+It builds the Proton SDK revision pinned by the `proton-sdk` submodule.
+It then runs Halyard's type checks, both test runners and the production bundle build.
+It also runs a strict offline environment probe.
 It tests the minimum supported Node release and the current Node LTS line.
 
 The probe verifies the bundled SDK entry points, SQLite, D-Bus and an OpenPGP
 round trip. A separate bundled Node test exercises the versioned
-crypto-material cache with generated keys, closes over no account data, and
-confirms that another cache instance can read the encrypted state.
+crypto-material cache with generated keys. It uses no account data.
+The test checks that another cache instance can read the encrypted state.
 
 The UI job compiles every Python source file, checks the shell scripts and
 ensures that the embedded systemd unit remains byte-identical to the packaging
@@ -30,16 +31,15 @@ Configure these jobs as required status checks for `main`:
 `.github/workflows/sdk-canary.yml` runs daily and can also be started manually.
 It temporarily replaces the SDK submodule checkout with either:
 
-- the newest `js/v*` tag, which represents the next released integration
-  candidate;
-- upstream `main`, which provides earlier but noisier warning.
+- the newest `js/v*` tag, to test the next released SDK candidate
+- upstream `main`, to warn about changes before an SDK release
 
-The selected SDK is first installed, built and tested exactly as published,
-with the untouched output retained in the workflow log. If that fails because
-the package requests Mocha types without declaring `@types/mocha`, the workflow
-reports the known packaging defect and adds only that missing build dependency
-before continuing the upstream build and tests. This exposes any failure that
-the first TypeScript error would otherwise hide.
+The workflow first installs, builds and tests the selected SDK exactly as published.
+It retains the untouched output in the workflow log.
+The package can request Mocha types without declaring `@types/mocha`.
+If this causes a failure, the workflow reports the known packaging defect.
+It adds only that missing build dependency, then continues the upstream build and tests.
+This exposes failures that the first TypeScript error would otherwise hide.
 
 The SDK is then rebuilt with Halyard's pinned crypto version before the complete
 daemon suite runs. This keeps three separate signals visible: the published
@@ -47,8 +47,8 @@ package health, the upstream result after the minimal diagnostic repair, and
 Halyard compatibility. An unrecognised packaging failure, a failure after the
 minimal repair, or a Halyard compatibility failure makes the latest-tag job
 fail. The upstream-main job is allowed to fail because development commits may
-be incomplete, but all results and the exact commit remain visible in the job
-summary. The workflow never changes Halyard's committed submodule pointer.
+be incomplete. All results and the exact commit remain visible in the job summary.
+The workflow never changes Halyard's committed submodule pointer.
 
 Starting with `js/v0.20.0`, upstream releases omit their lockfile and
 `@types/mocha` declaration while
@@ -72,7 +72,7 @@ Instead, the latest-tag canary compares the newest release with the committed
 submodule pointer. When they differ, it opens one GitHub issue for that release
 with the tag, commit, compatibility result and workflow link. The title makes
 the notification idempotent, so daily runs do not create duplicates. Closing
-the issue records that the release was reviewed; the next SDK tag receives a
+the issue records that the release was reviewed. The next SDK tag receives a
 new issue.
 
 ## What this can detect
@@ -82,10 +82,13 @@ crypto-object shape changes exercised by Halyard's cache, and regressions in
 the pure sync engine. They also verify that the pinned SDK continues to build
 from a clean checkout.
 
-Without a dedicated test account they cannot detect a server-only API change,
-exercise remote events, or prove compatibility with a cryptographic model that
-has not yet appeared in the public SDK. The existing `daemon/scripts/live-test*.mjs`
-scripts remain manual for that reason.
+Without a dedicated test account, these workflows cannot:
+
+- Detect an API change made only on the server.
+- Exercise remote events.
+- Prove compatibility with a cryptographic model absent from the public SDK.
+
+The existing `daemon/scripts/live-test*.mjs` scripts remain manual for that reason.
 
 ## Local equivalent
 

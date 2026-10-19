@@ -7,9 +7,9 @@ sync client for Proton Drive.
 > supported by Proton AG. "Proton" and "Proton Drive" are trademarks of
 > Proton AG, used here only to describe what this application connects to.
 
-The UI contains no sync logic. It is an asynchronous client
-for the sync daemon over the session bus; the contract between them is frozen
-in [`../docs/dbus-api.md`](../docs/dbus-api.md).
+The UI contains no sync logic. It communicates asynchronously with the sync
+daemon over the session bus. Both processes follow the contract in
+[`../docs/dbus-api.md`](../docs/dbus-api.md).
 
 ## Requirements
 
@@ -18,11 +18,12 @@ in [`../docs/dbus-api.md`](../docs/dbus-api.md).
 - PyGObject
 - A session D-Bus
 
-No Python packages need installing; everything comes from the system GObject
+No Python packages need installing. Everything comes from the system GObject
 introspection bindings.
 
 ## Running it
 
+Run the following commands from `ui/`.
 You can run the UI without the sync daemon. `tests/mock_daemon.py` implements the
 contract with test data, and `run-dev.sh` starts it together
 with the UI:
@@ -35,7 +36,7 @@ with the UI:
 ./run-dev.sh --logged-in --no-pairs   # the empty state
 ```
 
-Arguments are passed through to the mock daemon; see `--help` for the full set.
+The script passes arguments to the mock daemon. See `--help` for the full set.
 
 ### Bus names
 
@@ -55,9 +56,9 @@ python3 -m halyard.main
 `run-dev.sh --no-mock` points the UI at the real daemon.
 
 > A real daemon connects to a live Proton Drive account.
-> `AddPair`, `RemovePair`, `SyncNow`, `CreateRemoteFolder`, `ResolveConflict`,
-> `BeginLogin` and `Logout` all write to it. Do mutation testing against the
-> mock. As a safeguard, the mock refuses to claim the production bus name.
+> Methods such as `AddPair`, `RemovePair`, `SyncNow`, `CreateRemoteFolder`,
+> `ResolveConflict`, `BeginLogin` and `Logout` can change configuration, credentials or Drive data.
+> Use the mock for mutation tests. The mock refuses to claim the production bus name.
 
 ### Running the UI on its own
 
@@ -99,7 +100,7 @@ long enough to notice.
 Closing the window does not stop syncing. Halyard explains this in a dialog the
 first time you close the window, then keeps a reminder in the footer and in
 Preferences. Stock GNOME has no system tray. If a StatusNotifier extension is
-installed, Halyard adds a tray icon; otherwise status stays in the window and
+installed, Halyard adds a tray icon. Otherwise status stays in the window and
 in notifications.
 
 Notifications go through `Gio.Application.send_notification`, so there is
@@ -108,17 +109,17 @@ no libnotify dependency. For the desktop to display them, the shipped
 `XDG_DATA_DIRS` with a name matching the application ID.
 
 Start on login uses the XDG Background portal
-(`org.freedesktop.portal.Background.RequestBackground` with `autostart`),
-never by writing `~/.config/autostart` directly, so the user is the one who
-grants it and it behaves the same inside and outside a sandbox.
+(`org.freedesktop.portal.Background.RequestBackground` with `autostart`).
+The user grants permission through the portal. This works the same inside and
+outside a sandbox. Do not write `~/.config/autostart` files directly.
 
 The stylesheet uses libadwaita's named colours. It does not hardcode colours,
 so light, dark, and custom accent colours all work.
 
 GSettings stores window geometry and two one-time flags
 (`data/io.github.votton.Halyard.gschema.xml`). `run-dev.sh` compiles the schema
-into a temporary directory. If the schema is not installed the app still runs;
-it uses in-memory defaults and does not persist them.
+into a temporary directory. If the schema is not installed the app still runs.
+It uses in-memory defaults and does not persist them.
 
 ## Mock daemon
 
@@ -128,11 +129,13 @@ it uses in-memory defaults and does not persist them.
 python3 tests/mock_daemon.py --help
 ```
 
-It serves five folder pairs in different states (syncing, up to date, error,
-scanning, disabled), three conflicts of all three kinds, a browsable remote
-folder tree that supports creating folders, an animated transfer that drives
-`StatusChanged` roughly four times a second, and a sign-in flow that completes
-a few seconds after `BeginLogin`.
+The mock provides:
+
+- Five folder pairs: syncing, up to date, error, scanning and disabled.
+- Three conflicts, one of each kind.
+- A browsable remote folder tree with folder creation.
+- An animated transfer that emits `StatusChanged` roughly four times a second.
+- A sign-in flow that completes a few seconds after `BeginLogin`.
 
 ## Startup update check
 
@@ -140,8 +143,9 @@ Once per UI process, after presenting the window, Halyard checks the version in
 `daemon/package.json` on GitHub's `VottonDev/halyard` main branch. A newer stable
 version shows a banner with a link to the installation instructions. This is a
 main-branch version check, not a GitHub Releases check. `daemon/package.json`
-is the single version source; the UI reads it in a checkout and uses generated
+is the single version source. The UI reads it in a checkout and uses generated
 version metadata in an installation.
+
 The check runs in a background thread with a five-second network timeout.
 Offline and invalid responses are ignored, with no retries or periodic polling.
 It sends no Proton credentials or sync metadata and does not install anything.
@@ -167,8 +171,8 @@ python3 ui/tests/integration_conflicts.py
 The app opens on Folders. Photos offers gallery and album browsing, previews,
 video playback, selected downloads, uploads and Trash. Activity shows photo
 transfers alongside folder sync history. For mock development use
-`dbus-run-session -- ./run-dev.sh --logged-in`; add `--no-photos` or `--offline`
-to test empty and error states.
+`dbus-run-session -- ./run-dev.sh --logged-in`.
+Add `--no-photos` or `--offline` to test empty and error states.
 
 Run the GTK Photos integration checks from the repository root on a usable
 GTK display. Video checks require GTK's media backend with WebM/VP8 support:
@@ -178,7 +182,7 @@ dbus-run-session -- python3 ui/tests/integration_photos_mock.py
 ```
 
 The real-account checks require a signed-in daemon built from the same checkout
-and Pillow. They are read-only by default; `--gtk` also checks gallery rendering
+and Pillow. They are read-only by default. `--gtk` also checks gallery rendering
 and preview navigation:
 
 ```sh
@@ -196,5 +200,5 @@ With the account owner's authorization, add `--writes` to test generated
 JPEG/PNG/WebP uploads, duplicate detection, downloads and filename collisions.
 It moves only its own new uploads to recoverable Proton Trash and retains local
 originals and downloads in a unique `~/halyard-photos-test-*` folder. These
-checks do not install or restart the daemon; build and run the current bundle
-before testing.
+checks do not install or restart the daemon. Build the current bundle before testing.
+Run that bundle for the real-account checks.
