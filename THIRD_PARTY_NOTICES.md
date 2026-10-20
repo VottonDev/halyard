@@ -1,7 +1,7 @@
 # Third-party notices
 
 Halyard bundles code from the Proton Drive SDK, pinned at commit
-`28ac9cdc258737375692d1751dd9c7edcfb96708` (`js/v0.22.2`). The SDK is
+`8a44654aece1609f0f7218be51c205103945abd8` (`js/v0.23.0`). The SDK is
 distributed under the following licence.
 
 ## Proton Drive SDK
