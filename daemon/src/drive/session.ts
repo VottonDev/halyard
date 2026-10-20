@@ -25,6 +25,7 @@ import { LocalTelemetry } from '../telemetry.js';
 import { createCaches, type Caches } from './caches.js';
 import { registerFolderRefresh } from './folders.js';
 import { HttpClient } from './httpClient.js';
+import { createServerTimeAfterResponseHook } from './serverTimeHook.js';
 
 const logger = getLogger('session');
 
@@ -152,6 +153,7 @@ export class DriveSession {
             appVersion: APP_VERSION_HEADER,
             credentials: this.credentials,
             logger: getLogger('account'),
+            afterResponseHooks: [createServerTimeAfterResponseHook()],
         });
         this.apiClient = apiClient;
 
