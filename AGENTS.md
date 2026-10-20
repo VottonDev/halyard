@@ -82,7 +82,7 @@ Each of these cost real debugging time. Do not "simplify" them away.
   Source builds and tests require Node 22.15+ for module hooks.
   The installed daemon can run on Node 22.13+.
 - **Build the SDK submodule before compiling the daemon.** `proton-sdk` is
-  pinned at tag `js/v0.22.2`. It lives at the repository root, or
+  pinned at tag `js/v0.23.0`. It lives at the repository root, or
   `../proton-sdk` from `daemon/`. Run `git submodule update --init` to fetch it.
   Run `./scripts/build-proton-sdk.sh` from the repository root to build `client/js`.
   `packaging/install.sh` fetches and builds it automatically.

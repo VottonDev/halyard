@@ -191,7 +191,7 @@ export class DriveSession {
         };
         this.client = new ProtonDriveClient(dependencies);
         registerFolderRefresh(this.client, async (uids) => {
-            // Pinned SDK v0.22.2 NodesCache uses node-<uid> metadata keys.
+            // Pinned SDK v0.23.0 NodesCache uses node-<uid> metadata keys.
             // Removing just these forces fresh roles/access without dropping
             // descendant metadata, crypto keys, or the durable sync base.
             await caches.entitiesCache.removeEntities(uids.map(uid => `node-${uid}`));
@@ -222,7 +222,7 @@ export class DriveSession {
     /** Targeted SDK metadata refresh; crypto material and sync state are kept. */
     async refreshNodes(uids: string[]): Promise<void> {
         this.getClient();
-        // Pinned SDK v0.22.2 uses node-<uid> metadata keys for both volumes.
+        // Pinned SDK v0.23.0 uses node-<uid> metadata keys for both volumes.
         await this.caches!.entitiesCache.removeEntities(uids.map(uid => `node-${uid}`));
     }
 
