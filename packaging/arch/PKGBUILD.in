@@ -17,7 +17,7 @@ options=('!strip' '!debug')
 # Generated from the release checkout; commits cannot be retargeted like tags.
 _commit=@COMMIT@
 source=("git+$url.git#commit=$_commit"
-        'proton-sdk::git+https://github.com/ProtonDriveApps/sdk.git#commit=8a44654aece1609f0f7218be51c205103945abd8')
+        'proton-sdk::git+https://github.com/ProtonDriveApps/sdk.git#commit=39933bb1ab7e4d08321c2ce43317c09ee5bac7d4')
 sha256sums=('SKIP' 'SKIP')
 
 prepare() {

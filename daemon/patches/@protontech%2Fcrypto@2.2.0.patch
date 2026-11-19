@@ -28,27 +28,48 @@ index 82052deea448f3d6f17561335fcc2a2a0ffc6062..1da4e0bcc457450727af920106f5b944
  import { VERIFICATION_STATUS, SIGNATURE_TYPES } from "./constants.ts";
  import type {
 diff --git a/src/pmcrypto/utils.ts b/src/pmcrypto/utils.ts
+index 0c89770b81685854d7e0019879feb52cfef3c125..24adffde249d0d5e1645820c9c58dd11c2a1bb4e 100644
 --- a/src/pmcrypto/utils.ts
 +++ b/src/pmcrypto/utils.ts
-@@ -26,7 +26,7 @@ export function streamedUtf8StringToUint8Array(
+@@ -12,8 +12,7 @@ export function streamedUtf8StringToUint8Array(
+ ): WebStream<Uint8Array<ArrayBuffer>> {
+     const reader = str.getReader();
+     const encoder = new TextEncoder();
+-    const transformedStream: WebStream<Uint8Array<ArrayBuffer>> =
+-        new ReadableStream<Uint8Array<ArrayBuffer>>({
++    const transformedStream = new ReadableStream<Uint8Array<ArrayBuffer>>({
+             async pull(controller) {
+                 const { value, done } = await reader.read();
+ 
+@@ -26,7 +25,7 @@ export function streamedUtf8StringToUint8Array(
              cancel() {
                  return reader.cancel();
              },
 -        });
-+        }) as unknown as WebStream<Uint8Array<ArrayBuffer>>;
++        }) as WebStream<Uint8Array<ArrayBuffer>>;
  
      return transformedStream;
  }
-@@ -59,7 +59,7 @@ export function streamedUint8ArrayToUtf8String(
+@@ -41,7 +40,7 @@ export function streamedUint8ArrayToUtf8String(
+ ): WebStream<string> {
+     const reader = utf8.getReader();
+     const decoder = new TextDecoder();
+-    const transformedStream: WebStream<string> = new ReadableStream<string>({
++    const transformedStream = new ReadableStream<string>({
+         async pull(controller) {
+             const { value, done } = await reader.read();
+ 
+@@ -59,7 +58,7 @@ export function streamedUint8ArrayToUtf8String(
          cancel() {
              return reader.cancel();
          },
 -    });
-+    }) as unknown as WebStream<string>;
++    }) as WebStream<string>;
  
      return transformedStream;
  }
 diff --git a/src/proxy/endpoint/api.ts b/src/proxy/endpoint/api.ts
+index 339cf0b471cbea710d413495097515af02ea0b38..637415e2a1bc8fb0d53476b4059aaf08e1f5682a 100644
 --- a/src/proxy/endpoint/api.ts
 +++ b/src/proxy/endpoint/api.ts
 @@ -1282,7 +1282,7 @@ export class Api extends KeyManagementApi {
@@ -56,7 +77,7 @@ diff --git a/src/proxy/endpoint/api.ts b/src/proxy/endpoint/api.ts
                              controller.close();
                          }
 -                    })
-+                    }) as unknown as WebStream<Uint8Array<ArrayBuffer>>
++                    }) as WebStream<Uint8Array<ArrayBuffer>>
                  }
              }
              default:
