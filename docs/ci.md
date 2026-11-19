@@ -64,8 +64,8 @@ for that accepted defect.
 
 When upgrading the SDK, refresh its `file:` package metadata in `daemon/bun.lock`
 as well as the submodule pointer. A normal Bun install can retain older dependency
-declarations. Check a clean frozen install and confirm that the emitted daemon
-has one active crypto server clock.
+declarations. Test a clean frozen install.
+Check that the emitted daemon has one active crypto server clock.
 
 ### SDK update notifications
 
@@ -85,7 +85,7 @@ new issue.
 
 These workflows catch SDK interface changes, dependency and bundling failures,
 crypto-object shape changes exercised by Halyard's cache, and regressions in
-the pure sync engine. They also verify that the pinned SDK continues to build
+the pure sync engine. They also check that the pinned SDK continues to build
 from a clean checkout.
 
 Without a dedicated test account, these workflows cannot:

@@ -47,6 +47,12 @@ def write_licenses():
                          and re.match(r"^(licen[cs]e|copying|notice)([.-]|$)", path.name, re.I))
         if name in ("@protontech/drive-sdk", "proton-drive-sdk-account"):
             notices = [ROOT / "proton-sdk/LICENSE.md"]
+        if not notices and (name, package.get("version"), package.get("license")) == (
+                "@protontech/crypto", "2.2.0", "GPL-3.0"):
+            # The 2.2.0 npm package omits LICENSE. Use the verbatim text from
+            # its upstream release commit, only for this reviewed version.
+            upstream = ROOT / "packaging/licenses/protontech-crypto-2.2.0"
+            notices = [upstream / "LICENSE", upstream / "NOTICE"]
         if not notices:
             raise SystemExit(f"Missing licence text for bundled dependency: {name} ({directory})")
         for notice in notices:
