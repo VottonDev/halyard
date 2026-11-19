@@ -137,8 +137,10 @@ The release process creates an archive with these contents:
 
 The crypto 2.2.0 package omits its licence file.
 Halyard includes the licence from Proton's release commit.
-`packaging/licenses/protontech-crypto-2.2.0/NOTICE` identifies the source and release commit.
-The build uses this copy only for version `2.2.0` with the declared licence `GPL-3.0`.
+`packaging/licenses/protontech-crypto-2.2.0/NOTICE` identifies the source and
+release commit.
+The build uses this copy only for version `2.2.0` with the declared licence
+`GPL-3.0`.
 Other missing licence files stop the build.
 
 The process also creates checksums for the archive:

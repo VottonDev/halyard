@@ -56,15 +56,17 @@ SDK releases from `js/v0.20.0` to `js/v0.23.0` omitted their lockfile and
 `scripts/build-proton-sdk.sh` retains the missing-types workaround for older
 releases. It also installs and patches Halyard's exact crypto version inside
 the SDK so the linked package and runnable daemon use the same crypto ABI.
-Halyard pins crypto 2.2.0 to satisfy the Drive and account SDKs' peer dependency.
+Halyard pins crypto 2.2.0 to satisfy the Drive and account SDKs' peer
+dependency.
 Its patch matches the pinned SDK's crypto patch, including the full OpenPGP
 entry point and stream type declarations. The daily canary keeps any original
 missing-types failure visible as a warning, but does not remain red solely
 for that accepted defect.
 
-When upgrading the SDK, refresh its `file:` package metadata in `daemon/bun.lock`
-as well as the submodule pointer. A normal Bun install can retain older dependency
-declarations. Test a clean frozen install.
+When upgrading the SDK, refresh its `file:` package metadata in
+`daemon/bun.lock` as well as the submodule pointer.
+A normal Bun install can retain older dependency declarations.
+Test a clean frozen install.
 Check that the emitted daemon has one active crypto server clock.
 
 ### SDK update notifications
