@@ -132,8 +132,16 @@ metadata. Bun is a build dependency. Its dependency cache stays inside
 The release process creates an archive with these contents:
 
 - The bundled daemon and application source.
-- SDK source and the exact dependency inputs used in the bundle.
+- SDK source, crypto patches and the exact dependency inputs used in the bundle.
 - The source map and complete licence notices.
+
+The crypto 2.2.0 package omits its licence file.
+Halyard includes the licence from Proton's release commit.
+`packaging/licenses/protontech-crypto-2.2.0/NOTICE` identifies the source and
+release commit.
+The build uses this copy only for version `2.2.0` with the declared licence
+`GPL-3.0`.
+Other missing licence files stop the build.
 
 The process also creates checksums for the archive:
 

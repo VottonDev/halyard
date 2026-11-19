@@ -18,7 +18,7 @@ def create_release(output, epoch):
     sources = {}
     excluded = {"node_modules", "dist", ".git", "__pycache__", ".debhelper"}
     for directory in ("daemon", "ui/halyard", "ui/tests", "packaging", "debian", "scripts", "docs", ".github",
-                      "proton-sdk/client/js", "proton-sdk/incubating/account/js"):
+                      "proton-sdk/client/js", "proton-sdk/incubating/account/js", "proton-sdk/config/js/patches"):
         for path in (ROOT / directory).rglob("*"):
             relative = path.relative_to(ROOT)
             if (path.is_file() and not any(part in excluded for part in relative.parts)

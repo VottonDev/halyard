@@ -1,0 +1,11 @@
+Package: @protontech/crypto
+Version: 2.2.0
+Author: Proton AG
+Declared licence: GPL-3.0
+Repository: https://github.com/ProtonMail/WebPackages
+Release commit: 68b93b7d2cadd043cd08203710af382706ed1458
+Package manifest: https://github.com/ProtonMail/WebPackages/blob/68b93b7d2cadd043cd08203710af382706ed1458/packages/crypto/package.json
+Licence source: https://github.com/ProtonMail/WebPackages/blob/68b93b7d2cadd043cd08203710af382706ed1458/LICENSE
+
+The published 2.2.0 npm package omits its licence file. Halyard includes the
+verbatim licence from the upstream commit that released this version.

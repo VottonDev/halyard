@@ -50,16 +50,24 @@ fail. The upstream-main job is allowed to fail because development commits may
 be incomplete. All results and the exact commit remain visible in the job summary.
 The workflow never changes Halyard's committed submodule pointer.
 
-Starting with `js/v0.20.0`, upstream releases omit their lockfile and
-`@types/mocha` declaration while
-retaining `mocha` in `tsconfig.json`. `scripts/build-proton-sdk.sh` supplies
-that missing build-only type package without modifying the submodule. It also
-installs and patches Halyard's exact crypto version inside the SDK so the
-linked package and runnable daemon use the same crypto ABI. Halyard tracks
-crypto 2.1.1 with this SDK release, including its streaming crypto interface,
-rather than holding the previous 2.0.0 implementation. The daily canary keeps
-the original missing-types failure visible as a warning, but does not remain
-red solely for that accepted defect.
+SDK releases from `js/v0.20.0` to `js/v0.23.0` omitted their lockfile and
+`@types/mocha` declaration while retaining `mocha` in `tsconfig.json`.
+`js/v0.24.0` includes a lockfile and no longer requests Mocha types.
+`scripts/build-proton-sdk.sh` retains the missing-types workaround for older
+releases. It also installs and patches Halyard's exact crypto version inside
+the SDK so the linked package and runnable daemon use the same crypto ABI.
+Halyard pins crypto 2.2.0 to satisfy the Drive and account SDKs' peer
+dependency.
+Its patch matches the pinned SDK's crypto patch, including the full OpenPGP
+entry point and stream type declarations. The daily canary keeps any original
+missing-types failure visible as a warning, but does not remain red solely
+for that accepted defect.
+
+When upgrading the SDK, refresh its `file:` package metadata in
+`daemon/bun.lock` as well as the submodule pointer.
+A normal Bun install can retain older dependency declarations.
+Test a clean frozen install.
+Check that the emitted daemon has one active crypto server clock.
 
 ### SDK update notifications
 
@@ -79,7 +87,7 @@ new issue.
 
 These workflows catch SDK interface changes, dependency and bundling failures,
 crypto-object shape changes exercised by Halyard's cache, and regressions in
-the pure sync engine. They also verify that the pinned SDK continues to build
+the pure sync engine. They also check that the pinned SDK continues to build
 from a clean checkout.
 
 Without a dedicated test account, these workflows cannot:

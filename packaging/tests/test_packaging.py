@@ -108,6 +108,45 @@ class PackageTests(unittest.TestCase):
             self.assertIn("Licence for example 1.0.0", aggregate)
             self.assertIn("Licence for example 2.0.0", aggregate)
 
+    def test_crypto_220_missing_licence_uses_verified_upstream_text(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            licence_path = Path("packaging/licenses/protontech-crypto-2.2.0")
+            shutil.copytree(ROOT / licence_path, root / licence_path)
+            origins = ("daemon/node_modules/@protontech/crypto",
+                       "proton-sdk/client/js/node_modules/@protontech/crypto")
+            for origin in origins:
+                package = root / origin
+                (package / "src").mkdir(parents=True)
+                (package / "src/index.ts").write_text("export {}")
+                (package / "package.json").write_text(json.dumps({
+                    "name": "@protontech/crypto", "version": "2.2.0", "license": "GPL-3.0",
+                }))
+            metadata = root / "daemon/dist/package-metafile.json"
+            metadata.parent.mkdir(parents=True)
+            metadata.write_text(json.dumps({"inputs": {
+                f"../{origin}/src/index.ts": {} for origin in origins
+            }}))
+            with patch.object(stage, "ROOT", root):
+                stage.write_licenses()
+                for origin in origins:
+                    for name in ("LICENSE", "NOTICE"):
+                        expected = (ROOT / licence_path / name).read_bytes()
+                        installed = root / "daemon/dist/licenses" / origin / name
+                        self.assertEqual(installed.read_bytes(), expected)
+                aggregate = (root / "daemon/dist/THIRD_PARTY_LICENSES.txt").read_text()
+                self.assertIn("GNU GENERAL PUBLIC LICENSE", aggregate)
+                self.assertIn("68b93b7d2cadd043cd08203710af382706ed1458", aggregate)
+                manifest = root / origins[0] / "package.json"
+                # A later version or different licence still needs review.
+                for version, licence in (("2.2.1", "GPL-3.0"), ("2.2.0", "MIT")):
+                    with self.subTest(version=version, licence=licence):
+                        manifest.write_text(json.dumps({
+                            "name": "@protontech/crypto", "version": version, "license": licence,
+                        }))
+                        with self.assertRaisesRegex(SystemExit, "Missing licence text"):
+                            stage.write_licenses()
+
     def test_release_includes_dependencies_nested_in_sdk(self):
         with tempfile.TemporaryDirectory() as temporary:
             root, output = Path(temporary) / "source", Path(temporary) / "output"
@@ -123,6 +162,9 @@ class PackageTests(unittest.TestCase):
                 "AGENTS.md": "fixture", ".gitmodules": "fixture",
                 "proton-sdk/LICENSE.md": "fixture",
                 "proton-sdk/client/js/src/index.ts": "sdk source",
+                "proton-sdk/config/js/patches/@protontech%2Fcrypto@2.2.0.patch": "sdk crypto patch",
+                "packaging/licenses/protontech-crypto-2.2.0/LICENSE": "crypto licence",
+                "packaging/licenses/protontech-crypto-2.2.0/NOTICE": "crypto licence source",
                 "proton-sdk/client/js/node_modules/example/package.json": '{"name":"example","version":"1.0.0"}',
                 "proton-sdk/client/js/node_modules/example/source.js": "nested dependency source",
                 "daemon/dist/licenses/proton-sdk/client/js/node_modules/example/LICENSE": "nested dependency licence",
@@ -139,6 +181,10 @@ class PackageTests(unittest.TestCase):
                 release.create_release(output, 1)
             with tarfile.open(output / "halyard-7.8.9.tar.gz") as archive:
                 self.assertNotIn("halyard-7.8.9/packaging/arch/.SRCINFO", archive.getnames())
+                for name in ("proton-sdk/config/js/patches/@protontech%2Fcrypto@2.2.0.patch",
+                             "packaging/licenses/protontech-crypto-2.2.0/LICENSE",
+                             "packaging/licenses/protontech-crypto-2.2.0/NOTICE"):
+                    self.assertEqual(archive.extractfile(f"halyard-7.8.9/{name}").read().decode(), files[name])
                 source = archive.extractfile(f"halyard-7.8.9/vendor/{origin}/source.js")
                 self.assertEqual(source.read().decode(), "nested dependency source")
                 licence = archive.extractfile(f"halyard-7.8.9/daemon/dist/licenses/{origin}/LICENSE")

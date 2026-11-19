@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build the pinned Drive SDK with the dependency versions Halyard actually
-# bundles. Upstream SDK releases since js/v0.20.0 have omitted their lockfile and
-# @types/mocha declaration, so a plain install is neither reproducible nor
-# currently buildable.
+# bundles. Older SDK releases omitted their lockfile and @types/mocha
+# declaration. Keep support for those releases while applying Halyard's exact
+# crypto pin and patch to the current SDK.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,9 +18,8 @@ elif [ "$#" -ne 0 ]; then
 fi
 
 cd "$SDK_DIR"
-# Upstream does not ship a lockfile for this release. Do not create or update
-# one in the submodule: a locally generated lock can become stale and makes a
-# later --frozen-lockfile install fail before we can apply Halyard's pins.
+# Do not create or update the upstream lockfile: Halyard's crypto override
+# must leave the submodule untouched, including on releases without a lockfile.
 bun install --no-save
 
 CRYPTO_VERSION="$(
